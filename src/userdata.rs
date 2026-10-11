@@ -950,20 +950,30 @@ fn merge_locations(tx: &Transaction<'_>) -> Result<HashMap<i64, i64>> {
                 )
                 .optional()?)
         };
-        // NULL matches NULL; failing that, a row with the same UNIQUE key
-        // (which only binds when none of its columns is NULL) is the same page.
+        // The same page as the editor finds it (`UserData::location_id`: a
+        // missing book, chapter or document is 0); failing that, a row with
+        // the same value in one of the UNIQUE keys JW Library uses (which
+        // only bind when none of their columns is NULL).
         let found = match same_key(
-            "m.BookNumber IS i.BookNumber AND m.ChapterNumber IS i.ChapterNumber
-             AND m.DocumentId IS i.DocumentId AND m.Track IS i.Track
-             AND m.IssueTagNumber IS i.IssueTagNumber AND m.KeySymbol IS i.KeySymbol
-             AND m.MepsLanguage IS i.MepsLanguage AND m.Type IS i.Type",
+            "m.Type = i.Type AND m.Track IS i.Track AND m.KeySymbol IS i.KeySymbol
+             AND m.MepsLanguage IS i.MepsLanguage AND m.IssueTagNumber IS i.IssueTagNumber
+             AND IFNULL(m.DocumentId, 0) = IFNULL(i.DocumentId, 0)
+             AND IFNULL(m.BookNumber, 0) = IFNULL(i.BookNumber, 0)
+             AND IFNULL(m.ChapterNumber, 0) = IFNULL(i.ChapterNumber, 0)",
         )? {
             Some(found) => Some(found),
-            None => same_key(
+            None => match same_key(
                 "m.BookNumber = i.BookNumber AND m.ChapterNumber = i.ChapterNumber
                  AND m.KeySymbol = i.KeySymbol AND m.MepsLanguage = i.MepsLanguage
                  AND m.Type = i.Type",
-            )?,
+            )? {
+                Some(found) => Some(found),
+                None => same_key(
+                    "m.KeySymbol = i.KeySymbol AND m.IssueTagNumber = i.IssueTagNumber
+                     AND m.MepsLanguage = i.MepsLanguage AND m.DocumentId = i.DocumentId
+                     AND m.Track = i.Track AND m.Type = i.Type",
+                )?,
+            },
         };
         let local = match found {
             Some(local) => {
@@ -1201,7 +1211,18 @@ fn merge_marks(
     Ok(map)
 }
 
-/// Merge `inc.InputField`, matched by (location, `TextTag`).
+/// Locations `m` and `l` hold the answers of the same page, as the editor
+/// reads them (`UserData::answer_location_ids`): a location without a
+/// language belongs to the page in every language.
+const ANSWER_SIBLINGS: &str = "m.Type = 0 AND l.Type = 0 AND m.Track IS NULL AND l.Track IS NULL
+    AND m.KeySymbol = l.KeySymbol AND m.IssueTagNumber = l.IssueTagNumber
+    AND IFNULL(m.DocumentId, 0) = IFNULL(l.DocumentId, 0)
+    AND IFNULL(m.BookNumber, 0) = IFNULL(l.BookNumber, 0)
+    AND IFNULL(m.ChapterNumber, 0) = IFNULL(l.ChapterNumber, 0)
+    AND (m.MepsLanguage IS NULL OR l.MepsLanguage IS NULL OR m.MepsLanguage = l.MepsLanguage)";
+
+/// Merge `inc.InputField`, matched by page and `TextTag` against the row
+/// the editor shows.
 fn merge_input_fields(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
@@ -1212,22 +1233,41 @@ fn merge_input_fields(
     if !has_table(tx, "inc", "InputField")? || !has_table(tx, "main", "InputField")? {
         return Ok(());
     }
-    let incoming: Vec<(i64, String, String)> = {
-        let mut stmt = tx.prepare(
-            "SELECT LocationId, TextTag, Value FROM inc.InputField ORDER BY LocationId, TextTag",
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    // (LocationId, TextTag, Value, hidden): a field the backup also has on
+    // an earlier location of the page is not shown there, and is left out.
+    let incoming: Vec<(i64, String, String, bool)> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT f.LocationId, f.TextTag, f.Value, EXISTS (
+                 SELECT 1 FROM inc.InputField g
+                 JOIN inc.Location m ON m.LocationId = g.LocationId
+                 JOIN inc.Location l ON l.LocationId = f.LocationId
+                 WHERE g.TextTag = f.TextTag AND g.LocationId < f.LocationId
+                   AND {ANSWER_SIBLINGS})
+             FROM inc.InputField f ORDER BY f.LocationId, f.TextTag"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for (location, tag, value) in incoming {
+    for (location, tag, value, hidden) in incoming {
         let Some(&location) = locations.get(&location) else {
             continue;
         };
-        let local: Option<String> = tx
+        if hidden {
+            continue;
+        }
+        // The row the editor shows for this field (`UserData::answers`): the
+        // first of the page's locations.
+        let local: Option<(i64, String)> = tx
             .query_row(
-                "SELECT Value FROM main.InputField WHERE LocationId = ?1 AND TextTag = ?2",
+                &format!(
+                    "SELECT f.LocationId, f.Value FROM main.InputField f
+                     JOIN main.Location m ON m.LocationId = f.LocationId
+                     JOIN main.Location l ON l.LocationId = ?1
+                     WHERE f.TextTag = ?2 AND (m.LocationId = l.LocationId OR {ANSWER_SIBLINGS})
+                     ORDER BY f.LocationId LIMIT 1"
+                ),
                 params![location, tag],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         match (local, incoming_newer) {
@@ -1238,18 +1278,18 @@ fn merge_input_fields(
                 )?;
                 report.added += 1;
             }
-            (Some(local), _) if local == value => report.unchanged += 1,
-            (Some(_), Some(true)) => {
+            (Some((_, local)), _) if local == value => report.unchanged += 1,
+            (Some((shown, _)), Some(true)) => {
                 tx.execute(
                     "UPDATE main.InputField SET Value = ?3 WHERE LocationId = ?1 AND TextTag = ?2",
-                    params![location, tag, value],
+                    params![shown, tag, value],
                 )?;
                 report.updated += 1;
             }
             // The backup is older or as old: keep the local text, but say so.
-            (Some(_), Some(false) | None) => {
-                let summary = format!("{}, field {tag}", location_label(tx, location)?);
-                let key = format!("{location}:{tag}");
+            (Some((shown, _)), Some(false) | None) => {
+                let summary = format!("{}, field {tag}", location_label(tx, shown)?);
+                let key = format!("{shown}:{tag}");
                 report.conflicts.push(conflict("InputField", &key, summary));
             }
         }
@@ -2498,6 +2538,152 @@ mod tests {
             assert_eq!(marks.len(), 2);
             assert_eq!(marks[1].guid, guid);
         }
+    }
+
+    #[test]
+    fn merge_location_with_the_second_unique_key_is_reused() {
+        // JW Library also keeps (KeySymbol, IssueTagNumber, MepsLanguage,
+        // DocumentId, Track, Type) unique.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        for (ud, book) in [(&local, None), (&remote, Some(3))] {
+            ud.conn
+                .execute(
+                    "INSERT INTO Location (BookNumber, DocumentId, Track, IssueTagNumber,
+                                           KeySymbol, MepsLanguage, Type)
+                     VALUES (?1, 5, 1, 0, 'sjjm', 2, 2)",
+                    [book],
+                )
+                .unwrap();
+        }
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!(count(&local, "Location"), 1);
+    }
+
+    #[test]
+    fn merge_matches_locations_with_zero_or_null_like_the_editor() {
+        // JW Library may store 0 where pergament stores NULL: the same page.
+        for zeros_locally in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            let (zeros, nulls) = if zeros_locally {
+                (&mut local, &mut remote)
+            } else {
+                (&mut remote, &mut local)
+            };
+            zeros
+                .conn
+                .execute(
+                    "INSERT INTO Location (BookNumber, ChapterNumber, DocumentId, IssueTagNumber,
+                                           KeySymbol, MepsLanguage, Type)
+                     VALUES (0, 0, 2026520, 20260800, 'w', 2, 0)",
+                    [],
+                )
+                .unwrap();
+            zeros
+                .save_answer(&watchtower(), None, "tt1", "zeros")
+                .unwrap();
+            nulls
+                .save_answer(&watchtower(), None, "tt1", "nulls")
+                .unwrap();
+            nulls
+                .save_answer(&watchtower(), None, "tt2", "only nulls")
+                .unwrap();
+            assert_eq!(count(zeros, "Location"), 1);
+            set_db_time(&local, "2020-01-01T00:00:00Z");
+            set_db_time(&remote, "2030-01-01T00:00:00Z");
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            assert_eq!(
+                count(&local, "Location"),
+                1,
+                "zeros locally: {zeros_locally}"
+            );
+            assert_eq!(r.updated, 1);
+            assert!(r.conflicts.is_empty());
+            let answers = local.answers(&watchtower()).unwrap();
+            let remote_value = if zeros_locally { "nulls" } else { "zeros" };
+            assert_eq!(answers["tt1"], remote_value);
+            if zeros_locally {
+                assert_eq!(r.added, 1);
+                assert_eq!(answers["tt2"], "only nulls");
+            }
+            assert_foreign_keys_hold(&local);
+        }
+    }
+
+    #[test]
+    fn merge_answer_on_a_location_without_language_meets_the_shown_one() {
+        // The editor shows the answers of a page from its own location and
+        // from one without a language; a merged answer must not hide behind
+        // the local one of the same field.
+        for remote_newer in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            local
+                .save_answer(&watchtower(), None, "tt1", "local")
+                .unwrap();
+            remote
+                .conn
+                .execute_batch(
+                    "INSERT INTO Location (LocationId, DocumentId, IssueTagNumber, KeySymbol, Type)
+                     VALUES (7, 2026520, 20260800, 'w', 0);
+                     INSERT INTO InputField VALUES (7, 'tt1', 'remote');",
+                )
+                .unwrap();
+            let (old, new) = ("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z");
+            set_db_time(&local, if remote_newer { old } else { new });
+            set_db_time(&remote, if remote_newer { new } else { old });
+            let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+            let r = local.merge_backup(&b).unwrap();
+            assert_eq!(r.added, 0);
+            assert_eq!(r.updated, i64::from(remote_newer));
+            assert_eq!(r.conflicts.len(), usize::from(!remote_newer));
+            let expected = if remote_newer { "remote" } else { "local" };
+            assert_eq!(local.answers(&watchtower()).unwrap()["tt1"], expected);
+            assert_eq!(count(&local, "InputField"), 1);
+            if remote_newer {
+                let again = local.merge_backup(&b).unwrap();
+                assert_eq!((again.added, again.updated, again.unchanged), (0, 0, 1));
+            }
+        }
+    }
+
+    #[test]
+    fn merge_answer_hidden_in_the_backup_does_not_replace_the_shown_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .save_answer(&watchtower(), None, "tt1", "old")
+            .unwrap();
+        remote
+            .save_answer(&watchtower(), None, "tt1", "new")
+            .unwrap();
+        // A second, older text of the field that the remote editor does not show.
+        remote
+            .conn
+            .execute_batch(
+                "INSERT INTO Location (LocationId, DocumentId, IssueTagNumber, KeySymbol, Type)
+                 VALUES (7, 2026520, 20260800, 'w', 0);
+                 INSERT INTO InputField VALUES (7, 'tt1', 'stale');",
+            )
+            .unwrap();
+        assert_eq!(remote.answers(&watchtower()).unwrap()["tt1"], "new");
+        set_db_time(&local, "2020-01-01T00:00:00Z");
+        set_db_time(&remote, "2030-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated), (0, 1));
+        assert!(r.conflicts.is_empty());
+        assert_eq!(local.answers(&watchtower()).unwrap()["tt1"], "new");
     }
 
     #[test]
