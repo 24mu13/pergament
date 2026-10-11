@@ -143,7 +143,7 @@ function ReferencesButton({ dir }: { dir: string }) {
     }
   };
   return (
-    <BarButton label="Download referenced publications" onClick={() => void run()} disabled={busy}>
+    <BarButton label="Download referenced publications (needs network)" onClick={() => void run()} disabled={busy}>
       <DownloadCloud size={18} strokeWidth={1.6} />
     </BarButton>
   );

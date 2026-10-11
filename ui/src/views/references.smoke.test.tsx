@@ -54,7 +54,7 @@ const renderView = () =>
       <PublicationView dir="w26_2" />
     </AppProvider>,
   );
-const button = () => screen.findByLabelText("Download referenced publications");
+const button = () => screen.findByLabelText("Download referenced publications (needs network)");
 const downloads = () => calls.filter((c) => c.cmd === "download_publication");
 
 describe("Download referenced publications", () => {
@@ -80,6 +80,6 @@ describe("Download referenced publications", () => {
     referenced = [];
     renderView();
     await waitFor(() => expect(calls.some((c) => c.cmd === "referenced_publications")).toBe(true));
-    expect(screen.queryByLabelText("Download referenced publications")).toBeNull();
+    expect(screen.queryByLabelText("Download referenced publications (needs network)")).toBeNull();
   });
 });

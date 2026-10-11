@@ -85,6 +85,7 @@ describe("Updates", () => {
       { dir: "lff_2", langCode: "X", installedSize: 1, entry: entry("lff", "Books", "lff_2", "Glücklich") },
     ];
     renderIn(<UpdatesTab />);
+    expect(within((await screen.findByText("Check now")).closest("div")!).getByText("Needs network")).toBeTruthy();
     fireEvent.click(await screen.findByText("Check now"));
     openMenu(await tile("Glücklich"));
     expect(screen.getByText("Remove")).toBeTruthy();
