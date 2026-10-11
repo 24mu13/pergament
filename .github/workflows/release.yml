@@ -61,3 +61,33 @@ jobs:
           --notes-file notes.md
           target/package/*.zip
           target/package/*.zip.sha256
+
+  # An unsigned disk image for Apple Silicon, added to the release the job above
+  # made. It is ad-hoc signed only (no Apple Developer ID, no notarization), so
+  # macOS asks for confirmation on the first start.
+  macos:
+    needs: release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the disk image
+        run: |
+          bun install --frozen-lockfile
+          bun run tauri build --bundles dmg --config '{"bundle":{"active":true,"icon":["icons/icon.icns"],"macOS":{"signingIdentity":"-"}}}'
+
+      - name: Name it and write its hash
+        run: |
+          mkdir -p target/package
+          cp target/release/bundle/dmg/*.dmg "target/package/Pergament-${GITHUB_REF_NAME#v}-macos-arm64.dmg"
+          cd target/package
+          shasum -a 256 ./*.dmg > "Pergament-${GITHUB_REF_NAME#v}-macos-arm64.dmg.sha256"
+
+      - name: Add it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" target/package/*.dmg target/package/*.dmg.sha256
