@@ -82,6 +82,14 @@ describe("Home with tile menus", () => {
     expect(screen.getByText("Ohne Kategorie")).toBeTruthy();
   });
 
+  it("shows the toolbox right away when the view is opened again", async () => {
+    renderHome();
+    await screen.findByText("Höre auf Gott");
+    cleanup();
+    renderHome();
+    expect(screen.getByText("Höre auf Gott")).toBeTruthy();
+  });
+
   it("opens the menu of every tile kind without crashing", async () => {
     renderHome();
     for (const title of ["Höre auf Gott", "Zukunft", "Ohne Kategorie"]) {

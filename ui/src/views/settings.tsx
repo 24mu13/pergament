@@ -1,201 +1,47 @@
-import { useEffect, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
-import { AppBar, useApp } from "@/app";
-import type { Layout, ReadingFont, Theme } from "@/lib/settings";
-import { cn } from "@/lib/utils";
-import { t, uiLanguages } from "@/lib/i18n";
-import type { UiLangSetting } from "@/lib/i18n";
+import { useState } from "react";
+import { AppBar } from "@/app";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { t } from "@/lib/i18n";
+import { AboutTab } from "./settings/about";
+import { DataTab } from "./settings/data";
+import { InterfaceTab } from "./settings/interface";
+import { ReadingTab } from "./settings/reading";
 
-const uiLangs: { value: UiLangSetting; label: string }[] = [
-  { value: "system", label: "Follow system" },
-  ...uiLanguages().map((l) => ({ value: l.code, label: l.name })),
-];
-
-const themes: { value: Theme; label: string }[] = [
-  { value: "system", label: "Follow system" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-const layouts: { value: Layout; label: string }[] = [
-  { value: "centered", label: "Centered" },
-  { value: "wide", label: "Full width" },
-];
-
-const fonts: { value: ReadingFont; label: string }[] = [
-  { value: "standard", label: "Standard" },
-  { value: "legible", label: "Easy to read" },
-];
+/** The last selected tab, kept for the session so the view reopens where it was left. */
+let lastTab = "interface";
 
 export function SettingsView() {
-  const [version, setVersion] = useState("");
-  useEffect(() => {
-    getVersion().then(setVersion, () => undefined);
-  }, []);
-  const { uiLang, setUiLang, theme, setTheme, fontScale, setFontScale, layout, setLayout, readingFont, setReadingFont, createBackup, restoreBackup, display, updates } = useApp();
+  const [tab, setTabState] = useState(lastTab);
+  const setTab = (value: string) => {
+    lastTab = value;
+    setTabState(value);
+  };
+  const content = "page flex-1 overflow-y-auto pt-6 focus-visible:outline-2 focus-visible:outline-accent";
   return (
     <>
       <AppBar title={t("Settings")} />
-      <div className="page flex-1 overflow-y-auto">
-        <div className="space-y-10">
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Interface language")}</h2>
-            <div className="inline-flex overflow-hidden rounded-md border border-line">
-              {uiLangs.map((l) => (
-                <button
-                  key={l.value}
-                  onClick={() => setUiLang(l.value)}
-                  aria-pressed={uiLang === l.value}
-                  className={cn(
-                    "px-4 py-2 text-sm",
-                    uiLang === l.value ? "bg-bar font-medium" : "bg-surface text-muted hover:bg-bar hover:text-fg",
-                  )}
-                >
-                  {l.value === "system" ? t(l.label) : l.label}
-                </button>
-              ))}
-            </div>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Appearance")}</h2>
-            <div className="inline-flex overflow-hidden rounded-md border border-line">
-              {themes.map((th) => (
-                <button
-                  key={th.value}
-                  onClick={() => setTheme(th.value)}
-                  aria-pressed={theme === th.value}
-                  className={cn(
-                    "px-4 py-2 text-sm",
-                    theme === th.value ? "bg-bar font-medium" : "bg-surface text-muted hover:bg-bar hover:text-fg",
-                  )}
-                >
-                  {t(th.label)}
-                </button>
-              ))}
-            </div>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Content width")}</h2>
-            <div className="inline-flex overflow-hidden rounded-md border border-line">
-              {layouts.map((l) => (
-                <button
-                  key={l.value}
-                  onClick={() => setLayout(l.value)}
-                  aria-pressed={layout === l.value}
-                  className={cn(
-                    "px-4 py-2 text-sm",
-                    layout === l.value ? "bg-bar font-medium" : "bg-surface text-muted hover:bg-bar hover:text-fg",
-                  )}
-                >
-                  {t(l.label)}
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              {t("A centered column is easier to read; full width uses the whole window for lists, covers and the reader.")}
-            </p>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Reading font")}</h2>
-            <div className="inline-flex overflow-hidden rounded-md border border-line">
-              {fonts.map((f) => (
-                <button
-                  key={f.value}
-                  onClick={() => setReadingFont(f.value)}
-                  aria-pressed={readingFont === f.value}
-                  className={cn(
-                    "px-4 py-2 text-sm",
-                    readingFont === f.value ? "bg-bar font-medium" : "bg-surface text-muted hover:bg-bar hover:text-fg",
-                  )}
-                >
-                  {t(f.label)}
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              {t("Atkinson Hyperlegible Next was designed so that letters are easy to tell apart. It replaces the font everywhere, the Bible text included.")}
-            </p>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Text size")}</h2>
-            <div className="flex items-center gap-4">
-              <input
-                type="range"
-                min={0.8}
-                max={1.6}
-                step={0.05}
-                value={fontScale}
-                onChange={(e) => setFontScale(Number(e.target.value))}
-                className="w-72 accent-[var(--accent)]"
-              />
-              <span className="w-12 text-sm text-muted">{Math.round(fontScale * 100)} %</span>
-            </div>
-            <p className="reader mt-4 max-w-xl text-fg">{t("In the beginning God created the heavens and the earth.")}</p>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Updates")}</h2>
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={updates.enabled}
-                onChange={(e) => updates.setEnabled(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-[var(--accent)]"
-              />
-              <span>{t("Check for publication updates at startup")}</span>
-            </label>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              {t(
-                "Compares your downloaded publications with the catalog, which is refreshed at most once a day, and only if you have loaded the catalog before. Nothing is downloaded until you update.",
-              )}
-            </p>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Second display")}</h2>
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={display.enabled}
-                onChange={(e) => void display.setEnabled(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-[var(--accent)]"
-              />
-              <span>{t("Use a second display")}</span>
-            </label>
-            <p className="mt-2 max-w-xl text-sm text-muted">
-              {t(
-                "Opens a black window, fullscreen on another monitor if there is one, that shows the year text. Recordings and pictures you open are shown there too, without controls. If the window opens on the wrong screen, move it there and press F to switch to fullscreen.",
-              )}
-            </p>
-          </section>
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">{t("Backup")}</h2>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => void createBackup()}
-                className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface"
-              >
-                {t("Create backup")}
-              </button>
-              <button onClick={() => void restoreBackup()} className="rounded-md border border-line bg-surface px-4 py-2 text-sm hover:bg-bar">
-                {t("Restore backup…")}
-              </button>
-            </div>
-            <p className="mt-2 text-sm text-muted">
-              {t(
-                "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; the previous data is kept as userData.db.before-restore in the library folder.",
-              )}
-            </p>
-          </section>
-          <section className="text-sm text-muted">
-            <h2 className="mb-3 text-sm font-semibold text-fg">{t("About")}</h2>
-            {version && <p className="mb-2">{t("Version {version}", { version })}</p>}
-            <p>
-              {t(
-                "Pergament is an unofficial reader for publications you import or download yourself, for personal use. It is not affiliated with Jehovah's Witnesses or the Watch Tower Bible and Tract Society and contains no publication content. No telemetry.",
-              )}
-            </p>
-          </section>
+      <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+        <div className="page pb-0 pt-6">
+          <TabsList aria-label={t("Settings")}>
+            <TabsTrigger value="interface">{t("Interface")}</TabsTrigger>
+            <TabsTrigger value="reading">{t("Reading")}</TabsTrigger>
+            <TabsTrigger value="data">{t("Library & data")}</TabsTrigger>
+            <TabsTrigger value="about">{t("About")}</TabsTrigger>
+          </TabsList>
         </div>
-      </div>
+        <TabsContent value="interface" className={content}>
+          <InterfaceTab />
+        </TabsContent>
+        <TabsContent value="reading" className={content}>
+          <ReadingTab />
+        </TabsContent>
+        <TabsContent value="data" className={content}>
+          <DataTab />
+        </TabsContent>
+        <TabsContent value="about" className={content}>
+          <AboutTab />
+        </TabsContent>
+      </Tabs>
     </>
   );
 }

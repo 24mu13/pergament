@@ -19,6 +19,7 @@ const BY_TYPE: Record<string, { id: number; name: string }> = {
   "Awake!": { id: 13, name: "Awake!" },
   Watchtower: { id: 14, name: "Watchtower" },
   Guidelines: { id: 17, name: "Guidelines" },
+  "Manual/Guidelines": { id: 17, name: "Guidelines" },
   "Article Series": { id: 22, name: "Article Series" },
   "Meeting Workbook": { id: 30, name: "Meeting Workbooks" },
   Program: { id: 31, name: "Programs" },
@@ -126,6 +127,20 @@ function byAttribute(entries: CatalogEntry[], rules: [attr: string, title: strin
     .filter((s) => s.parts[0].entries.length > 0);
 }
 
+/** Entries split by their first attribute, whatever it is; entries without one come first, untitled. */
+function byEveryAttribute(entries: CatalogEntry[]): Section[] {
+  const buckets = new Map<string | null, CatalogEntry[]>();
+  for (const e of entries) {
+    const key = e.item.attributes[0] ?? null;
+    buckets.set(key, [...(buckets.get(key) ?? []), e]);
+  }
+  const titles = [...buckets.keys()].filter((k): k is string => k !== null).sort((a, b) => a.localeCompare(b));
+  return [null, ...titles].flatMap((title): Section[] => {
+    const list = buckets.get(title);
+    return list ? [{ title, parts: [{ title: null, entries: list }] }] : [];
+  });
+}
+
 /**
  * A category page split the way the original app does it. The newer
  * publications come first and carry no heading.
@@ -169,6 +184,8 @@ export function sectionsFor(category: number, all: CatalogEntry[]): Section[] {
         return { title: String(year), parts: parts.filter((p) => p.entries.length > 0) };
       });
     }
+    case 17:
+      return byEveryAttribute(entries);
     default:
       return [{ title: null, parts: [{ title: null, entries }] }];
   }

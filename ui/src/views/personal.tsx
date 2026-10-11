@@ -10,13 +10,23 @@ import { filterNotes, type NoteSort } from "@/lib/notes";
 import { t } from "@/lib/i18n";
 
 /** Notes, tags and bookmarks from user data, plus backups. */
+interface Loaded {
+  summary: UserDataSummary;
+  tags: TagInfo[];
+  notes: Note[];
+  bookmarks: Bookmark[];
+}
+
+/** The last load without a tag filter. The view remounts on every tab switch, so this keeps it from emptying until the reload finishes. */
+let cachedLoad: Loaded | undefined;
+
 export function PersonalView() {
-  const { push, toast, userVersion, createBackup, restoreBackup } = useApp();
-  const [summary, setSummary] = useState<UserDataSummary | null>(null);
-  const [tags, setTags] = useState<TagInfo[]>([]);
+  const { push, toast, userVersion, createBackup, restoreBackup, mergeBackups } = useApp();
+  const [summary, setSummary] = useState<UserDataSummary | null>(cachedLoad?.summary ?? null);
+  const [tags, setTags] = useState<TagInfo[]>(cachedLoad?.tags ?? []);
   const [tag, setTag] = useState<number | null>(null);
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [notes, setNotes] = useState<Note[]>(cachedLoad?.notes ?? []);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(cachedLoad?.bookmarks ?? []);
   const [editing, setEditing] = useState<Note | null>(null);
   const [query, setQuery] = useState("");
   const [color, setColor] = useState<number | null>(null);
@@ -29,6 +39,7 @@ export function PersonalView() {
     let live = true;
     Promise.all([api.userDataSummary(), api.tags(), api.allNotes(tag), api.bookmarks()])
       .then(([s, t, n, b]) => {
+        if (tag === null) cachedLoad = { summary: s, tags: t, notes: n, bookmarks: b };
         if (!live) return;
         setSummary(s);
         setTags(t);
@@ -68,7 +79,7 @@ export function PersonalView() {
               onClick={() => void restoreBackup()}
               className="flex items-center gap-2 rounded-md border border-line bg-surface px-4 py-2 text-sm hover:bg-bar"
             >
-              <FolderOpen size={17} /> {t("Restore backup…")}
+              <FolderOpen size={17} /> {mergeBackups ? t("Merge backup…") : t("Restore backup…")}
             </button>
           </div>
           <p className="mt-2 text-[13px] text-muted">

@@ -2,6 +2,7 @@
 //!
 //! See docs/FORMAT.md for the file format and where each detail comes from.
 
+pub mod cache;
 pub mod catalog;
 pub mod crypto;
 mod error;

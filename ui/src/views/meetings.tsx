@@ -64,10 +64,17 @@ function OtherRow({ entry, subtitle }: { entry: CatalogEntry; subtitle?: string 
   );
 }
 
+type LocalPages = { workbook: DatedPage | null; study: DatedPage | null };
+
+/** The last loaded data per language and week. The view remounts on every tab switch, so these keep its sections from vanishing until the reload finishes. */
+const cachedMeetings = new Map<string, Meetings | null>();
+const cachedLocal = new Map<string, LocalPages>();
+const weekKey = (lang: string, week: Date) => `${lang}|${isoDate(week)}`;
+
 export function MeetingsView() {
   const { lang, languageName, catalogVersion, toast, publications } = useApp();
   const [week, setWeek] = useState(() => weekStart(new Date()));
-  const [data, setData] = useState<Meetings | null | undefined>(undefined);
+  const [data, setData] = useState<Meetings | null | undefined>(cachedMeetings.get(weekKey(lang, week)));
   const thisWeek = isoDate(weekStart(new Date())) === isoDate(week);
 
   useEffect(() => {
@@ -75,9 +82,13 @@ export function MeetingsView() {
     // Mid-week date avoids edge effects at range boundaries.
     api
       .meetings(lang, isoDate(addDays(week, 2)))
-      .then((m) => live && setData(m))
+      .then((m) => {
+        cachedMeetings.set(weekKey(lang, week), m);
+        if (live) setData(m);
+      })
       .catch((e) => {
         toast(String(e));
+        cachedMeetings.delete(weekKey(lang, week));
         if (live) setData(null);
       });
     return () => {
@@ -86,17 +97,15 @@ export function MeetingsView() {
   }, [lang, week, catalogVersion, toast]);
 
   // The week's program and study article from downloaded issues; works without a catalog.
-  const [local, setLocal] = useState<{ workbook: DatedPage | null; study: DatedPage | null }>({
-    workbook: null,
-    study: null,
-  });
+  const [local, setLocal] = useState<LocalPages>(cachedLocal.get(weekKey(lang, week)) ?? { workbook: null, study: null });
   useEffect(() => {
     let live = true;
     const mid = isoDate(addDays(week, 2));
     const get = (kind: "workbook" | "study") => api.datedPage(lang, kind, mid).catch(() => null);
-    void Promise.all([get("workbook"), get("study")]).then(
-      ([workbook, study]) => live && setLocal({ workbook, study }),
-    );
+    void Promise.all([get("workbook"), get("study")]).then(([workbook, study]) => {
+      cachedLocal.set(weekKey(lang, week), { workbook, study });
+      if (live) setLocal({ workbook, study });
+    });
     return () => {
       live = false;
     };

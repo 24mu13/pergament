@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogEntry, PubCard } from "@/lib/api";
-import { groupByCategory, importedOnly, mergeCategories, sectionsFor } from "@/lib/types";
+import { categoryOf, groupByCategory, importedOnly, mergeCategories, sectionsFor } from "@/lib/types";
 
 const pub = (dir: string, publicationType: string | null, year = 2026): PubCard => ({
   dir,
@@ -79,5 +79,35 @@ describe("category sections", () => {
   it("splits programs", () => {
     const s = sectionsFor(31, [entry("CO-pgm26", 2026, ["Convention"]), entry("CA-copgm25", 2025, ["Circuit Assembly"])]);
     expect(s.map((x) => x.title)).toEqual(["Circuit Assembly", "Convention Program"]);
+  });
+
+  it("sorts Manual/Guidelines into Guidelines, not Other", () => {
+    expect(categoryOf({ publicationType: "Manual/Guidelines" })).toEqual({ id: 17, name: "Guidelines" });
+    expect(categoryOf({ publicationType: "Guidelines" }).id).toBe(17);
+  });
+
+  it("splits Guidelines by first attribute without knowing the names", () => {
+    const s = sectionsFor(17, [
+      entry("a", 2020, ["Meetings"]),
+      entry("b", 2021, ["Zeta", "Meetings"]),
+      entry("c", 2022),
+      entry("d", 2019, ["Alpha"]),
+    ]);
+    expect(shape(s)).toEqual([
+      [null, [[null, ["c"]]]],
+      ["Alpha", [[null, ["d"]]]],
+      ["Meetings", [[null, ["a"]]]],
+      ["Zeta", [[null, ["b"]]]],
+    ]);
+  });
+
+  it("shows one untitled Guidelines section when nothing has an attribute", () => {
+    const s = sectionsFor(17, [entry("a", 2020), entry("b", 2021)]);
+    expect(s).toHaveLength(1);
+    expect(s[0].title).toBeNull();
+  });
+
+  it("leaves other categories alone", () => {
+    expect(sectionsFor(5, [entry("a", 2020, ["Meetings"])])).toHaveLength(1);
   });
 });

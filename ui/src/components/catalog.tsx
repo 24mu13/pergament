@@ -4,6 +4,7 @@ import { FileText } from "lucide-react";
 import { taskKey, useApp } from "@/app";
 import type { CatalogEntry } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { NetworkBadge } from "@/components/network-badge";
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
 
@@ -68,6 +69,7 @@ export function CatalogPrompt() {
       >
         {loading ? t("Loading catalog…") : t("Load catalog")}
       </Button>
+      <NetworkBadge />
     </div>
   );
 }

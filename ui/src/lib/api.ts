@@ -1,6 +1,14 @@
 // Typed wrappers around the Tauri commands in src-tauri/src/lib.rs.
 import { invoke } from "@tauri-apps/api/core";
 
+export interface CacheUsage {
+  catalog: number;
+  covers: number;
+  partial: number;
+  other: number;
+  total: number;
+}
+
 export interface TocNode {
   title: string;
   document_id: number | null;
@@ -277,6 +285,21 @@ export interface Bookmark {
   location: Loc & { title: string | null };
 }
 
+export interface Conflict {
+  table: string;
+  /** An opaque key, not meant for display. */
+  guid: string;
+  summary: string;
+}
+
+export interface MergeReport {
+  added: number;
+  updated: number;
+  unchanged: number;
+  conflicts: Conflict[];
+  device: string | null;
+}
+
 export interface UserDataSummary {
   marks: number;
   notes: number;
@@ -384,6 +407,8 @@ export const api = {
   datedPage: (lang: string, kind: DatedKind, date: string) =>
     invoke<DatedPage | null>("dated_page", { lang, kind, date }),
   missingEntry: (lang: string, href: string) => invoke<CatalogEntry | null>("missing_entry", { lang, href }),
+  referencedPublications: (dir: string, lang: string) =>
+    invoke<LanguageEntry[] | null>("referenced_publications", { dir, lang }),
   pageUserData: (target: Target) => invoke<PageUserData>("page_user_data", { target }),
   saveAnswer: (target: Target, tag: string, value: string) => invoke<void>("save_answer", { target, tag, value }),
   addMark: (target: Target, color: number, ranges: MarkRange[]) =>
@@ -399,7 +424,10 @@ export const api = {
   openLocation: (loc: Loc) => invoke<Target | null>("open_location", { loc }),
   exportBackup: (path: string) => invoke<void>("export_backup", { path }),
   restoreBackup: (path: string) => invoke<UserDataSummary>("restore_backup", { path }),
+  mergeBackup: (path: string) => invoke<MergeReport>("merge_backup", { path }),
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
+  cacheUsage: () => invoke<CacheUsage>("cache_usage"),
+  clearCache: () => invoke<void>("clear_cache"),
   researchVerses: (dir: string, book: number, chapter: number) =>
     invoke<number[]>("research_verses", { dir, book, chapter }),
   researchGuide: (dir: string, book: number, chapter: number, verse: number) =>

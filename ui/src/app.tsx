@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { ask, message as messageDialog, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
 import type { MediaRef } from "@/lib/api";
+import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
@@ -30,6 +31,7 @@ import {
   loadFontScale,
   loadLayout,
   loadReadingFont,
+  loadMergeBackups,
   loadSecondDisplay,
   loadUpdateCheck,
   saveSecondDisplay,
@@ -41,6 +43,7 @@ import {
   saveFontScale,
   saveLayout,
   saveReadingFont,
+  saveMergeBackups,
   type ReadingFont,
   type Layout,
   toggleFavorite as toggleStoredFavorite,
@@ -84,6 +87,9 @@ interface AppContextValue {
   setLayout: (l: Layout) => void;
   readingFont: ReadingFont;
   setReadingFont: (f: ReadingFont) => void;
+  /** Restoring a backup merges it into the data instead of replacing them. */
+  mergeBackups: boolean;
+  setMergeBackups: (on: boolean) => void;
   importFiles: () => Promise<void>;
   /** Selected language code, e.g. `X`. */
   lang: string;
@@ -95,8 +101,8 @@ interface AppContextValue {
   languageName: (code: string) => string;
   /** Running downloads by `taskKey`. */
   downloads: Record<string, Progress>;
-  /** Download and import a catalog publication; resolves to its directory. `lang` defaults to the publication language. */
-  download: (entry: CatalogEntry, lang?: string) => Promise<string | null>;
+  /** Download and import a catalog publication; resolves to its directory. `lang` defaults to the publication language; `quiet` skips the success toast. */
+  download: (entry: CatalogEntry, lang?: string, options?: { quiet?: boolean }) => Promise<string | null>;
   /** Newer versions of downloaded publications, found by checking the catalog. */
   updates: {
     items: UpdateInfo[];
@@ -166,6 +172,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [fontScale, setFontScaleState] = useState(loadFontScale);
   const [layout, setLayoutState] = useState<Layout>(loadLayout);
   const [readingFont, setReadingFontState] = useState<ReadingFont>(loadReadingFont);
+  const [mergeBackups, setMergeBackupsState] = useState(loadMergeBackups);
   const [lang, setLangState] = useState(loadLang);
   const [uiLang, setUiLangState] = useState<UiLangSetting>(loadUiLang);
   const [languages, setLanguages] = useState<Language[]>([]);
@@ -270,12 +277,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const langRef = useRef(lang);
   langRef.current = lang;
   const download = useCallback(
-    async (entry: CatalogEntry, lang?: string) => {
+    async (entry: CatalogEntry, lang?: string, options?: { quiet?: boolean }) => {
       const key = taskKey(entry);
       setDownloads((d) => ({ ...d, [key]: { task: key, done: 0, total: entry.item.size } }));
       try {
         const dir = await api.downloadPublication(entry.item, lang ?? langRef.current);
-        toast(t("Imported {title}", { title: entry.item.issue_title || entry.item.title }));
+        if (!options?.quiet) toast(t("Imported {title}", { title: entry.item.issue_title || entry.item.title }));
         await refreshPublications();
         setCatalogVersion((v) => v + 1);
         return dir;
@@ -373,27 +380,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [toast]);
 
+  // A restore or merge, from choosing the file to the last dialog, runs once at a time.
+  const restoring = useRef(false);
   const restoreBackup = useCallback(async () => {
-    const picked = await openDialog({ multiple: false, filters: [{ name: "Backup", extensions: ["jwlibrary"] }] });
-    const path = Array.isArray(picked) ? picked[0] : picked;
-    if (!path) return;
-    const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
-      title: t("Restore backup?"),
-      kind: "warning",
-      okLabel: t("Restore"),
-    });
-    if (!ok) return;
+    if (restoring.current) return;
+    restoring.current = true;
     try {
-      const s = await api.restoreBackup(path);
-      toast(
-        t("Restored {marks} highlights and {notes} notes", { marks: s.marks, notes: s.notes }) +
-          (s.device ? t(" from {device}", { device: s.device }) : ""),
-      );
-      setUserVersion((v) => v + 1);
-    } catch (e) {
-      toast(t("Restore failed: {error}", { error: String(e) }));
+      const picked = await openDialog({ multiple: false, filters: [{ name: "Backup", extensions: ["jwlibrary"] }] });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      if (mergeBackups) {
+        const ok = await ask(
+          t(
+            "Merging adds what is only in the backup and keeps the newer version of everything that is in both. Nothing is deleted. Your current data is kept as userData.db.before-restore.",
+          ),
+          { title: t("Merge backup?"), kind: "info", okLabel: t("Merge") },
+        );
+        if (!ok) return;
+        let report;
+        try {
+          report = await api.mergeBackup(path);
+        } catch (e) {
+          toast(t("Merge failed: {error}", { error: String(e) }));
+          return;
+        }
+        setUserVersion((v) => v + 1);
+        toast(mergeToast(report));
+        if (report.conflicts.length > 0) {
+          // The merge is done either way; without a dialog the list goes to a toast.
+          const text = conflictText(report.conflicts);
+          await messageDialog(text, { title: t("Conflicts"), kind: "warning" }).catch(() => toast(text));
+        }
+        return;
+      }
+      const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
+        title: t("Restore backup?"),
+        kind: "warning",
+        okLabel: t("Restore"),
+      });
+      if (!ok) return;
+      try {
+        const s = await api.restoreBackup(path);
+        toast(
+          t("Restored {marks} highlights and {notes} notes", { marks: s.marks, notes: s.notes }) +
+            (s.device ? t(" from {device}", { device: s.device }) : ""),
+        );
+        setUserVersion((v) => v + 1);
+      } catch (e) {
+        toast(t("Restore failed: {error}", { error: String(e) }));
+      }
+    } finally {
+      restoring.current = false;
     }
-  }, [toast]);
+  }, [toast, mergeBackups]);
 
   const names = useMemo(() => new Map(languages.map((l) => [l.code, l.vernacular])), [languages]);
 
@@ -506,6 +545,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         saveReadingFont(f);
         setReadingFontState(f);
       },
+      mergeBackups,
+      setMergeBackups: (on) => {
+        saveMergeBackups(on);
+        setMergeBackupsState(on);
+      },
       importFiles,
       lang,
       setLang: (code) => {
@@ -560,6 +604,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fontScale,
       layout,
       readingFont,
+      mergeBackups,
       importFiles,
       lang,
       uiLang,

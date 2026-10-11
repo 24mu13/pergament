@@ -77,6 +77,45 @@ fn progress(app: &AppHandle, task: &str) -> impl FnMut(u64, Option<u64>) + use<>
     }
 }
 
+#[derive(Serialize)]
+struct CacheUsage {
+    #[serde(flatten)]
+    usage: pergament::cache::Usage,
+    total: u64,
+}
+
+#[tauri::command]
+async fn cache_usage(app: AppHandle) -> ApiResult<CacheUsage> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let usage =
+            pergament::cache::usage(&app.state::<AppState>().cache).map_err(|e| e.to_string())?;
+        Ok(CacheUsage {
+            total: usage.total(),
+            usage,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn clear_cache(app: AppHandle) -> ApiResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        // PERGAMENT_CACHE may point anywhere; never empty the library with it.
+        pergament::cache::check_safe(&state.cache, &state.root).map_err(|e| e.to_string())?;
+        // Release the open catalog and keep the lock while deleting, so nothing
+        // reopens it in between; it reloads on next use.
+        let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
+        *catalog = None;
+        let result = pergament::cache::clear(&state.cache).map_err(|e| e.to_string());
+        drop(catalog);
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn list_publications(state: State<'_, AppState>) -> ApiResult<Vec<PubCard>> {
     api::list_publications(&*state.lib()?)
@@ -506,6 +545,31 @@ async fn dated_page(
 }
 
 #[tauri::command]
+async fn referenced_publications(
+    app: AppHandle,
+    dir: String,
+    lang: String,
+) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(catalog) = cached_catalog(&app)? else {
+            return Ok(None);
+        };
+        // The scan renders every document. It uses its own library handle so the
+        // shared library and the catalog stay free for other commands meanwhile.
+        let state = app.state::<AppState>();
+        let own = Library::open(&state.root).map_err(|e| e.to_string())?;
+        let hrefs = api::publication_hrefs(&own, &dir)?;
+        let catalog = catalog.lock().map_err(|e| e.to_string())?;
+        let meps = catalog
+            .meps_language(&lang)
+            .ok_or_else(|| format!("unknown language code {lang:?}"))?;
+        api::missing_references(&catalog, meps, &own, &hrefs).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn missing_entry(
     app: AppHandle,
     lang: String,
@@ -641,6 +705,19 @@ async fn restore_backup(app: AppHandle, path: String) -> ApiResult<pergament::us
         app.state::<AppState>()
             .user()?
             .restore_backup(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Merge a `.jwlibrary` backup into the user data instead of replacing it.
+#[tauri::command]
+async fn merge_backup(app: AppHandle, path: String) -> ApiResult<pergament::userdata::MergeReport> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .user()?
+            .merge_backup(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
     })
     .await
@@ -876,6 +953,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             media,
+            cache_usage,
+            clear_cache,
             list_publications,
             publication,
             render_page,
@@ -908,6 +987,7 @@ pub fn run() {
             download_publication,
             dated_page,
             missing_entry,
+            referenced_publications,
             page_user_data,
             save_answer,
             add_mark,
@@ -922,6 +1002,7 @@ pub fn run() {
             open_location,
             export_backup,
             restore_backup,
+            merge_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pergament");

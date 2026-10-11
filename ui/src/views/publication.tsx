@@ -1,20 +1,30 @@
-import { useEffect, useState } from "react";
-import { FileText, Star } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { DownloadCloud, FileText, Star } from "lucide-react";
 import { AppBar, BarButton, useApp } from "@/app";
-import { api, documentTarget, type PubDetail, type TocNode } from "@/lib/api";
+import { api, documentTarget, type LanguageEntry, type PubDetail, type TocNode } from "@/lib/api";
 import { booksTabIndex, hasBooks, shortBookName } from "@/lib/bible";
 import { t } from "@/lib/i18n";
+import { confirmText, failedText, importedText } from "@/lib/references";
 import { GoToButton } from "@/components/go-to";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+/** The last loaded detail per publication. The view remounts on every tab switch, so this keeps it from being blank until the reload finishes. */
+const cachedDetails = new Map<string, PubDetail>();
+
 export function usePublication(dir: string): PubDetail | null {
   const { toast } = useApp();
-  const [detail, setDetail] = useState<PubDetail | null>(null);
+  const [detail, setDetail] = useState<PubDetail | null>(cachedDetails.get(dir) ?? null);
   useEffect(() => {
     let live = true;
+    // Another publication must not show the previous one's tabs and books.
+    setDetail(cachedDetails.get(dir) ?? null);
     api
       .publication(dir)
-      .then((d) => live && setDetail(d))
+      .then((d) => {
+        cachedDetails.set(dir, d);
+        if (live) setDetail(d);
+      })
       .catch((e) => toast(t("Cannot open publication: {error}", { error: String(e) })));
     return () => {
       live = false;
@@ -98,6 +108,54 @@ function FavoriteButton({ dir }: { dir: string }) {
   );
 }
 
+/** Downloads the publications this one links to, after showing what that costs. */
+function ReferencesButton({ dir }: { dir: string }) {
+  const { lang, download, toast, catalogVersion } = useApp();
+  // `undefined` while scanning, `null` without a catalog.
+  const [missing, setMissing] = useState<LanguageEntry[] | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
+  useEffect(() => {
+    let live = true;
+    api.referencedPublications(dir, lang).then((m) => live && setMissing(m), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [dir, lang, catalogVersion]);
+  if (missing === undefined || (missing !== null && missing.length === 0)) return null;
+  const run = async () => {
+    if (missing === null) {
+      toast(t("Load the catalog first to download referenced publications."));
+      return;
+    }
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      const ok = await ask(confirmText(missing.map((m) => m.entry)), {
+        title: t("Download referenced publications?"),
+        okLabel: t("Download"),
+      });
+      if (!ok) return;
+      let imported = 0;
+      let failed = 0;
+      for (const { code, entry } of missing) {
+        if ((await download(entry, code, { quiet: true })) === null) failed++;
+        else imported++;
+      }
+      if (imported > 0) toast(importedText(imported));
+      if (failed > 0) toast(failedText(failed));
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <BarButton label="Download referenced publications (needs network)" onClick={() => void run()} disabled={busy}>
+      <DownloadCloud size={18} strokeWidth={1.6} />
+    </BarButton>
+  );
+}
 
 export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
   const { replace } = useApp();
@@ -113,7 +171,8 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
       <>
         <AppBar title={title} subtitle={languageName(lang)}>
           {detail.card.isBible && <GoToButton />}
-        <FavoriteButton dir={dir} />
+          <ReferencesButton dir={dir} />
+          <FavoriteButton dir={dir} />
         </AppBar>
         <div className="page flex-1 overflow-y-auto">
           <DocList dir={dir} nodes={toc[0]?.children ?? []} />
@@ -127,6 +186,7 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
     <>
       <AppBar title={title} subtitle={languageName(lang)}>
         {detail.card.isBible && <GoToButton />}
+        <ReferencesButton dir={dir} />
         <FavoriteButton dir={dir} />
       </AppBar>
       <Tabs
