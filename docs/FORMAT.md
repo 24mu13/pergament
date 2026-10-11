@@ -376,6 +376,39 @@ Checked against one backup made by JW Library on iOS (schema version 16,
   playlists and `IndependentMedia` (not used here yet).
 - `LastModified` holds one timestamp that the app's triggers update.
 
+### Merging
+
+How Pergament merges a backup into the current data (setting "Merge backups
+instead of replacing"). These are Pergament's own rules, not JW Library
+behavior. [own]
+
+- Before anything is written, the current database is copied to
+  `userData.db.before-restore` (an older copy is replaced). The merge runs in
+  one transaction; on an error nothing changes.
+- Locations are matched on `BookNumber`, `ChapterNumber`, `DocumentId`,
+  `Track`, `IssueTagNumber`, `KeySymbol`, `MepsLanguage` and `Type` (NULL
+  equals NULL), else on the table's UNIQUE key. Ids are remapped; a missing
+  location is added.
+- Matching keys: highlights by `UserMarkGuid`, notes by `Guid`, tags by
+  (`Type`, `Name`), bookmarks by (`PublicationLocationId`, `Slot`), input
+  fields by (`LocationId`, `TextTag`). Rows with a new key are added.
+- Recency for a row with the same key and different content: notes compare
+  their own `Note.LastModified`; highlights, bookmarks and input fields
+  compare the database-wide `LastModified` of the two backups. Timestamps are
+  compared as instants with `julianday`, so `Z` and `+00:00` both work. The
+  newer side wins. A highlight's ranges and a note's tags are replaced
+  together with the row.
+- Equal timestamps with different content, or a timestamp that cannot be
+  parsed (e.g. `+0000` without a colon, which counts as equal), are a
+  conflict: the local row is kept and the conflict is reported.
+- A new highlight that overlaps a local one with another `UserMarkGuid`
+  follows the newer database: if the incoming one is newer, the local ranges
+  are cut back around it; otherwise it is skipped and reported as a conflict.
+- Location-level `TagMap` rows (favorites) are unioned. A note's tags are
+  taken over with the note.
+- Deletions are not propagated: a row missing on one side stays.
+- Playlists and `IndependentMedia` are not merged.
+
 ## Unknown / not relied upon
 
 - What the `C` constant protects beyond obfuscation. We only reproduce the

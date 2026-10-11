@@ -72,7 +72,8 @@ it off.
 **Back up.** Backups are `.jwlibrary` files, the same format JW Library uses, so
 a backup from a phone can be restored here and the other way round. Restoring
 replaces the current data; the previous database is kept as
-`userData.db.before-restore` in the library folder.
+`userData.db.before-restore` in the library folder. A backup can also be merged
+into the current data instead of replacing it; see the backup setting below.
 
 **Show it on a second screen.** A Settings option opens a black window,
 fullscreen on another monitor if there is one, with the year text from the daily
@@ -94,6 +95,8 @@ press F for fullscreen.
 - **Reading font:** the system font, or "Easy to read", which uses Atkinson
   Hyperlegible Next everywhere, the Bible text included.
 - **Text size**, **updates at startup**, **second display** and **backup**.
+  "Merge backups instead of replacing" (Settings > Library & data) combines a
+  backup with your data and keeps the newer version of each item.
 - **Cache:** shows how much space the catalog, covers and unfinished downloads
   use, and clears it. Downloaded publications and your notes stay.
 
