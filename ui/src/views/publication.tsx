@@ -9,14 +9,22 @@ import { confirmText, failedText, importedText } from "@/lib/references";
 import { GoToButton } from "@/components/go-to";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+/** The last loaded detail per publication. The view remounts on every tab switch, so this keeps it from being blank until the reload finishes. */
+const cachedDetails = new Map<string, PubDetail>();
+
 export function usePublication(dir: string): PubDetail | null {
   const { toast } = useApp();
-  const [detail, setDetail] = useState<PubDetail | null>(null);
+  const [detail, setDetail] = useState<PubDetail | null>(cachedDetails.get(dir) ?? null);
   useEffect(() => {
     let live = true;
+    // Another publication must not show the previous one's tabs and books.
+    setDetail(cachedDetails.get(dir) ?? null);
     api
       .publication(dir)
-      .then((d) => live && setDetail(d))
+      .then((d) => {
+        cachedDetails.set(dir, d);
+        if (live) setDetail(d);
+      })
       .catch((e) => toast(t("Cannot open publication: {error}", { error: String(e) })));
     return () => {
       live = false;
