@@ -1,6 +1,14 @@
 // Typed wrappers around the Tauri commands in src-tauri/src/lib.rs.
 import { invoke } from "@tauri-apps/api/core";
 
+export interface CacheUsage {
+  catalog: number;
+  covers: number;
+  partial: number;
+  other: number;
+  total: number;
+}
+
 export interface TocNode {
   title: string;
   document_id: number | null;
@@ -402,6 +410,8 @@ export const api = {
   exportBackup: (path: string) => invoke<void>("export_backup", { path }),
   restoreBackup: (path: string) => invoke<UserDataSummary>("restore_backup", { path }),
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
+  cacheUsage: () => invoke<CacheUsage>("cache_usage"),
+  clearCache: () => invoke<void>("clear_cache"),
   researchVerses: (dir: string, book: number, chapter: number) =>
     invoke<number[]>("research_verses", { dir, book, chapter }),
   researchGuide: (dir: string, book: number, chapter: number, verse: number) =>

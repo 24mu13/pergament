@@ -77,6 +77,39 @@ fn progress(app: &AppHandle, task: &str) -> impl FnMut(u64, Option<u64>) + use<>
     }
 }
 
+#[derive(Serialize)]
+struct CacheUsage {
+    #[serde(flatten)]
+    usage: pergament::cache::Usage,
+    total: u64,
+}
+
+#[tauri::command]
+async fn cache_usage(app: AppHandle) -> ApiResult<CacheUsage> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let usage =
+            pergament::cache::usage(&app.state::<AppState>().cache).map_err(|e| e.to_string())?;
+        Ok(CacheUsage {
+            total: usage.total(),
+            usage,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn clear_cache(app: AppHandle) -> ApiResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        // Release the open catalog first; it reloads on next use.
+        *state.catalog.lock().map_err(|e| e.to_string())? = None;
+        pergament::cache::clear(&state.cache).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn list_publications(state: State<'_, AppState>) -> ApiResult<Vec<PubCard>> {
     api::list_publications(&*state.lib()?)
@@ -901,6 +934,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             media,
+            cache_usage,
+            clear_cache,
             list_publications,
             publication,
             render_page,
