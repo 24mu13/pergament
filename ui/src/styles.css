@@ -461,6 +461,10 @@ body {
     outline-offset: 2px;
   }
 }
+/* After a click the ring stays hidden even if a modifier key such as Win/Super is pressed; keyboard use brings it back. */
+html[data-input="pointer"] :focus-visible:not(input, textarea, select, [contenteditable="true"]) {
+  outline: none !important;
+}
 /* Motion is reduced to nothing when the system asks for it. */
 @media (prefers-reduced-motion: reduce) {
   *,
