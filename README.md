@@ -1,9 +1,10 @@
 # Pergament
 
-Pergament is an unofficial Linux reader for publications in the `.jwpub`
-format. It has a desktop app (Tauri, with a React frontend), a command line
-tool called `pergament`, and a Rust library underneath both. The app's layout
-follows JW Library on other platforms, with its own name, colours and icons.
+Pergament is an unofficial reader for publications in the `.jwpub`
+format, made for Linux, with an untested build for Macs. It has a desktop app
+(Tauri, with a React frontend), a command line tool called `pergament`, and a
+Rust library underneath both. The app's layout follows JW Library on other
+platforms, with its own name, colours and icons.
 
 ![Home with today's daily text](docs/screenshots/01-home-light.png)
 
@@ -48,7 +49,8 @@ related names are their trademarks.
 
 ## Install
 
-Pergament is released as a zip for Linux, or you build it from source.
+Pergament is released as a zip for Linux and a disk image for Macs with Apple
+Silicon, or you build it from source.
 
 **From the release zip.** Download `pergament-X.Y.Z-linux-x86_64.zip` and its
 `.sha256` file from the [releases page](https://github.com/v3rm1n0/pergament/releases),
@@ -70,6 +72,16 @@ a distribution at least that recent.
 Playing videos needs GStreamer with an H.264 decoder (`gst-libav` on Debian
 and Ubuntu, `gstreamer1-libav` on Fedora, `gst-libav` on Arch). Without it the
 player offers to open the recording in your browser instead.
+
+**On a Mac with Apple Silicon.** Each release also has a disk image,
+`Pergament-X.Y.Z-macos-arm64.dmg`, with the desktop app only (no command line
+tool) and its `.sha256` file. Check it with `shasum -a 256 -c`, open the image
+and drag Pergament to Applications. The app is not signed with an Apple
+Developer ID and not notarized, so macOS blocks the first start: right-click
+the app and choose Open, or allow it in System Settings under Privacy &
+Security. The maintainer has not been able to test it on a Mac, so expect
+rough edges. Intel Macs have no build, and building from source there is
+untested too.
 
 **With Nix** (flakes enabled), straight from GitHub:
 
@@ -224,9 +236,9 @@ legal consequences of using it. You are responsible for checking that your use
 is lawful where you live, in particular decrypting `.jwpub` files and
 downloading from jw.org.
 
-**Official builds.** Each release on GitHub has a zip with the compiled
-binaries, the icons and an install script, a `.sha256` file to check the zip,
-and the source code. These are the only official builds; there are no
-distribution packages. You can also build it yourself as described under
-[Install](#install). Compiled versions from anyone else do not come from this
-project and are not supported.
+**Official builds.** Each release on GitHub has a zip for Linux with the compiled
+binaries, the icons and an install script, a disk image for Apple Silicon Macs,
+`.sha256` files to check them, and the source code. These are the only
+official builds; there are no distribution packages. You can also build it
+yourself as described under [Install](#install). Compiled versions from anyone
+else do not come from this project and are not supported.
