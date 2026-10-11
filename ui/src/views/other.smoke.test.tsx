@@ -2,7 +2,7 @@
 // Renders the search, meetings, updates and publication views in StrictMode with a mocked backend.
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { card, entry } from "@/lib/fixtures";
 
 const calls: { cmd: string; args: unknown }[] = [];
@@ -245,9 +245,11 @@ describe("Personal Study", () => {
 
 describe("Merging backups", () => {
   beforeEach(() => {
-    vi.mocked(message).mockClear();
-    vi.mocked(ask).mockClear();
+    vi.mocked(message).mockReset();
+    vi.mocked(ask).mockReset();
+    vi.mocked(open).mockReset();
   });
+  const restoreSummary = { marks: 0, notes: 0, tags: 0, bookmarks: 0, device: null };
   const emptyUser = () => {
     backend.user_data_summary = () => ({ marks: 0, notes: 0, tags: 0, bookmarks: 0, device: null });
     backend.tags = () => [];
@@ -286,13 +288,17 @@ describe("Merging backups", () => {
   it("merges instead of restoring when it is on, and does nothing when declined", async () => {
     localStorage.setItem("mergeBackups", "true");
     backend.merge_backup = () => report([]);
-    backend.restore_backup = () => ({ marks: 0, notes: 0, tags: 0, bookmarks: 0, device: null });
+    backend.restore_backup = () => restoreSummary;
     vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
     vi.mocked(ask).mockResolvedValue(false);
     await dataTab();
     fireEvent.click(await screen.findByRole("button", { name: "Merge backup…" }));
     await waitFor(() => expect(ask).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 20));
+    expect(vi.mocked(ask).mock.calls[0][1]).toEqual({ title: "Merge backup?", kind: "info", okLabel: "Merge" });
+    // Let the handler finish with the declined answer.
+    await act(async () => {
+      await vi.mocked(ask).mock.results[0].value;
+    });
     expect(calls.some((c) => c.cmd === "merge_backup" || c.cmd === "restore_backup")).toBe(false);
 
     vi.mocked(ask).mockResolvedValue(true);
@@ -316,6 +322,19 @@ describe("Merging backups", () => {
       "1 conflict, your version was kept:\nNote: Dusk visits",
       { title: "Conflicts", kind: "warning" },
     ]);
+  });
+
+  it("restores instead of merging when it is off", async () => {
+    backend.merge_backup = () => report([]);
+    backend.restore_backup = () => restoreSummary;
+    vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+    vi.mocked(ask).mockResolvedValue(true);
+    await dataTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore backup…" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "restore_backup")).toBe(true));
+    expect(calls.find((c) => c.cmd === "restore_backup")!.args).toEqual({ path: "/tmp/b.jwlibrary" });
+    expect(calls.some((c) => c.cmd === "merge_backup")).toBe(false);
+    expect(vi.mocked(ask).mock.calls[0][1]).toEqual({ title: "Restore backup?", kind: "warning", okLabel: "Restore" });
   });
 });
 
