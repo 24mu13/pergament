@@ -855,8 +855,12 @@ impl UserData {
             ..Default::default()
         };
         let locations = merge_locations(&tx)?;
-        let _marks = merge_marks(&tx, &locations, incoming_newer, &mut report)?;
+        let marks = merge_marks(&tx, &locations, incoming_newer, &mut report)?;
         merge_input_fields(&tx, &locations, incoming_newer, &mut report)?;
+        let tags = merge_tags(&tx)?;
+        merge_notes(&tx, &locations, &marks, &tags, &mut report)?;
+        merge_location_tags(&tx, &locations, &tags, &mut report)?;
+        merge_bookmarks(&tx, &locations, incoming_newer, &mut report)?;
         if report.added + report.updated > 0 {
             touch(&tx)?;
         }
@@ -1220,7 +1224,246 @@ fn merge_input_fields(
             (Some(_), Some(false)) => report.unchanged += 1,
             (Some(_), None) => {
                 let summary = location_label(tx, location)?;
-                report.conflicts.push(conflict("InputField", &tag, summary));
+                let key = format!("{location}:{tag}");
+                report.conflicts.push(conflict("InputField", &key, summary));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map every incoming `Tag` to the local one with the same type and name,
+/// adding the missing ones. Returns incoming `TagId` → local `TagId`.
+fn merge_tags(tx: &Transaction<'_>) -> Result<HashMap<i64, i64>> {
+    tx.execute(
+        "INSERT OR IGNORE INTO main.Tag (Type, Name)
+         SELECT i.Type, i.Name FROM inc.Tag i
+         WHERE NOT EXISTS (SELECT 1 FROM main.Tag m WHERE m.Type = i.Type AND m.Name = i.Name)
+         ORDER BY i.TagId",
+        [],
+    )?;
+    let mut stmt = tx.prepare(
+        "SELECT i.TagId, m.TagId FROM inc.Tag i
+         JOIN main.Tag m ON m.Type = i.Type AND m.Name = i.Name",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Give note `note` exactly the local tags `tags`, each at the next free
+/// position of its tag.
+fn put_note_tags(tx: &Transaction<'_>, note: i64, tags: &[i64]) -> Result<()> {
+    tx.execute("DELETE FROM main.TagMap WHERE NoteId = ?1", [note])?;
+    for tag in tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO main.TagMap (NoteId, TagId, Position)
+             VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1
+                              FROM main.TagMap WHERE TagId = ?2))",
+            [note, *tag],
+        )?;
+    }
+    Ok(())
+}
+
+/// The local tags of incoming note `note`, in their incoming order.
+fn incoming_note_tags(
+    tx: &Transaction<'_>,
+    tags: &HashMap<i64, i64>,
+    note: i64,
+) -> Result<Vec<i64>> {
+    let mut stmt =
+        tx.prepare("SELECT TagId FROM inc.TagMap WHERE NoteId = ?1 ORDER BY Position, TagMapId")?;
+    let rows = stmt.query_map([note], |r| r.get::<_, i64>(0))?;
+    let incoming: Vec<i64> = rows.collect::<rusqlite::Result<_>>()?;
+    Ok(incoming
+        .into_iter()
+        .filter_map(|t| tags.get(&t).copied())
+        .collect())
+}
+
+/// An incoming `Note` row with its references mapped to local ids.
+struct IncomingNote {
+    id: i64,
+    guid: String,
+    mark: Option<i64>,
+    location: Option<i64>,
+}
+
+/// Merge `inc.Note` with its tags, matched by `Guid`; the note's own
+/// `LastModified` decides.
+fn merge_notes(
+    tx: &Transaction<'_>,
+    locations: &HashMap<i64, i64>,
+    marks: &HashMap<String, i64>,
+    tags: &HashMap<i64, i64>,
+    report: &mut MergeReport,
+) -> Result<()> {
+    let incoming: Vec<IncomingNote> = {
+        let mut stmt = tx.prepare(
+            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId FROM inc.Note n
+             LEFT JOIN inc.UserMark u ON u.UserMarkId = n.UserMarkId
+             ORDER BY n.NoteId",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let mark: Option<String> = r.get(2)?;
+            let location: Option<i64> = r.get(3)?;
+            Ok(IncomingNote {
+                id: r.get(0)?,
+                guid: r.get(1)?,
+                // A skipped mark or a missing location leaves the note without.
+                mark: mark.and_then(|g| marks.get(&g).copied()),
+                location: location.and_then(|l| locations.get(&l).copied()),
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for note in incoming {
+        // (NoteId, how much newer the incoming note is, same text, title)
+        let local: Option<(i64, Option<f64>, bool, Option<String>)> = tx
+            .query_row(
+                "SELECT m.NoteId, julianday(i.LastModified) - julianday(m.LastModified),
+                        m.Title IS i.Title AND m.Content IS i.Content, m.Title
+                 FROM main.Note m, inc.Note i WHERE i.NoteId = ?1 AND m.Guid = i.Guid",
+                [note.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        match local {
+            None => {
+                tx.execute(
+                    "INSERT INTO main.Note (Guid, UserMarkId, LocationId, Title, Content,
+                                            LastModified, Created, BlockType, BlockIdentifier)
+                     SELECT Guid, ?2, ?3, Title, Content, LastModified, Created, BlockType,
+                            BlockIdentifier
+                     FROM inc.Note WHERE NoteId = ?1",
+                    params![note.id, note.mark, note.location],
+                )?;
+                let id = tx.last_insert_rowid();
+                put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
+                report.added += 1;
+            }
+            Some((id, Some(diff), _, _)) if diff > 0.0 => {
+                tx.execute(
+                    "UPDATE main.Note
+                     SET (Title, Content, LastModified, BlockType, BlockIdentifier) =
+                         (SELECT Title, Content, LastModified, BlockType, BlockIdentifier
+                          FROM inc.Note WHERE NoteId = ?1),
+                         UserMarkId = ?2, LocationId = ?3
+                     WHERE NoteId = ?4",
+                    params![note.id, note.mark, note.location, id],
+                )?;
+                put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
+                report.updated += 1;
+            }
+            Some((_, Some(diff), _, _)) if diff < 0.0 => report.unchanged += 1,
+            Some((_, _, true, _)) => report.unchanged += 1,
+            Some((_, _, false, title)) => {
+                report
+                    .conflicts
+                    .push(conflict("Note", &note.guid, title.unwrap_or_default()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Add the incoming tags of locations (favorites) that are missing here.
+fn merge_location_tags(
+    tx: &Transaction<'_>,
+    locations: &HashMap<i64, i64>,
+    tags: &HashMap<i64, i64>,
+    report: &mut MergeReport,
+) -> Result<()> {
+    let incoming: Vec<(i64, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT TagId, LocationId FROM inc.TagMap
+             WHERE NoteId IS NULL AND PlaylistItemId IS NULL AND LocationId IS NOT NULL
+             ORDER BY TagId, Position",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (tag, location) in incoming {
+        let (Some(&tag), Some(&location)) = (tags.get(&tag), locations.get(&location)) else {
+            continue;
+        };
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO main.TagMap (LocationId, TagId, Position)
+             VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1
+                              FROM main.TagMap WHERE TagId = ?2))",
+            [location, tag],
+        )?;
+        if inserted > 0 {
+            report.added += 1;
+        } else {
+            report.unchanged += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Merge `inc.Bookmark`, matched by (publication, slot).
+fn merge_bookmarks(
+    tx: &Transaction<'_>,
+    locations: &HashMap<i64, i64>,
+    incoming_newer: Option<bool>,
+    report: &mut MergeReport,
+) -> Result<()> {
+    let incoming: Vec<(i64, i64, i64, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT BookmarkId, LocationId, PublicationLocationId, Slot FROM inc.Bookmark
+             ORDER BY BookmarkId",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, location, publication, slot) in incoming {
+        let (Some(&location), Some(&publication)) =
+            (locations.get(&location), locations.get(&publication))
+        else {
+            continue;
+        };
+        // (BookmarkId, same target and text, title)
+        let local: Option<(i64, bool, String)> = tx
+            .query_row(
+                "SELECT m.BookmarkId,
+                        m.LocationId = ?2 AND m.Title IS i.Title AND m.Snippet IS i.Snippet
+                        AND m.BlockType IS i.BlockType AND m.BlockIdentifier IS i.BlockIdentifier,
+                        m.Title
+                 FROM main.Bookmark m, inc.Bookmark i
+                 WHERE i.BookmarkId = ?1 AND m.PublicationLocationId = ?3 AND m.Slot = ?4",
+                params![id, location, publication, slot],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        match (local, incoming_newer) {
+            (None, _) => {
+                tx.execute(
+                    "INSERT INTO main.Bookmark (LocationId, PublicationLocationId, Slot, Title,
+                                                Snippet, BlockType, BlockIdentifier)
+                     SELECT ?2, ?3, Slot, Title, Snippet, BlockType, BlockIdentifier
+                     FROM inc.Bookmark WHERE BookmarkId = ?1",
+                    params![id, location, publication],
+                )?;
+                report.added += 1;
+            }
+            (Some((_, true, _)), _) => report.unchanged += 1,
+            (Some((local, false, _)), Some(true)) => {
+                tx.execute(
+                    "UPDATE main.Bookmark
+                     SET (Title, Snippet, BlockType, BlockIdentifier) =
+                         (SELECT Title, Snippet, BlockType, BlockIdentifier
+                          FROM inc.Bookmark WHERE BookmarkId = ?1),
+                         LocationId = ?2
+                     WHERE BookmarkId = ?3",
+                    params![id, location, local],
+                )?;
+                report.updated += 1;
+            }
+            (Some(_), Some(false)) => report.unchanged += 1,
+            (Some((_, false, title)), None) => {
+                let key = format!("{publication}:{slot}");
+                report.conflicts.push(conflict("Bookmark", &key, title));
             }
         }
     }
@@ -2054,7 +2297,8 @@ mod tests {
             if local_time == remote_time {
                 assert_eq!(r.conflicts.len(), 1);
                 assert_eq!(r.conflicts[0].table, "InputField");
-                assert_eq!(r.conflicts[0].guid, "tt1");
+                // Local LocationId and TextTag.
+                assert_eq!(r.conflicts[0].guid, "1:tt1");
             } else {
                 assert!(r.conflicts.is_empty());
             }
@@ -2190,5 +2434,595 @@ mod tests {
         local
             .add_mark(&bible(3), None, 1, &[verse(1, 0, 3)])
             .unwrap();
+    }
+
+    #[test]
+    fn merge_location_with_the_same_unique_key_is_reused() {
+        // A Bible chapter that differs only outside the UNIQUE key is the
+        // same row: inserting it would break the constraint.
+        let variants = [
+            Loc {
+                issue_tag: 5,
+                ..bible(1)
+            },
+            Loc {
+                document_id: Some(99),
+                ..bible(1)
+            },
+        ];
+        for loc in variants {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            local
+                .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+                .unwrap();
+            let guid = remote.add_mark(&loc, None, 2, &[verse(5, 0, 3)]).unwrap();
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            assert_eq!(r.added, 1);
+            assert_eq!(count(&local, "Location"), 1);
+            let marks = local.marks(&bible(1)).unwrap();
+            assert_eq!(marks.len(), 2);
+            assert_eq!(marks[1].guid, guid);
+        }
+    }
+
+    fn set_note_time(ud: &UserData, guid: &str, ts: &str) {
+        ud.conn
+            .execute(
+                "UPDATE Note SET LastModified = ?2 WHERE Guid = ?1",
+                [guid, ts],
+            )
+            .unwrap();
+    }
+
+    fn note_input(title: &str, content: &str, tags: &[&str]) -> NoteInput {
+        NoteInput {
+            title: title.into(),
+            content: content.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn edit_note(ud: &mut UserData, guid: &str, title: &str, content: &str, tags: &[&str]) {
+        let note = NoteInput {
+            guid: Some(guid.into()),
+            ..note_input(title, content, tags)
+        };
+        ud.save_note(None, None, &note).unwrap();
+    }
+
+    fn note(ud: &UserData, guid: &str) -> Note {
+        ud.all_notes(None)
+            .unwrap()
+            .into_iter()
+            .find(|n| n.guid == guid)
+            .unwrap()
+    }
+
+    fn assert_foreign_keys_hold(ud: &UserData) {
+        let mut fk = ud.conn.prepare("PRAGMA foreign_key_check").unwrap();
+        assert!(fk.query([]).unwrap().next().unwrap().is_none());
+    }
+
+    /// The `LocationId` of a `nwtsty` row (book 19), adding it when missing.
+    fn location(ud: &UserData, chapter: Option<i64>, kind: i64) -> i64 {
+        let book = chapter.map(|_| 19);
+        let found: Option<i64> = ud
+            .conn
+            .query_row(
+                "SELECT LocationId FROM Location WHERE BookNumber IS ?1 AND ChapterNumber IS ?2
+                   AND KeySymbol = 'nwtsty' AND MepsLanguage = 2 AND Type = ?3",
+                params![book, chapter, kind],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        found.unwrap_or_else(|| {
+            ud.conn
+                .execute(
+                    "INSERT INTO Location (BookNumber, ChapterNumber, KeySymbol, MepsLanguage, Type)
+                     VALUES (?1, ?2, 'nwtsty', 2, ?3)",
+                    params![book, chapter, kind],
+                )
+                .unwrap();
+            ud.conn.last_insert_rowid()
+        })
+    }
+
+    /// Point bookmark `slot` of the Bible at `chapter`.
+    fn put_bookmark(ud: &UserData, slot: i64, chapter: i64, title: &str) {
+        let publication = location(ud, None, 1);
+        let page = location(ud, Some(chapter), 0);
+        ud.conn
+            .execute(
+                "INSERT INTO Bookmark (LocationId, PublicationLocationId, Slot, Title, BlockType)
+                 VALUES (?1, ?2, ?3, ?4, 0)
+                 ON CONFLICT (PublicationLocationId, Slot)
+                 DO UPDATE SET LocationId = excluded.LocationId, Title = excluded.Title",
+                params![page, publication, slot, title],
+            )
+            .unwrap();
+    }
+
+    /// Bookmarks as (slot, chapter, title).
+    fn bookmark_slots(ud: &UserData) -> Vec<(i64, i64, String)> {
+        ud.bookmarks()
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.slot, b.location.loc.chapter.unwrap(), b.title))
+            .collect()
+    }
+
+    #[test]
+    fn merge_adds_notes_with_tags_and_links_to_marks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .save_note(
+                Some(&bible(1)),
+                None,
+                &note_input("Local", "L", &["Prayer"]),
+            )
+            .unwrap();
+        // Shift the remote ids so nothing lines up by accident.
+        location(&remote, Some(50), 0);
+        let mark = remote
+            .add_mark(&bible(3), Some("Psalm 3"), 4, &[verse(2, 0, 5)])
+            .unwrap();
+        let guid = remote
+            .save_note(
+                Some(&bible(3)),
+                None,
+                &NoteInput {
+                    block_type: BLOCK_VERSE,
+                    block_identifier: Some(2),
+                    mark_guid: Some(mark.clone()),
+                    ..note_input("Shield", "Text", &["Study", "Prayer"])
+                },
+            )
+            .unwrap();
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        // The mark and the note.
+        assert_eq!((r.added, r.updated, r.unchanged), (2, 0, 0));
+        assert!(r.conflicts.is_empty());
+        let notes = local.notes(&bible(3)).unwrap();
+        assert_eq!(notes.len(), 1);
+        let merged = &notes[0];
+        assert_eq!(merged.guid, guid);
+        assert_eq!(
+            (merged.title.as_str(), merged.content.as_str()),
+            ("Shield", "Text")
+        );
+        assert_eq!(merged.tags, ["Prayer", "Study"]);
+        assert_eq!(merged.mark_guid.as_deref(), Some(mark.as_str()));
+        assert_eq!(merged.color, Some(4));
+        assert_eq!(
+            (merged.block_type, merged.block_identifier),
+            (BLOCK_VERSE, Some(2))
+        );
+        assert_eq!(
+            merged.location.as_ref().unwrap().title.as_deref(),
+            Some("Psalm 3")
+        );
+        assert_eq!(merged.last_modified, note(&remote, &guid).last_modified);
+        assert_eq!(local.notes(&bible(1)).unwrap()[0].tags, ["Prayer"]);
+        assert_eq!(count(&local, "Tag"), 2);
+        assert_foreign_keys_hold(&local);
+    }
+
+    #[test]
+    fn merge_newer_note_wins_by_its_own_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .save_note(Some(&bible(1)), None, &note_input("Old", "old", &["Local"]))
+            .unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        edit_note(&mut remote, &guid, "New", "new", &["Remote"]);
+        set_note_time(&remote, &guid, "2030-01-01T00:00:00Z");
+        set_note_time(&local, &guid, "2020-01-01T00:00:00Z");
+        // The database clocks say the opposite: the note's own time decides.
+        set_db_time(&remote, "2000-01-01T00:00:00Z");
+        set_db_time(&local, "2040-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (0, 1, 0));
+        let merged = note(&local, &guid);
+        assert_eq!(
+            (merged.title.as_str(), merged.content.as_str()),
+            ("New", "new")
+        );
+        // The winning note brings its tags along.
+        assert_eq!(merged.tags, ["Remote"]);
+        assert_eq!(merged.last_modified, "2030-01-01T00:00:00Z");
+
+        // Now the local note is newer, though the remote database is.
+        edit_note(&mut local, &guid, "Mine", "mine", &["Local"]);
+        set_note_time(&local, &guid, "2040-01-01T00:00:00Z");
+        set_db_time(&local, "2000-01-01T00:00:00Z");
+        set_db_time(&remote, "2050-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r2.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (0, 0, 1));
+        assert!(r.conflicts.is_empty());
+        let kept = note(&local, &guid);
+        assert_eq!(
+            (kept.title.as_str(), kept.content.as_str()),
+            ("Mine", "mine")
+        );
+        assert_eq!(kept.tags, ["Local"]);
+        assert_eq!(count(&local, "Note"), 1);
+    }
+
+    #[test]
+    fn merge_note_equal_timestamp_different_content_is_a_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .save_note(Some(&bible(1)), None, &note_input("Psalm", "a", &["One"]))
+            .unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        edit_note(&mut remote, &guid, "Psalm", "b", &["Two"]);
+        // The same instant, written two ways.
+        set_note_time(&remote, &guid, "2030-01-01T00:00:00+00:00");
+        set_note_time(&local, &guid, "2030-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (0, 0, 0));
+        assert_eq!(r.conflicts.len(), 1);
+        assert_eq!(r.conflicts[0].table, "Note");
+        assert_eq!(r.conflicts[0].guid, guid);
+        assert_eq!(r.conflicts[0].summary, "Psalm");
+        let kept = note(&local, &guid);
+        assert_eq!(kept.content, "a");
+        assert_eq!(kept.tags, ["One"]);
+    }
+
+    #[test]
+    fn merge_note_timestamps_with_offset_compare_correctly() {
+        // (remote, local, remote wins): the second pair sorts the wrong way
+        // as text, since 01:00+02:00 is 23:00 the day before.
+        for (remote_time, local_time, remote_wins) in [
+            ("2030-01-01T00:00:00+00:00", "2029-12-31T23:59:59Z", true),
+            ("2030-01-01T01:00:00+02:00", "2029-12-31T23:30:00Z", false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let guid = local
+                .save_note(Some(&bible(1)), None, &note_input("T", "local", &[]))
+                .unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            remote
+                .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+                .unwrap();
+            edit_note(&mut remote, &guid, "T", "remote", &[]);
+            set_note_time(&remote, &guid, remote_time);
+            set_note_time(&local, &guid, local_time);
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            assert_eq!(r.updated, i64::from(remote_wins), "{remote_time}");
+            assert!(r.conflicts.is_empty());
+            let expected = if remote_wins { "remote" } else { "local" };
+            assert_eq!(note(&local, &guid).content, expected);
+        }
+    }
+
+    #[test]
+    fn merge_tag_with_different_ids_maps_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        let mine = local
+            .save_note(Some(&bible(1)), None, &note_input("Mine", "m", &["Prayer"]))
+            .unwrap();
+        // Remote: "Study" is TagId 1 and "Prayer" TagId 2.
+        let study = remote
+            .save_note(Some(&bible(2)), None, &note_input("S", "s", &["Study"]))
+            .unwrap();
+        let both = remote
+            .save_note(
+                Some(&bible(3)),
+                None,
+                &note_input("B", "b", &["Prayer", "Study"]),
+            )
+            .unwrap();
+        let tag_id = |ud: &UserData, name: &str| -> i64 {
+            ud.conn
+                .query_row("SELECT TagId FROM Tag WHERE Name = ?1", [name], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!((tag_id(&local, "Prayer"), tag_id(&remote, "Study")), (1, 1));
+        assert_eq!(tag_id(&remote, "Prayer"), 2);
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.added, 2);
+        let names: Vec<String> = local.tags().unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Prayer", "Study"]);
+        assert_eq!(count(&local, "Tag"), 2);
+        assert_eq!(note(&local, &mine).tags, ["Prayer"]);
+        assert_eq!(note(&local, &study).tags, ["Study"]);
+        assert_eq!(note(&local, &both).tags, ["Prayer", "Study"]);
+        let prayer = tag_id(&local, "Prayer");
+        assert_eq!(local.all_notes(Some(prayer)).unwrap().len(), 2);
+        assert_foreign_keys_hold(&local);
+    }
+
+    #[test]
+    fn merge_tagmap_positions_stay_unique() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        for (ud, prefix) in [(&mut local, "L"), (&mut remote, "R")] {
+            for chapter in 1..=3 {
+                ud.save_note(
+                    Some(&bible(chapter)),
+                    None,
+                    &note_input(&format!("{prefix}{chapter}"), "x", &["Prayer", "Study"]),
+                )
+                .unwrap();
+            }
+        }
+        // Favorites (tag type 0) on locations, partly the same on both sides.
+        for (ud, chapters) in [(&local, [1, 2]), (&remote, [2, 4])] {
+            ud.conn
+                .execute("INSERT INTO Tag (Type, Name) VALUES (0, 'Favorite')", [])
+                .unwrap();
+            let favorite = ud.conn.last_insert_rowid();
+            for (position, chapter) in chapters.into_iter().enumerate() {
+                let page = location(ud, Some(chapter), 0);
+                ud.conn
+                    .execute(
+                        "INSERT INTO TagMap (LocationId, TagId, Position) VALUES (?1, ?2, ?3)",
+                        params![page, favorite, position as i64],
+                    )
+                    .unwrap();
+            }
+        }
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        // Three notes and the favorite of chapter 4; chapter 2 was there.
+        assert_eq!((r.added, r.unchanged), (4, 1));
+        let (rows, distinct): (i64, i64) = local
+            .conn
+            .query_row(
+                "SELECT count(*), count(DISTINCT TagId || '-' || Position) FROM TagMap",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // 6 notes x 2 tags + 3 favorites.
+        assert_eq!((rows, distinct), (15, 15));
+        let favorites: i64 = local
+            .conn
+            .query_row(
+                "SELECT count(*) FROM TagMap m JOIN Tag t ON t.TagId = m.TagId
+                 WHERE t.Type = 0 AND m.LocationId IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(favorites, 3);
+        assert_eq!(count(&local, "Tag"), 3);
+        assert_foreign_keys_hold(&local);
+    }
+
+    #[test]
+    fn merge_bookmark_slots() {
+        let (old, new) = ("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z");
+        for (local_time, remote_time, slot0) in [
+            (old, new, (0, 2, "Remote")),
+            (new, old, (0, 1, "Local")),
+            (new, new, (0, 1, "Local")),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            put_bookmark(&local, 0, 1, "Local");
+            // Different LocationIds on the remote side.
+            location(&remote, Some(50), 0);
+            put_bookmark(&remote, 0, 2, "Remote");
+            put_bookmark(&remote, 1, 3, "Free slot");
+            set_db_time(&local, local_time);
+            set_db_time(&remote, remote_time);
+            let mut local = local;
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            let (slot, chapter, title) = slot0;
+            assert_eq!(
+                bookmark_slots(&local),
+                [
+                    (slot, chapter, title.to_owned()),
+                    (1, 3, "Free slot".to_owned())
+                ]
+            );
+            assert_eq!(r.added, 1);
+            assert_eq!(r.updated, i64::from(remote_time > local_time));
+            if local_time == remote_time {
+                assert_eq!(r.conflicts.len(), 1);
+                assert_eq!(r.conflicts[0].table, "Bookmark");
+                assert_eq!(r.conflicts[0].summary, "Local");
+            } else {
+                assert!(r.conflicts.is_empty());
+            }
+            // One publication location, chapters 1-3 and the unused 50.
+            assert_eq!(count(&local, "Location"), 5);
+            assert_foreign_keys_hold(&local);
+        }
+    }
+
+    #[test]
+    fn merge_twice_is_idempotent_with_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        local
+            .save_note(Some(&bible(1)), None, &note_input("L", "l", &["Prayer"]))
+            .unwrap();
+        put_bookmark(&local, 0, 1, "Local");
+        location(&remote, Some(50), 0);
+        let mark = remote
+            .add_mark(&bible(2), None, 3, &[verse(4, 0, 3)])
+            .unwrap();
+        remote
+            .save_note(
+                Some(&bible(2)),
+                None,
+                &NoteInput {
+                    mark_guid: Some(mark),
+                    ..note_input("R", "r", &["Study", "Prayer"])
+                },
+            )
+            .unwrap();
+        remote
+            .save_note(Some(&bible(3)), None, &note_input("R2", "r2", &["Study"]))
+            .unwrap();
+        put_bookmark(&remote, 1, 2, "Remote");
+        remote
+            .conn
+            .execute("INSERT INTO Tag (Type, Name) VALUES (0, 'Favorite')", [])
+            .unwrap();
+        let page = location(&remote, Some(2), 0);
+        remote
+            .conn
+            .execute(
+                "INSERT INTO TagMap (LocationId, TagId, Position)
+                 VALUES (?1, (SELECT TagId FROM Tag WHERE Type = 0), 0)",
+                [page],
+            )
+            .unwrap();
+        let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let counts = |ud: &UserData| {
+            ["Note", "Tag", "TagMap", "Bookmark", "UserMark", "Location"].map(|t| count(ud, t))
+        };
+        let tag_map = |ud: &UserData| -> Vec<(i64, i64, Option<i64>, Option<i64>)> {
+            let mut stmt = ud
+                .conn
+                .prepare("SELECT TagId, Position, NoteId, LocationId FROM TagMap ORDER BY 1, 2")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let first = local.merge_backup(&b).unwrap();
+        // A mark, two notes, a bookmark and a favorite.
+        assert_eq!((first.added, first.updated, first.unchanged), (5, 0, 0));
+        let after_first = counts(&local);
+        assert_eq!(after_first, [3, 3, 5, 2, 2, 5]);
+        let map_first = tag_map(&local);
+        set_db_time(&local, "2020-01-01T00:00:00Z");
+        let second = local.merge_backup(&b).unwrap();
+        assert_eq!((second.added, second.updated, second.unchanged), (0, 0, 5));
+        assert!(second.conflicts.is_empty());
+        assert_eq!(counts(&local), after_first);
+        assert_eq!(tag_map(&local), map_first);
+        assert_eq!(db_time(&local), "2020-01-01T00:00:00Z");
+        assert_foreign_keys_hold(&local);
+    }
+
+    #[test]
+    fn merge_round_trip_with_export() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        local
+            .save_note(Some(&bible(1)), None, &note_input("L", "l", &["Prayer"]))
+            .unwrap();
+        put_bookmark(&local, 0, 1, "Local");
+        let mark = remote
+            .add_mark(&bible(2), None, 3, &[verse(4, 0, 3)])
+            .unwrap();
+        remote
+            .save_note(
+                Some(&bible(2)),
+                None,
+                &NoteInput {
+                    mark_guid: Some(mark),
+                    ..note_input("R", "r", &["Study"])
+                },
+            )
+            .unwrap();
+        put_bookmark(&remote, 1, 2, "Remote");
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        let expected = local.summary().unwrap();
+        assert_eq!(
+            (
+                expected.marks,
+                expected.notes,
+                expected.tags,
+                expected.bookmarks
+            ),
+            (2, 2, 2, 2)
+        );
+        let mut third = UserData::open(tmp.path().join("t").join(DB_NAME)).unwrap();
+        third
+            .restore_backup(&backup_of(&local, tmp.path(), "merged.jwlibrary"))
+            .unwrap();
+        assert_eq!(third.summary().unwrap(), expected);
+        assert_eq!(
+            third.all_notes(None).unwrap(),
+            local.all_notes(None).unwrap()
+        );
+        assert_eq!(third.bookmarks().unwrap(), local.bookmarks().unwrap());
+        assert_foreign_keys_hold(&third);
+    }
+
+    #[test]
+    fn merge_accepts_extra_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        let guid = remote
+            .save_note(Some(&bible(1)), None, &note_input("R", "r", &["Study"]))
+            .unwrap();
+        {
+            let conn = Connection::open(remote.path()).unwrap();
+            conn.execute_batch("CREATE TABLE Extra(x); INSERT INTO Extra VALUES (1);")
+                .unwrap();
+        }
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(note(&local, &guid).tags, ["Study"]);
+        let extra: bool = local
+            .conn
+            .query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE name = 'Extra'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!extra);
     }
 }
