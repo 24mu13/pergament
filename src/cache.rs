@@ -6,6 +6,7 @@
 //! cache directory pointed at a shared folder never loses foreign files.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::{Error, Result};
@@ -118,10 +119,23 @@ fn check_safe_with_home(cache: &Path, library_root: &Path, home: Option<&Path>) 
     Ok(())
 }
 
+/// `Ok(None)` when `r` failed because the path is gone (a download finished
+/// or was cancelled while we looked); any other error stays an error.
+fn unless_gone<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Bytes below `path`; symlinks count as zero and are not followed.
 /// `.part` files are added to `partial` instead of the returned size.
+/// Entries that vanish during the walk count as zero.
 fn size_of(path: &Path, partial: &mut u64) -> Result<u64> {
-    let meta = fs::symlink_metadata(path)?;
+    let Some(meta) = unless_gone(fs::symlink_metadata(path))? else {
+        return Ok(0);
+    };
     if meta.file_type().is_symlink() {
         return Ok(0);
     }
@@ -132,9 +146,14 @@ fn size_of(path: &Path, partial: &mut u64) -> Result<u64> {
         }
         return Ok(meta.len());
     }
+    let Some(entries) = unless_gone(fs::read_dir(path))? else {
+        return Ok(0);
+    };
     let mut n = 0;
-    for e in fs::read_dir(path)? {
-        n += size_of(&e?.path(), partial)?;
+    for e in entries {
+        if let Some(e) = unless_gone(e)? {
+            n += size_of(&e.path(), partial)?;
+        }
     }
     Ok(n)
 }
@@ -145,8 +164,11 @@ pub fn usage(dir: &Path) -> Result<Usage> {
     if !dir.is_dir() {
         return Ok(u);
     }
-    for e in fs::read_dir(dir)? {
-        let e = e?;
+    let Some(entries) = unless_gone(fs::read_dir(dir))? else {
+        return Ok(u);
+    };
+    for e in entries {
+        let Some(e) = unless_gone(e)? else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(kind) = kind_of(&name) else {
             continue;
@@ -161,23 +183,38 @@ pub fn usage(dir: &Path) -> Result<Usage> {
     Ok(u)
 }
 
+/// Remove `path` (a directory with its contents, or a file or symlink).
+/// A path that is already gone is fine; a directory that gained an entry
+/// while it was emptied (a download writing into it) is tried once more.
+fn remove(path: &Path) -> io::Result<()> {
+    let Some(meta) = unless_gone(fs::symlink_metadata(path))? else {
+        return Ok(());
+    };
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        match fs::remove_dir_all(path) {
+            Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                unless_gone(fs::remove_dir_all(path)).map(drop)
+            }
+            r => unless_gone(r).map(drop),
+        }
+    } else {
+        unless_gone(fs::remove_file(path)).map(drop)
+    }
+}
+
 /// Remove what Pergament stored inside `dir`, keeping the directory itself
 /// and anything else in it. Callers check [`check_safe`] first.
 pub fn clear(dir: &Path) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
-    for e in fs::read_dir(dir)? {
-        let e = e?;
-        if kind_of(&e.file_name().to_string_lossy()).is_none() {
-            continue;
-        }
-        let path = e.path();
-        let meta = fs::symlink_metadata(&path)?;
-        if meta.is_dir() && !meta.file_type().is_symlink() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
+    let Some(entries) = unless_gone(fs::read_dir(dir))? else {
+        return Ok(());
+    };
+    for e in entries {
+        let Some(e) = unless_gone(e)? else { continue };
+        if kind_of(&e.file_name().to_string_lossy()).is_some() {
+            remove(&e.path())?;
         }
     }
     Ok(())
@@ -231,6 +268,20 @@ mod tests {
         assert!(d.path().is_dir());
         assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
         assert_eq!(usage(d.path()).unwrap().total(), 0);
+    }
+
+    #[test]
+    fn vanished_paths_are_not_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let gone = d.path().join("downloads/w_E.jwpub.part");
+        let mut partial = 0;
+        assert_eq!(size_of(&gone, &mut partial).unwrap(), 0);
+        assert_eq!(partial, 0);
+        remove(&gone).unwrap();
+        remove(&d.path().join("mediator")).unwrap();
+        assert!(unless_gone(fs::read_dir(&gone)).unwrap().is_none());
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(unless_gone::<()>(Err(denied)).is_err());
     }
 
     #[test]
