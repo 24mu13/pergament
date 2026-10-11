@@ -22,7 +22,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () =>
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save: vi.fn() }));
 
-import { AppProvider } from "@/app";
+import { AppProvider, useApp } from "@/app";
 import { MeetingsView } from "@/views/meetings";
 import { OnlineView } from "@/views/online";
 import { PublicationView } from "@/views/publication";
@@ -182,6 +182,38 @@ describe("Settings cache", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear cache" }));
     await waitFor(() => expect(count("clear_cache")).toBe(1));
     await waitFor(() => expect(count("cache_usage")).toBeGreaterThan(before));
+  });
+
+  it("says so and keeps Clear disabled when the cache cannot be measured", async () => {
+    backend.cache_usage = () => {
+      throw new Error("permission denied");
+    };
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+    expect(await screen.findByText("Cannot measure the cache")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Clear cache" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("waits for running downloads before clearing", async () => {
+    backend.cache_usage = () => usage;
+    backend.download_publication = () => new Promise(() => undefined);
+    const Start = () => {
+      const { download } = useApp();
+      return <button onClick={() => void download(entry("lff", "Books", null, "Glücklich"))}>start</button>;
+    };
+    renderIn(
+      <>
+        <Start />
+        <SettingsView />
+      </>,
+    );
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+    expect(await screen.findByText("60 MB")).toBeTruthy();
+    const clear = screen.getByRole("button", { name: "Clear cache" }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    fireEvent.click(screen.getByText("start"));
+    expect(await screen.findByText("Wait for the running downloads to finish.")).toBeTruthy();
+    expect(clear.disabled).toBe(true);
   });
 });
 

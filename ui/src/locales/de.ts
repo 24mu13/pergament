@@ -300,6 +300,8 @@ export const de: Record<string, string> = {
   "Clear cache": "Zwischenspeicher leeren",
   "Clear cache?": "Zwischenspeicher leeren?",
   "Cache cleared": "Zwischenspeicher geleert",
+  "Cannot measure the cache": "Der Zwischenspeicher kann nicht gemessen werden",
+  "Wait for the running downloads to finish.": "Warte, bis die laufenden Downloads fertig sind.",
   "Could not clear the cache: {error}": "Der Zwischenspeicher konnte nicht geleert werden: {error}",
   "Cached files are downloaded again when you need them.": "Zwischengespeicherte Dateien werden bei Bedarf erneut heruntergeladen.",
   "Removes the catalog, cover images and unfinished downloads. Downloaded publications and your notes stay. The catalog (about 58 MB) is downloaded again when you next need it.":

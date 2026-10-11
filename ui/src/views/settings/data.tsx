@@ -7,9 +7,25 @@ import { formatSize, rows } from "@/lib/cache";
 import { t } from "@/lib/i18n";
 
 function CacheSection() {
-  const { toast } = useApp();
+  const { toast, downloads } = useApp();
   const [usage, setUsage] = useState<CacheUsage | null>(null);
-  const refresh = useCallback(() => api.cacheUsage().then(setUsage, () => setUsage(null)), []);
+  const [failed, setFailed] = useState(false);
+  const refresh = useCallback(
+    () =>
+      api.cacheUsage().then(
+        (u) => {
+          setUsage(u);
+          setFailed(false);
+        },
+        () => {
+          setUsage(null);
+          setFailed(true);
+        },
+      ),
+    [],
+  );
+  // Clearing removes the partial files of running downloads, so wait for them.
+  const downloading = Object.keys(downloads).length > 0;
   useEffect(() => void refresh(), [refresh]);
   const clear = async () => {
     const ok = await ask(
@@ -46,11 +62,13 @@ function CacheSection() {
       )}
       <button
         onClick={() => void clear()}
-        disabled={usage?.total === 0}
+        disabled={!usage || usage.total === 0 || downloading}
         className="rounded-md border border-line bg-surface px-4 py-2 text-sm hover:bg-bar disabled:opacity-50"
       >
         {t("Clear cache")}
       </button>
+      {failed && <p className="mt-2 text-sm text-muted">{t("Cannot measure the cache")}</p>}
+      {downloading && <p className="mt-2 text-sm text-muted">{t("Wait for the running downloads to finish.")}</p>}
       <p className="mt-2 max-w-xl text-sm text-muted">
         {t("Cached files are downloaded again when you need them.")}
         <NetworkBadge />
