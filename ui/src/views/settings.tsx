@@ -16,7 +16,7 @@ export function SettingsView() {
     lastTab = value;
     setTabState(value);
   };
-  const content = "page flex-1 overflow-y-auto pt-6 outline-none";
+  const content = "page flex-1 overflow-y-auto pt-6 focus-visible:outline-2 focus-visible:outline-accent";
   return (
     <>
       <AppBar title={t("Settings")} />
