@@ -115,11 +115,8 @@ const scenes = [
   ["09-settings", async (page) => {
     await rail(page, "Settings");
     await page.getByText("Interface language").waitFor();
-    await page.getByText("Version 1.5.0").waitFor();
-    // The text-size sample is a fixed line of Scripture in the UI; show an invented one.
-    await page.locator("section:has(input[type=range]) p.reader").evaluate((el) => {
-      el.textContent = "A lamp lit at dawn needs no defence; the daylight speaks for it.";
-    });
+    await page.getByRole("tab", { name: "Library & data" }).click();
+    await page.getByRole("heading", { name: "Cache" }).waitFor();
   }],
 ].filter(([name]) => only.length === 0 || only.some((o) => name.startsWith(o)));
 

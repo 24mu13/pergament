@@ -94,6 +94,8 @@ press F for fullscreen.
 - **Reading font:** the system font, or "Easy to read", which uses Atkinson
   Hyperlegible Next everywhere, the Bible text included.
 - **Text size**, **updates at startup**, **second display** and **backup**.
+- **Cache:** shows how much space the catalog, covers and unfinished downloads
+  use, and clears it. Downloaded publications and your notes stay.
 
 ### Keyboard and screen readers
 
