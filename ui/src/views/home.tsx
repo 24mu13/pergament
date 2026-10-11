@@ -63,9 +63,15 @@ function NewRow({ entry }: { entry: CatalogEntry }) {
   );
 }
 
+/** The last loaded lists and daily text. The view remounts on every tab switch, so these keep its sections from vanishing until the reload finishes. */
+let cachedLists: { lang: string; lists: HomeLists | null } | undefined;
+let cachedToday: { lang: string; page: DatedPage | null } | undefined;
+
 export function HomeView() {
   const { lang, languageName, publications, libraryReady, catalogVersion, favorites, toast, push } = useApp();
-  const [lists, setLists] = useState<HomeLists | null | undefined>(undefined);
+  const [lists, setLists] = useState<HomeLists | null | undefined>(
+    cachedLists?.lang === lang ? cachedLists.lists : undefined,
+  );
   const { activate } = useEntryAction();
   const favoritePubs = inLanguage(publications, lang).filter((p) => favorites.includes(p.dir));
   // Favorites that are not downloaded come from the catalog, if one is cached. A key that is not a library
@@ -91,9 +97,13 @@ export function HomeView() {
     let live = true;
     api
       .homeLists(lang, isoDate(new Date()))
-      .then((l) => live && setLists(l))
+      .then((l) => {
+        cachedLists = { lang, lists: l };
+        if (live) setLists(l);
+      })
       .catch((e) => {
         toast(String(e));
+        cachedLists = undefined;
         if (live) setLists(null);
       });
     return () => {
@@ -102,13 +112,19 @@ export function HomeView() {
   }, [lang, catalogVersion, toast]);
 
   // Today's text from a downloaded daily text booklet, if there is one.
-  const [today, setToday] = useState<DatedPage | null>(null);
+  const [today, setToday] = useState<DatedPage | null>(cachedToday?.lang === lang ? cachedToday.page : null);
   useEffect(() => {
     let live = true;
     api
       .datedPage(lang, "dailyText", isoDate(new Date()))
-      .then((p) => live && setToday(p))
-      .catch(() => live && setToday(null));
+      .then((p) => {
+        cachedToday = { lang, page: p };
+        if (live) setToday(p);
+      })
+      .catch(() => {
+        cachedToday = undefined;
+        if (live) setToday(null);
+      });
     return () => {
       live = false;
     };
