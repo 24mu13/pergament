@@ -825,15 +825,24 @@ impl UserData {
         let manifest = unpack_backup(src, incoming.path())?;
         check_database(incoming.path())?;
         self.write_safety_copy()?;
+        // A merge that broke off earlier may have left `inc` attached.
+        let stale: bool = self.conn.query_row(
+            "SELECT count(*) > 0 FROM pragma_database_list WHERE name = 'inc'",
+            [],
+            |r| r.get(0),
+        )?;
+        if stale {
+            let _ = self.conn.execute("DETACH DATABASE inc", []);
+        }
         self.conn.execute(
             "ATTACH DATABASE ?1 AS inc",
             [incoming.path().to_string_lossy().as_ref()],
         )?;
         let result = self.merge_attached(manifest.user_data_backup.device_name);
-        let detach = self.conn.execute("DETACH DATABASE inc", []);
-        let report = result?;
-        detach?;
-        Ok(report)
+        // Once the merge is committed (or rolled back), a failing detach
+        // changes nothing about the data; the next merge detaches again.
+        let _ = self.conn.execute("DETACH DATABASE inc", []);
+        result
     }
 
     /// Copy the database to `userData.db.before-restore`, replacing an older copy.
@@ -2936,6 +2945,29 @@ mod tests {
         let merged = note(&local, &guid);
         assert_eq!(merged.content, "new");
         assert_eq!(merged.mark_guid, Some(mark));
+    }
+
+    #[test]
+    fn merge_tolerates_a_stale_attached_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .conn
+            .execute("ATTACH DATABASE ':memory:' AS inc", [])
+            .unwrap();
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        let attached: i64 = local
+            .conn
+            .query_row(
+                "SELECT count(*) FROM pragma_database_list WHERE name = 'inc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(attached, 0);
     }
 
     fn set_note_time(ud: &UserData, guid: &str, ts: &str) {
