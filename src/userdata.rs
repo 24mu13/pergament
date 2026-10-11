@@ -161,16 +161,18 @@ pub struct MergeReport {
     pub added: i64,
     /// Rows on both sides where the backup's version replaced the current one.
     pub updated: i64,
-    /// Rows on both sides where the current version stayed.
+    /// Rows on both sides that were the same already, or where the current
+    /// note is newer by its own time.
     pub unchanged: i64,
-    /// Backup rows left out because neither side was newer.
+    /// Backup rows that differ from the current ones and were left out
+    /// because the backup was not newer.
     pub conflicts: Vec<Conflict>,
     /// Device the backup was made on.
     pub device: Option<String>,
 }
 
-/// A backup row that differs from the current one when neither is newer.
-/// The current row is kept.
+/// A backup row that differs from the current one and was left out, as the
+/// backup was not newer. The current row is kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conflict {
@@ -862,11 +864,25 @@ impl UserData {
         merge_location_tags(&tx, &locations, &tags, &mut report)?;
         merge_bookmarks(&tx, &locations, incoming_newer, &mut report)?;
         if report.added + report.updated > 0 {
-            touch(&tx)?;
+            take_later_clock(&tx)?;
         }
         tx.commit()?;
         Ok(report)
     }
+}
+
+/// Set the current `LastModified` to the backup's when that is later. The
+/// clock says when the data were last edited; merging is no edit, and a
+/// merge of an old backup must not make this side look newer than it is.
+fn take_later_clock(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "UPDATE main.LastModified
+         SET LastModified = (SELECT LastModified FROM inc.LastModified LIMIT 1)
+         WHERE julianday((SELECT LastModified FROM inc.LastModified LIMIT 1))
+               > julianday(LastModified)",
+        [],
+    )?;
+    Ok(())
 }
 
 /// Whether the attached database `inc` was changed after the current one,
@@ -1050,6 +1066,14 @@ fn location_label(tx: &Transaction<'_>, location: i64) -> Result<String> {
     )?)
 }
 
+/// How a backup highlight is shown in a conflict: where it is and its color.
+fn mark_summary(tx: &Transaction<'_>, location: i64, color: i64) -> Result<String> {
+    Ok(format!(
+        "{}, color {color} in the backup",
+        location_label(tx, location)?
+    ))
+}
+
 fn conflict(table: &str, guid: &str, summary: String) -> Conflict {
     Conflict {
         table: table.into(),
@@ -1113,7 +1137,7 @@ fn merge_marks(
             None => {
                 // A token has one color: an overlap goes to the newer side.
                 if incoming_newer != Some(true) && overlaps_local(tx, location, &ranges)? {
-                    let summary = location_label(tx, location)?;
+                    let summary = mark_summary(tx, location, mark.color)?;
                     report
                         .conflicts
                         .push(conflict("UserMark", &mark.guid, summary));
@@ -1147,9 +1171,10 @@ fn merge_marks(
                         put_ranges(tx, id, location, &ranges)?;
                         report.updated += 1;
                     }
-                    Some(false) => report.unchanged += 1,
-                    None => {
-                        let summary = location_label(tx, local_location)?;
+                    // The backup is older or as old: keep the local mark,
+                    // but say so, since the backup's may be the later edit.
+                    Some(false) | None => {
+                        let summary = mark_summary(tx, local_location, mark.color)?;
                         report
                             .conflicts
                             .push(conflict("UserMark", &mark.guid, summary));
@@ -1221,9 +1246,9 @@ fn merge_input_fields(
                 )?;
                 report.updated += 1;
             }
-            (Some(_), Some(false)) => report.unchanged += 1,
-            (Some(_), None) => {
-                let summary = location_label(tx, location)?;
+            // The backup is older or as old: keep the local text, but say so.
+            (Some(_), Some(false) | None) => {
+                let summary = format!("{}, field {tag}", location_label(tx, location)?);
                 let key = format!("{location}:{tag}");
                 report.conflicts.push(conflict("InputField", &key, summary));
             }
@@ -1460,8 +1485,8 @@ fn merge_bookmarks(
                 )?;
                 report.updated += 1;
             }
-            (Some(_), Some(false)) => report.unchanged += 1,
-            (Some((_, false, title)), None) => {
+            // The backup is older or as old: keep the local bookmark, but say so.
+            (Some((_, false, title)), Some(false) | None) => {
                 let key = format!("{publication}:{slot}");
                 report.conflicts.push(conflict("Bookmark", &key, title));
             }
@@ -2153,8 +2178,12 @@ mod tests {
         let r = local
             .merge_backup(&backup_of(&remote, tmp.path(), "r2.jwlibrary"))
             .unwrap();
-        assert_eq!(r.updated, 0);
-        assert_eq!(r.unchanged, 1);
+        // The older backup's color is not taken, but it is reported.
+        assert_eq!((r.added, r.updated, r.unchanged), (0, 0, 0));
+        assert_eq!(r.conflicts.len(), 1);
+        assert_eq!(r.conflicts[0].table, "UserMark");
+        assert_eq!(r.conflicts[0].guid, guid);
+        assert_eq!(r.conflicts[0].summary, "nwtsty 19:1, color 5 in the backup");
         assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 2);
     }
 
@@ -2213,7 +2242,7 @@ mod tests {
         assert_eq!(r.conflicts.len(), 1);
         assert_eq!(r.conflicts[0].table, "UserMark");
         assert_eq!(r.conflicts[0].guid, guid);
-        assert_eq!(r.conflicts[0].summary, "Genesis 1");
+        assert_eq!(r.conflicts[0].summary, "Genesis 1, color 5 in the backup");
         assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 2);
         // Nothing changed, so the local clock stays.
         assert_eq!(db_time(&local), "2030-01-01T00:00:00+00:00");
@@ -2294,11 +2323,13 @@ mod tests {
             assert_eq!(answers["tt2"], "new");
             assert_eq!(r.added, 1);
             assert_eq!(r.updated, i64::from(expected == "remote"));
-            if local_time == remote_time {
+            if expected == "local" {
+                // Kept, whether the backup is older or as old: reported.
                 assert_eq!(r.conflicts.len(), 1);
                 assert_eq!(r.conflicts[0].table, "InputField");
                 // Local LocationId and TextTag.
                 assert_eq!(r.conflicts[0].guid, "1:tt1");
+                assert_eq!(r.conflicts[0].summary, "w 2026520, field tt1");
             } else {
                 assert!(r.conflicts.is_empty());
             }
@@ -2467,6 +2498,112 @@ mod tests {
             assert_eq!(marks.len(), 2);
             assert_eq!(marks[1].guid, guid);
         }
+    }
+
+    #[test]
+    fn merge_clock_becomes_the_later_of_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        remote
+            .add_mark(&bible(2), None, 2, &[verse(1, 0, 3)])
+            .unwrap();
+        set_db_time(&local, "2020-01-01T00:00:00Z");
+        set_db_time(&remote, "2030-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(db_time(&local), "2030-01-01T00:00:00Z");
+        // An older backup with something new does not move the clock.
+        remote
+            .add_mark(&bible(3), None, 2, &[verse(1, 0, 3)])
+            .unwrap();
+        set_db_time(&local, "2040-01-01T00:00:00Z");
+        set_db_time(&remote, "2035-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r2.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(db_time(&local), "2040-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn merge_back_and_forth_loses_no_answer_silently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = UserData::open(tmp.path().join("a").join(DB_NAME)).unwrap();
+        a.save_answer(&watchtower(), None, "tt1", "seed").unwrap();
+        let mut b = UserData::open(tmp.path().join("b").join(DB_NAME)).unwrap();
+        b.restore_backup(&backup_of(&a, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        a.save_answer(&watchtower(), None, "tt1", "A").unwrap();
+        set_db_time(&a, "2025-01-01T00:00:00Z");
+        b.save_answer(&watchtower(), None, "tt1", "B").unwrap();
+        set_db_time(&b, "2026-01-01T00:00:00Z");
+
+        // A merges an old backup of a third device that has something new:
+        // that must not make A look newer than B.
+        let mut c = UserData::open(tmp.path().join("c").join(DB_NAME)).unwrap();
+        c.add_mark(&bible(1), None, 1, &[verse(1, 0, 3)]).unwrap();
+        set_db_time(&c, "2010-01-01T00:00:00Z");
+        let r = a
+            .merge_backup(&backup_of(&c, tmp.path(), "c.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(db_time(&a), "2025-01-01T00:00:00Z");
+
+        // A merges B: B typed later and wins.
+        let r = a
+            .merge_backup(&backup_of(&b, tmp.path(), "b1.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated), (0, 1));
+        assert!(r.conflicts.is_empty());
+        assert_eq!(a.answers(&watchtower()).unwrap()["tt1"], "B");
+        assert_eq!(db_time(&a), "2026-01-01T00:00:00Z");
+
+        // B merges A: the same answer, and the mark from C.
+        let r = b
+            .merge_backup(&backup_of(&a, tmp.path(), "a1.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (1, 0, 1));
+        assert!(r.conflicts.is_empty());
+        assert_eq!(b.answers(&watchtower()).unwrap()["tt1"], "B");
+
+        // Both type again, A later. A keeps its answer and reports B's.
+        b.save_answer(&watchtower(), None, "tt1", "B2").unwrap();
+        set_db_time(&b, "2027-01-01T00:00:00Z");
+        a.save_answer(&watchtower(), None, "tt1", "A2").unwrap();
+        set_db_time(&a, "2028-01-01T00:00:00Z");
+        let from_b = backup_of(&b, tmp.path(), "b2.jwlibrary");
+        let r = a.merge_backup(&from_b).unwrap();
+        assert_eq!((r.added, r.updated), (0, 0));
+        assert_eq!(r.conflicts.len(), 1);
+        assert_eq!(r.conflicts[0].table, "InputField");
+        assert_eq!(a.answers(&watchtower()).unwrap()["tt1"], "A2");
+        assert_eq!(db_time(&a), "2028-01-01T00:00:00Z");
+        // Merging the same backup again reports it again: the rows still differ.
+        let again = a.merge_backup(&from_b).unwrap();
+        assert_eq!((again.added, again.updated), (0, 0));
+        assert_eq!(again.conflicts, r.conflicts);
+
+        // B merges A: A is newer, so B takes A's answer.
+        let r = b
+            .merge_backup(&backup_of(&a, tmp.path(), "a2.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated), (0, 1));
+        assert!(r.conflicts.is_empty());
+        assert_eq!(b.answers(&watchtower()).unwrap()["tt1"], "A2");
+        assert_eq!(db_time(&b), "2028-01-01T00:00:00Z");
+
+        // Now both are the same: nothing more to merge either way.
+        let r = a
+            .merge_backup(&backup_of(&b, tmp.path(), "b3.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated), (0, 0));
+        assert!(r.conflicts.is_empty());
     }
 
     fn set_note_time(ud: &UserData, guid: &str, ts: &str) {
@@ -2859,7 +2996,8 @@ mod tests {
             );
             assert_eq!(r.added, 1);
             assert_eq!(r.updated, i64::from(remote_time > local_time));
-            if local_time == remote_time {
+            // Kept, whether the backup is older or as old: reported.
+            if remote_time <= local_time {
                 assert_eq!(r.conflicts.len(), 1);
                 assert_eq!(r.conflicts[0].table, "Bookmark");
                 assert_eq!(r.conflicts[0].summary, "Local");
