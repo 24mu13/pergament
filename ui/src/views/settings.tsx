@@ -7,8 +7,15 @@ import { DataTab } from "./settings/data";
 import { InterfaceTab } from "./settings/interface";
 import { ReadingTab } from "./settings/reading";
 
+/** The last selected tab, kept for the session so the view reopens where it was left. */
+let lastTab = "interface";
+
 export function SettingsView() {
-  const [tab, setTab] = useState("interface");
+  const [tab, setTabState] = useState(lastTab);
+  const setTab = (value: string) => {
+    lastTab = value;
+    setTabState(value);
+  };
   const content = "page flex-1 overflow-y-auto pt-6 outline-none";
   return (
     <>

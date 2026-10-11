@@ -111,6 +111,8 @@ describe("Settings", () => {
   it("switches the content width and remembers it", async () => {
     renderIn(<SettingsView />);
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("880px");
+    // The selected tab outlives the view, so pick it explicitly.
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Interface" }));
     fireEvent.click(await screen.findByRole("button", { name: "Full width" }));
     expect(localStorage.getItem("layout")).toBe("wide");
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("100000px");
@@ -135,6 +137,17 @@ describe("Settings", () => {
     expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole("tab", { name: "About" }));
     expect(await screen.findByText(/unofficial reader/)).toBeTruthy();
+  });
+
+  it("remembers the selected tab when the view comes back", async () => {
+    const first = renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+    expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
+    first.unmount();
+    renderIn(<SettingsView />);
+    const tab = await screen.findByRole("tab", { name: "Library & data" });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
   });
 });
 
