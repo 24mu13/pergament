@@ -253,8 +253,6 @@ export const de: Record<string, string> = {
   Dark: "Dunkel",
   "Text size": "Textgröße",
   "In the beginning God created the heavens and the earth.": "Am Anfang erschuf Gott Himmel und Erde.",
-  "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; the previous data is kept as userData.db.before-restore in the library folder.":
-    "Markierungen, Notizen, Tags und Lesezeichen als .jwlibrary-Datei. Beim Wiederherstellen werden die aktuellen Daten ersetzt; die bisherigen Daten bleiben als userData.db.before-restore im Bibliotheksordner erhalten.",
   About: "Info",
   "Pergament is an unofficial reader for publications you import or download yourself, for personal use. It is not affiliated with Jehovah's Witnesses or the Watch Tower Bible and Tract Society and contains no publication content. No telemetry.":
     "Pergament ist ein inoffizieller Leser für Publikationen, die du selbst importierst oder herunterlädst, zum persönlichen Gebrauch. Es steht in keiner Verbindung zu Jehovas Zeugen oder zur Wachtturm-Bibel- und Traktat-Gesellschaft und enthält keine Publikationsinhalte. Keine Telemetrie.",
