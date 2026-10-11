@@ -307,4 +307,9 @@ export const de: Record<string, string> = {
   "Check for publication updates at startup": "Beim Start auf Aktualisierungen von Publikationen prüfen",
   "Compares your downloaded publications with the catalog, which is refreshed at most once a day, and only if you have loaded the catalog before. Nothing is downloaded until you update.":
     "Vergleicht deine heruntergeladenen Publikationen mit dem Katalog, der höchstens einmal am Tag aktualisiert wird, und nur, wenn du den Katalog schon einmal geladen hast. Es wird nichts heruntergeladen, bis du aktualisierst.",
+  "Download referenced publications": "Referenzierte Publikationen herunterladen",
+  "Download referenced publications?": "Referenzierte Publikationen herunterladen?",
+  "… and {count} more": "… und {count} weitere",
+  "{count} publications, {size} in total:": "{count} Publikationen, insgesamt {size}:",
+  "{count} downloads failed": "{count} Downloads fehlgeschlagen",
 };

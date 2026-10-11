@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { FileText, Star } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { DownloadCloud, FileText, Star } from "lucide-react";
 import { AppBar, BarButton, useApp } from "@/app";
-import { api, documentTarget, type PubDetail, type TocNode } from "@/lib/api";
+import { api, documentTarget, type CatalogEntry, type PubDetail, type TocNode } from "@/lib/api";
 import { booksTabIndex, hasBooks, shortBookName } from "@/lib/bible";
 import { t } from "@/lib/i18n";
+import { confirmText } from "@/lib/references";
 import { GoToButton } from "@/components/go-to";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -98,6 +100,34 @@ function FavoriteButton({ dir }: { dir: string }) {
   );
 }
 
+/** Downloads the publications this one links to, after showing what that costs. */
+function ReferencesButton({ dir }: { dir: string }) {
+  const { lang, download, toast, catalogVersion } = useApp();
+  const [missing, setMissing] = useState<CatalogEntry[]>([]);
+  useEffect(() => {
+    let live = true;
+    api.referencedPublications(dir, lang).then((m) => live && setMissing(m ?? []), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [dir, lang, catalogVersion]);
+  if (missing.length === 0) return null;
+  const run = async () => {
+    const ok = await ask(confirmText(missing), {
+      title: t("Download referenced publications?"),
+      okLabel: t("Download"),
+    });
+    if (!ok) return;
+    let failed = 0;
+    for (const entry of missing) if ((await download(entry)) === null) failed++;
+    if (failed > 0) toast(t("{count} downloads failed", { count: failed }));
+  };
+  return (
+    <BarButton label="Download referenced publications" onClick={() => void run()}>
+      <DownloadCloud size={18} strokeWidth={1.6} />
+    </BarButton>
+  );
+}
 
 export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
   const { replace } = useApp();
@@ -113,7 +143,8 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
       <>
         <AppBar title={title} subtitle={languageName(lang)}>
           {detail.card.isBible && <GoToButton />}
-        <FavoriteButton dir={dir} />
+          <ReferencesButton dir={dir} />
+          <FavoriteButton dir={dir} />
         </AppBar>
         <div className="page flex-1 overflow-y-auto">
           <DocList dir={dir} nodes={toc[0]?.children ?? []} />
@@ -127,6 +158,7 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
     <>
       <AppBar title={title} subtitle={languageName(lang)}>
         {detail.card.isBible && <GoToButton />}
+        <ReferencesButton dir={dir} />
         <FavoriteButton dir={dir} />
       </AppBar>
       <Tabs
