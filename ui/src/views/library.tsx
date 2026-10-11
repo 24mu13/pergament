@@ -88,10 +88,14 @@ function DownloadedTab({ pubs }: { pubs: PubCard[] }) {
   );
 }
 
+/** The last loaded categories per language and category items per language and category. The views remount on every navigation, so these keep them from emptying until the reload finishes. */
+const cachedCategories = new Map<string, Category[] | null>();
+const cachedItems = new Map<string, CatalogEntry[] | null>();
+
 export function LibraryView({ tab = "publications" }: { tab?: LibraryTab }) {
   const { lang, languageName, replace, push, catalogVersion, toast, publications, updates, downloads } = useApp();
   const updating = updates.items.some((u) => downloads[taskKey(u.entry)]);
-  const [categories, setCategories] = useState<Category[] | null | undefined>(undefined);
+  const [categories, setCategories] = useState<Category[] | null | undefined>(cachedCategories.get(lang));
   const local = inLanguage(publications, lang);
   const shownCategories = mergeCategories(categories ?? [], local);
 
@@ -99,9 +103,13 @@ export function LibraryView({ tab = "publications" }: { tab?: LibraryTab }) {
     let live = true;
     api
       .categories(lang)
-      .then((c) => live && setCategories(c))
+      .then((c) => {
+        cachedCategories.set(lang, c);
+        if (live) setCategories(c);
+      })
       .catch((e) => {
         toast(String(e));
+        cachedCategories.delete(lang);
         if (live) setCategories(null);
       });
     return () => {
@@ -147,15 +155,23 @@ export function LibraryView({ tab = "publications" }: { tab?: LibraryTab }) {
 
 export function CategoryView({ id, title }: { id: number; title: string }) {
   const { lang, languageName, catalogVersion, toast, publications } = useApp();
-  const [items, setItems] = useState<CatalogEntry[] | null | undefined>(undefined);
+  const key = `${lang}|${id}`;
+  const [items, setItems] = useState<CatalogEntry[] | null | undefined>(cachedItems.get(key));
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let live = true;
     api
       .category(lang, id)
-      .then((c) => live && setItems(c))
-      .catch((e) => toast(String(e)));
+      .then((c) => {
+        cachedItems.set(key, c);
+        if (live) setItems(c);
+      })
+      .catch((e) => {
+        toast(String(e));
+        cachedItems.delete(key);
+        if (live) setItems(null);
+      });
     return () => {
       live = false;
     };

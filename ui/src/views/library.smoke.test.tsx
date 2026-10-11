@@ -205,3 +205,37 @@ describe("Recording pages", () => {
     expect(screen.getByText("Share Link")).toBeTruthy();
   });
 });
+
+describe("Coming back to a page", () => {
+  it("shows the library categories right away", async () => {
+    const first = renderIn(<LibraryView />);
+    await screen.findByText("Brochures and Booklets");
+    first.unmount();
+    renderIn(<LibraryView />);
+    expect(screen.getByText("Brochures and Booklets")).toBeTruthy();
+  });
+
+  it("shows the items of a category right away", async () => {
+    const first = renderIn(<CategoryView id={4} title="Brochures" />);
+    await screen.findByText("Höre auf Gott");
+    first.unmount();
+    renderIn(<CategoryView id={4} title="Brochures" />);
+    expect(screen.getByText("Höre auf Gott")).toBeTruthy();
+  });
+
+  it("shows the recordings of a category right away", async () => {
+    const first = renderIn(<MediaCategoryView catKey="VOD" title="Videos" />);
+    await screen.findByText("A video");
+    first.unmount();
+    renderIn(<MediaCategoryView catKey="VOD" title="Videos" />);
+    expect(screen.getByText("A video")).toBeTruthy();
+  });
+
+  it("shows the catalog prompt when a category fails to load", async () => {
+    backend.category = () => {
+      throw new Error("boom");
+    };
+    renderIn(<CategoryView id={5} title="Books" />);
+    await waitFor(() => expect(screen.queryByPlaceholderText("Filter")).toBeNull());
+  });
+});

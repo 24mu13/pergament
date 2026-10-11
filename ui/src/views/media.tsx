@@ -17,20 +17,27 @@ import { t } from "@/lib/i18n";
 export const VIDEO_ROOT = "VideoOnDemand";
 export const AUDIO_ROOT = "Audio";
 
+/** The last loaded categories. The views remount on every navigation, so this keeps them from showing "Loading…" until the reload finishes. */
+const cachedCategories = new Map<string, MediaCategory>();
+
 /** A category in the publication language, with retry when it cannot be loaded. */
 function useCategory(key: string, detailed: boolean) {
   const { lang } = useApp();
-  const [cat, setCat] = useState<MediaCategory | null>(null);
+  const id = `${lang}|${key}|${detailed}`;
+  const [cat, setCat] = useState<MediaCategory | null>(cachedCategories.get(id) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
-    setCat(null);
+    setCat(cachedCategories.get(id) ?? null);
     setError(null);
     api
       .mediaCategory(lang, key, detailed)
-      .then((c) => live && setCat(c))
+      .then((c) => {
+        cachedCategories.set(id, c);
+        if (live) setCat(c);
+      })
       .catch((e) => live && setError(String(e)));
     return () => {
       live = false;

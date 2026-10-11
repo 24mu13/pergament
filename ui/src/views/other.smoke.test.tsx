@@ -77,6 +77,14 @@ describe("Meetings", () => {
     openMenu(await tile("Singt voller Freude"));
     expect(screen.getByText("Share Link")).toBeTruthy();
   });
+
+  it("shows the publications right away when the view is opened again", async () => {
+    const first = renderIn(<MeetingsView />);
+    await screen.findByText("Singt voller Freude");
+    first.unmount();
+    renderIn(<MeetingsView />);
+    expect(screen.getByText("Singt voller Freude")).toBeTruthy();
+  });
 });
 
 describe("Updates", () => {
@@ -411,5 +419,40 @@ describe("Go to", () => {
     fireEvent.change(again, { target: { value: "Heb 10:24" } });
     fireEvent.submit(again.closest("form")!);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+});
+
+describe("Coming back to a page", () => {
+  it("shows the publication right away", async () => {
+    const first = renderIn(<PublicationView dir="lff_2" />);
+    await screen.findByLabelText("Add to favorites");
+    first.unmount();
+    renderIn(<PublicationView dir="lff_2" />);
+    expect(screen.getByLabelText("Add to favorites")).toBeTruthy();
+  });
+
+  it("shows the notes of Personal Study right away", async () => {
+    backend.user_data_summary = () => ({ marks: 0, notes: 1, tags: 0, bookmarks: 0, device: null });
+    backend.tags = () => [];
+    backend.bookmarks = () => [];
+    backend.all_notes = () => [
+      { guid: "a", title: "Dusk visits", content: "", blockType: 0, blockIdentifier: null, markGuid: null, color: null, tags: [], lastModified: "2026-10-03T00:00:00Z", location: null },
+    ];
+    const first = renderIn(<PersonalView />);
+    await screen.findByText("Dusk visits");
+    first.unmount();
+    renderIn(<PersonalView />);
+    expect(screen.getByText("Dusk visits")).toBeTruthy();
+  });
+
+  it("brings back the last search", async () => {
+    const first = renderIn(<OnlineView />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Höre" } });
+    fireEvent.submit(screen.getByRole("textbox").closest("form")!);
+    await screen.findByText("Höre auf Gott");
+    first.unmount();
+    renderIn(<OnlineView />);
+    expect(screen.getByText("Höre auf Gott")).toBeTruthy();
+    expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("Höre");
   });
 });

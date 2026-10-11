@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { AppBar, useApp } from "@/app";
@@ -12,12 +12,17 @@ import { t } from "@/lib/i18n";
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
 
 /** Search the whole catalog in the selected language. */
+/** The last search. The view remounts on every navigation, so this brings back the query and its results. */
+let lastSearch: { lang: string; query: string; items: CatalogEntry[] | null } | undefined;
+
 export function OnlineView() {
   const { toast, lang, languageName, catalogVersion } = useApp();
-  const [query, setQuery] = useState("");
-  const [items, setItems] = useState<CatalogEntry[] | null>(null);
+  const [query, setQuery] = useState(lastSearch?.query ?? "");
+  const [items, setItems] = useState<CatalogEntry[] | null>(lastSearch?.lang === lang ? lastSearch.items : null);
   const [searching, setSearching] = useState(false);
   const [catalog, setCatalog] = useState<ProgressEvent | null>(null);
+  // Only the newest search may set the results; an older one can finish later.
+  const latest = useRef(0);
 
   useEffect(() => {
     const un = listen<ProgressEvent>("progress", (e) => {
@@ -29,14 +34,19 @@ export function OnlineView() {
   }, []);
 
   const search = async () => {
+    const mine = ++latest.current;
     setSearching(true);
     try {
-      setItems(await api.catalogSearch(lang, query.trim()));
+      const found = await api.catalogSearch(lang, query.trim());
+      lastSearch = { lang, query, items: found };
+      if (mine === latest.current) setItems(found);
     } catch (e) {
       toast(String(e));
     } finally {
-      setSearching(false);
-      setCatalog(null);
+      if (mine === latest.current) {
+        setSearching(false);
+        setCatalog(null);
+      }
     }
   };
 
