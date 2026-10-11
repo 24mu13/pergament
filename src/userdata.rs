@@ -1084,6 +1084,30 @@ fn mark_summary(tx: &Transaction<'_>, location: i64, color: i64) -> Result<Strin
     ))
 }
 
+/// A local highlight on `location` with the same color and exactly the same
+/// ranges, made independently on both sides.
+fn identical_local_mark(
+    tx: &Transaction<'_>,
+    location: i64,
+    color: i64,
+    ranges: &[RangeRow],
+) -> Result<Option<i64>> {
+    let ids: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT UserMarkId FROM main.UserMark WHERE LocationId = ?1 AND ColorIndex = ?2
+             ORDER BY UserMarkId",
+        )?;
+        let rows = stmt.query_map([location, color], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for id in ids {
+        if mark_ranges(tx, "main", id)? == ranges {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
 fn conflict(table: &str, guid: &str, summary: String) -> Conflict {
     Conflict {
         table: table.into(),
@@ -1145,6 +1169,13 @@ fn merge_marks(
             .optional()?;
         match local {
             None => {
+                // The same highlight made on both sides is no conflict; rows
+                // referring to the backup's one use the local one.
+                if let Some(twin) = identical_local_mark(tx, location, mark.color, &ranges)? {
+                    map.insert(mark.guid, twin);
+                    report.unchanged += 1;
+                    continue;
+                }
                 // A token has one color: an overlap goes to the newer side.
                 if incoming_newer != Some(true) && overlaps_local(tx, location, &ranges)? {
                     let summary = mark_summary(tx, location, mark.color)?;
@@ -1351,6 +1382,9 @@ struct IncomingNote {
     id: i64,
     guid: String,
     mark: Option<i64>,
+    /// The note has a highlight in the backup, though `mark` may have no
+    /// local one (skipped as a conflict, or cut away).
+    had_mark: bool,
     location: Option<i64>,
 }
 
@@ -1365,7 +1399,8 @@ fn merge_notes(
 ) -> Result<()> {
     let incoming: Vec<IncomingNote> = {
         let mut stmt = tx.prepare(
-            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId FROM inc.Note n
+            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId, n.UserMarkId IS NOT NULL
+             FROM inc.Note n
              LEFT JOIN inc.UserMark u ON u.UserMarkId = n.UserMarkId
              ORDER BY n.NoteId",
         )?;
@@ -1377,20 +1412,22 @@ fn merge_notes(
                 guid: r.get(1)?,
                 // A skipped mark or a missing location leaves the note without.
                 mark: mark.and_then(|g| marks.get(&g).copied()),
+                had_mark: r.get(4)?,
                 location: location.and_then(|l| locations.get(&l).copied()),
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     for note in incoming {
-        // (NoteId, how much newer the incoming note is, same text, title)
-        let local: Option<(i64, Option<f64>, bool, Option<String>)> = tx
+        // (NoteId, how much newer the incoming note is, same text, title, content)
+        type LocalNote = (i64, Option<f64>, bool, Option<String>, Option<String>);
+        let local: Option<LocalNote> = tx
             .query_row(
                 "SELECT m.NoteId, julianday(i.LastModified) - julianday(m.LastModified),
-                        m.Title IS i.Title AND m.Content IS i.Content, m.Title
+                        m.Title IS i.Title AND m.Content IS i.Content, m.Title, m.Content
                  FROM main.Note m, inc.Note i WHERE i.NoteId = ?1 AND m.Guid = i.Guid",
                 [note.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
         match local {
@@ -1407,22 +1444,26 @@ fn merge_notes(
                 put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
                 report.added += 1;
             }
-            Some((id, Some(diff), _, _)) if diff > 0.0 => {
+            Some((id, Some(diff), ..)) if diff > 0.0 => {
+                // A backup highlight that did not make it here leaves the
+                // note on its local one rather than on none.
+                let keep_mark = note.had_mark && note.mark.is_none();
                 tx.execute(
                     "UPDATE main.Note
                      SET (Title, Content, LastModified, BlockType, BlockIdentifier) =
                          (SELECT Title, Content, LastModified, BlockType, BlockIdentifier
                           FROM inc.Note WHERE NoteId = ?1),
-                         UserMarkId = ?2, LocationId = ?3
+                         UserMarkId = CASE WHEN ?5 THEN UserMarkId ELSE ?2 END,
+                         LocationId = ?3
                      WHERE NoteId = ?4",
-                    params![note.id, note.mark, note.location, id],
+                    params![note.id, note.mark, note.location, id, keep_mark],
                 )?;
                 put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
                 report.updated += 1;
             }
-            Some((_, Some(diff), _, _)) if diff < 0.0 => report.unchanged += 1,
-            Some((_, _, true, _)) => report.unchanged += 1,
-            Some((_, _, false, title)) => {
+            Some((_, Some(diff), ..)) if diff < 0.0 => report.unchanged += 1,
+            Some((_, _, true, ..)) => report.unchanged += 1,
+            Some((_, _, false, title, _)) => {
                 report
                     .conflicts
                     .push(conflict("Note", &note.guid, title.unwrap_or_default()));
@@ -2790,6 +2831,93 @@ mod tests {
             .unwrap();
         assert_eq!((r.added, r.updated), (0, 0));
         assert!(r.conflicts.is_empty());
+    }
+
+    #[test]
+    fn merge_identical_highlights_with_different_guids_are_unchanged() {
+        for remote_newer in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            let mine = local
+                .add_mark(&bible(1), None, 3, &[verse(1, 0, 3), verse(2, 1, 4)])
+                .unwrap();
+            location(&remote, Some(50), 0);
+            let theirs = remote
+                .add_mark(&bible(1), None, 3, &[verse(1, 0, 3), verse(2, 1, 4)])
+                .unwrap();
+            let linked = remote
+                .save_note(
+                    Some(&bible(1)),
+                    None,
+                    &NoteInput {
+                        mark_guid: Some(theirs),
+                        ..note_input("N", "n", &[])
+                    },
+                )
+                .unwrap();
+            let (old, new) = ("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z");
+            set_db_time(&local, if remote_newer { old } else { new });
+            set_db_time(&remote, if remote_newer { new } else { old });
+            let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+            for _ in 0..2 {
+                let r = local.merge_backup(&b).unwrap();
+                assert!(r.conflicts.is_empty(), "remote newer: {remote_newer}");
+                assert_eq!(count(&local, "UserMark"), 1);
+                assert_eq!(count(&local, "BlockRange"), 2);
+            }
+            let marks = local.marks(&bible(1)).unwrap();
+            assert_eq!(marks[0].guid, mine);
+            // The note on the remote highlight sits on the local twin.
+            assert_eq!(note(&local, &linked).mark_guid, Some(mine));
+        }
+    }
+
+    #[test]
+    fn merge_winning_note_keeps_its_highlight_when_the_backup_one_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mark = local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 9)])
+            .unwrap();
+        let guid = local
+            .save_note(
+                Some(&bible(1)),
+                None,
+                &NoteInput {
+                    mark_guid: Some(mark.clone()),
+                    ..note_input("T", "old", &[])
+                },
+            )
+            .unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        // The remote moves the note onto a new, overlapping highlight.
+        let other = remote
+            .add_mark(&bible(1), None, 2, &[verse(1, 5, 12)])
+            .unwrap();
+        remote
+            .conn
+            .execute(
+                "UPDATE Note SET Content = 'new',
+                     UserMarkId = (SELECT UserMarkId FROM UserMark WHERE UserMarkGuid = ?1)",
+                [&other],
+            )
+            .unwrap();
+        set_note_time(&remote, &guid, "2030-01-01T00:00:00Z");
+        set_note_time(&local, &guid, "2020-01-01T00:00:00Z");
+        // The local database is newer, so the overlapping highlight is skipped.
+        set_db_time(&remote, "2020-01-01T00:00:00Z");
+        set_db_time(&local, "2030-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert!(r.conflicts.iter().any(|c| c.guid == other));
+        let merged = note(&local, &guid);
+        assert_eq!(merged.content, "new");
+        assert_eq!(merged.mark_guid, Some(mark));
     }
 
     fn set_note_time(ud: &UserData, guid: &str, ts: &str) {
