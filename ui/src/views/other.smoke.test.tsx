@@ -352,6 +352,32 @@ describe("Merging backups", () => {
     expect(calls.some((c) => c.cmd === "merge_backup")).toBe(false);
     expect(vi.mocked(ask).mock.calls[0][1]).toEqual({ title: "Restore backup?", kind: "warning", okLabel: "Restore" });
   });
+
+  it("ignores a second restore while one is running", async () => {
+    localStorage.setItem("mergeBackups", "true");
+    let finish: (r: unknown) => void = () => undefined;
+    backend.merge_backup = () => new Promise((resolve) => (finish = resolve));
+    vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+    vi.mocked(ask).mockResolvedValue(true);
+    await dataTab();
+    const button = await screen.findByRole("button", { name: "Merge backup…" });
+    fireEvent.click(button);
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "merge_backup")).toHaveLength(1));
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finish(report([]));
+    });
+    expect(await screen.findByText("Merged 3 changes")).toBeTruthy();
+    // Once it is done, the next one runs.
+    fireEvent.click(button);
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "merge_backup")).toHaveLength(2));
+    expect(open).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Go to", () => {

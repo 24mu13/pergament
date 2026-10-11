@@ -380,49 +380,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [toast]);
 
+  // A restore or merge, from choosing the file to the last dialog, runs once at a time.
+  const restoring = useRef(false);
   const restoreBackup = useCallback(async () => {
-    const picked = await openDialog({ multiple: false, filters: [{ name: "Backup", extensions: ["jwlibrary"] }] });
-    const path = Array.isArray(picked) ? picked[0] : picked;
-    if (!path) return;
-    if (mergeBackups) {
-      const ok = await ask(
-        t(
-          "Merging adds what is only in the backup and keeps the newer version of everything that is in both. Nothing is deleted. Your current data is kept as userData.db.before-restore.",
-        ),
-        { title: t("Merge backup?"), kind: "info", okLabel: t("Merge") },
-      );
-      if (!ok) return;
-      let report;
-      try {
-        report = await api.mergeBackup(path);
-      } catch (e) {
-        toast(t("Merge failed: {error}", { error: String(e) }));
+    if (restoring.current) return;
+    restoring.current = true;
+    try {
+      const picked = await openDialog({ multiple: false, filters: [{ name: "Backup", extensions: ["jwlibrary"] }] });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      if (mergeBackups) {
+        const ok = await ask(
+          t(
+            "Merging adds what is only in the backup and keeps the newer version of everything that is in both. Nothing is deleted. Your current data is kept as userData.db.before-restore.",
+          ),
+          { title: t("Merge backup?"), kind: "info", okLabel: t("Merge") },
+        );
+        if (!ok) return;
+        let report;
+        try {
+          report = await api.mergeBackup(path);
+        } catch (e) {
+          toast(t("Merge failed: {error}", { error: String(e) }));
+          return;
+        }
+        setUserVersion((v) => v + 1);
+        toast(mergeToast(report));
+        if (report.conflicts.length > 0) {
+          // The merge is done either way; without a dialog the list goes to a toast.
+          const text = conflictText(report.conflicts);
+          await messageDialog(text, { title: t("Conflicts"), kind: "warning" }).catch(() => toast(text));
+        }
         return;
       }
-      setUserVersion((v) => v + 1);
-      toast(mergeToast(report));
-      if (report.conflicts.length > 0) {
-        // The merge is done either way; without a dialog the list goes to a toast.
-        const text = conflictText(report.conflicts);
-        await messageDialog(text, { title: t("Conflicts"), kind: "warning" }).catch(() => toast(text));
+      const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
+        title: t("Restore backup?"),
+        kind: "warning",
+        okLabel: t("Restore"),
+      });
+      if (!ok) return;
+      try {
+        const s = await api.restoreBackup(path);
+        toast(
+          t("Restored {marks} highlights and {notes} notes", { marks: s.marks, notes: s.notes }) +
+            (s.device ? t(" from {device}", { device: s.device }) : ""),
+        );
+        setUserVersion((v) => v + 1);
+      } catch (e) {
+        toast(t("Restore failed: {error}", { error: String(e) }));
       }
-      return;
-    }
-    const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
-      title: t("Restore backup?"),
-      kind: "warning",
-      okLabel: t("Restore"),
-    });
-    if (!ok) return;
-    try {
-      const s = await api.restoreBackup(path);
-      toast(
-        t("Restored {marks} highlights and {notes} notes", { marks: s.marks, notes: s.notes }) +
-          (s.device ? t(" from {device}", { device: s.device }) : ""),
-      );
-      setUserVersion((v) => v + 1);
-    } catch (e) {
-      toast(t("Restore failed: {error}", { error: String(e) }));
+    } finally {
+      restoring.current = false;
     }
   }, [toast, mergeBackups]);
 
