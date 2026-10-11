@@ -2,7 +2,7 @@
 //! database with the layout of a JW Library `userData.db`, and `.jwlibrary`
 //! backups of it. Table semantics are in docs/FORMAT.md ("User data").
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -151,6 +151,35 @@ pub struct Summary {
     pub bookmarks: i64,
     /// Device the backup was made on.
     pub device: Option<String>,
+}
+
+/// Counts shown after a backup was merged into the current data.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeReport {
+    /// Rows only the backup had, now added.
+    pub added: i64,
+    /// Rows on both sides where the backup's version replaced the current one.
+    pub updated: i64,
+    /// Rows on both sides where the current version stayed.
+    pub unchanged: i64,
+    /// Backup rows left out because neither side was newer.
+    pub conflicts: Vec<Conflict>,
+    /// Device the backup was made on.
+    pub device: Option<String>,
+}
+
+/// A backup row that differs from the current one when neither is newer.
+/// The current row is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conflict {
+    /// Table of the row, e.g. `UserMark`.
+    pub table: String,
+    /// GUID of the row, or its key in tables without one.
+    pub guid: String,
+    /// Where the row belongs, for the user.
+    pub summary: String,
 }
 
 /// The parts of a backup's `manifest.json` that matter here.
@@ -777,6 +806,425 @@ impl UserData {
         summary.device = Some(manifest.user_data_backup.device_name);
         Ok(summary)
     }
+
+    /// Merge the backup at `src` into the current data: rows of both sides
+    /// are kept, and a row on both sides resolves by recency (docs/FORMAT.md,
+    /// "Merging"). The previous database is kept next to it as
+    /// `userData.db.before-restore`. On error the data is left unchanged.
+    pub fn merge_backup(&mut self, src: &Path) -> Result<MergeReport> {
+        let dir = self
+            .path
+            .parent()
+            .map(Path::to_owned)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let incoming = tempfile::Builder::new()
+            .prefix(".merge-")
+            .tempfile_in(&dir)?;
+        let manifest = unpack_backup(src, incoming.path())?;
+        check_database(incoming.path())?;
+        self.write_safety_copy()?;
+        self.conn.execute(
+            "ATTACH DATABASE ?1 AS inc",
+            [incoming.path().to_string_lossy().as_ref()],
+        )?;
+        let result = self.merge_attached(manifest.user_data_backup.device_name);
+        let detach = self.conn.execute("DETACH DATABASE inc", []);
+        let report = result?;
+        detach?;
+        Ok(report)
+    }
+
+    /// Copy the database to `userData.db.before-restore`, replacing an older copy.
+    fn write_safety_copy(&self) -> Result<()> {
+        let copy = self.path.with_extension("db.before-restore");
+        match fs::remove_file(&copy) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        self.conn
+            .execute("VACUUM INTO ?1", [copy.to_string_lossy().as_ref()])?;
+        Ok(())
+    }
+
+    /// Merge the database attached as `inc` in one transaction.
+    fn merge_attached(&mut self, device: String) -> Result<MergeReport> {
+        let tx = self.conn.transaction()?;
+        let incoming_newer = incoming_is_newer(&tx)?;
+        let mut report = MergeReport {
+            device: Some(device),
+            ..Default::default()
+        };
+        let locations = merge_locations(&tx)?;
+        let _marks = merge_marks(&tx, &locations, incoming_newer, &mut report)?;
+        merge_input_fields(&tx, &locations, incoming_newer, &mut report)?;
+        if report.added + report.updated > 0 {
+            touch(&tx)?;
+        }
+        tx.commit()?;
+        Ok(report)
+    }
+}
+
+/// Whether the attached database `inc` was changed after the current one,
+/// by the database-wide `LastModified`; `None` when equal or unknown.
+fn incoming_is_newer(tx: &Transaction<'_>) -> Result<Option<bool>> {
+    let diff: Option<f64> = tx.query_row(
+        "SELECT julianday((SELECT LastModified FROM inc.LastModified))
+              - julianday((SELECT LastModified FROM main.LastModified))",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(match diff {
+        Some(d) if d > 0.0 => Some(true),
+        Some(d) if d < 0.0 => Some(false),
+        _ => None,
+    })
+}
+
+fn has_table(tx: &Transaction<'_>, schema: &str, table: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        &format!(
+            "SELECT count(*) > 0 FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"
+        ),
+        [table],
+        |r| r.get(0),
+    )?)
+}
+
+fn has_column(tx: &Transaction<'_>, schema: &str, table: &str, column: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT count(*) > 0 FROM pragma_table_info(?1, ?2) WHERE name = ?3",
+        params![table, schema, column],
+        |r| r.get(0),
+    )?)
+}
+
+/// Map every incoming `Location` to the local one with the same key, adding
+/// the missing ones. Returns incoming `LocationId` → local `LocationId`.
+fn merge_locations(tx: &Transaction<'_>) -> Result<HashMap<i64, i64>> {
+    let mut extra = Vec::new();
+    for column in ["Title", "Specialty", "Edition"] {
+        if has_column(tx, "inc", "Location", column)? && has_column(tx, "main", "Location", column)?
+        {
+            extra.push(column);
+        }
+    }
+    let extra: String = extra.iter().map(|c| format!(", {c}")).collect();
+    let ids: Vec<i64> = {
+        let mut stmt = tx.prepare("SELECT LocationId FROM inc.Location ORDER BY LocationId")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut map = HashMap::with_capacity(ids.len());
+    for id in ids {
+        let same_key = |condition: &str| -> Result<Option<i64>> {
+            Ok(tx
+                .query_row(
+                    &format!(
+                        "SELECT m.LocationId FROM main.Location m, inc.Location i
+                         WHERE i.LocationId = ?1 AND {condition}
+                         ORDER BY m.LocationId LIMIT 1"
+                    ),
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        };
+        // NULL matches NULL; failing that, a row with the same UNIQUE key
+        // (which only binds when none of its columns is NULL) is the same page.
+        let found = match same_key(
+            "m.BookNumber IS i.BookNumber AND m.ChapterNumber IS i.ChapterNumber
+             AND m.DocumentId IS i.DocumentId AND m.Track IS i.Track
+             AND m.IssueTagNumber IS i.IssueTagNumber AND m.KeySymbol IS i.KeySymbol
+             AND m.MepsLanguage IS i.MepsLanguage AND m.Type IS i.Type",
+        )? {
+            Some(found) => Some(found),
+            None => same_key(
+                "m.BookNumber = i.BookNumber AND m.ChapterNumber = i.ChapterNumber
+                 AND m.KeySymbol = i.KeySymbol AND m.MepsLanguage = i.MepsLanguage
+                 AND m.Type = i.Type",
+            )?,
+        };
+        let local = match found {
+            Some(local) => {
+                if extra.contains("Title") {
+                    tx.execute(
+                        "UPDATE main.Location
+                         SET Title = (SELECT Title FROM inc.Location WHERE LocationId = ?2)
+                         WHERE LocationId = ?1 AND Title IS NULL",
+                        [local, id],
+                    )?;
+                }
+                local
+            }
+            None => {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO main.Location (BookNumber, ChapterNumber, DocumentId, Track,
+                             IssueTagNumber, KeySymbol, MepsLanguage, Type{extra})
+                         SELECT BookNumber, ChapterNumber, DocumentId, Track,
+                             IssueTagNumber, KeySymbol, MepsLanguage, Type{extra}
+                         FROM inc.Location WHERE LocationId = ?1"
+                    ),
+                    [id],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        map.insert(id, local);
+    }
+    Ok(map)
+}
+
+/// A `BlockRange` row: block type, identifier, start and end token.
+type RangeRow = (i64, i64, Option<i64>, Option<i64>);
+
+fn range_of(row: &RangeRow) -> Range {
+    Range {
+        block_type: row.0,
+        identifier: row.1,
+        start: row.2.unwrap_or(0),
+        end: row.3.unwrap_or(0),
+    }
+}
+
+/// The ranges of a mark in `schema` (`main` or `inc`), sorted.
+fn mark_ranges(tx: &Transaction<'_>, schema: &str, mark: i64) -> Result<Vec<RangeRow>> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT BlockType, Identifier, StartToken, EndToken FROM {schema}.BlockRange
+         WHERE UserMarkId = ?1"
+    ))?;
+    let rows = stmt.query_map([mark], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+    let mut ranges: Vec<RangeRow> = rows.collect::<rusqlite::Result<_>>()?;
+    ranges.sort_unstable();
+    Ok(ranges)
+}
+
+/// Whether a local highlight on `location` covers a token of `ranges`.
+fn overlaps_local(tx: &Transaction<'_>, location: i64, ranges: &[RangeRow]) -> Result<bool> {
+    for row in ranges {
+        let r = range_of(row);
+        let hit: bool = tx.query_row(
+            "SELECT count(*) > 0 FROM main.BlockRange b
+             JOIN main.UserMark m ON m.UserMarkId = b.UserMarkId
+             WHERE m.LocationId = ?1 AND b.BlockType = ?2 AND b.Identifier = ?3
+               AND IFNULL(b.StartToken, 0) <= ?5 AND IFNULL(b.EndToken, 0) >= ?4",
+            params![location, r.block_type, r.identifier, r.start, r.end],
+            |r| r.get(0),
+        )?;
+        if hit {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Give `mark` the `ranges`, cutting them out of other highlights first.
+fn put_ranges(tx: &Transaction<'_>, mark: i64, location: i64, ranges: &[RangeRow]) -> Result<()> {
+    tx.execute("DELETE FROM main.BlockRange WHERE UserMarkId = ?1", [mark])?;
+    for row in ranges {
+        cut_ranges(tx, location, &range_of(row))?;
+    }
+    for (block_type, identifier, start, end) in ranges {
+        tx.execute(
+            "INSERT INTO main.BlockRange (BlockType, Identifier, StartToken, EndToken, UserMarkId)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![block_type, identifier, start, end, mark],
+        )?;
+    }
+    Ok(())
+}
+
+/// How a location is shown in a conflict: its title, or its key.
+fn location_label(tx: &Transaction<'_>, location: i64) -> Result<String> {
+    Ok(tx.query_row(
+        "SELECT COALESCE(Title, IFNULL(KeySymbol, '') || ' '
+                || COALESCE(BookNumber || ':' || ChapterNumber, DocumentId, ''))
+         FROM main.Location WHERE LocationId = ?1",
+        [location],
+        |r| r.get(0),
+    )?)
+}
+
+fn conflict(table: &str, guid: &str, summary: String) -> Conflict {
+    Conflict {
+        table: table.into(),
+        guid: guid.into(),
+        summary,
+    }
+}
+
+/// An incoming `UserMark` row.
+struct IncomingMark {
+    id: i64,
+    guid: String,
+    color: i64,
+    location: i64,
+    style: i64,
+    version: i64,
+}
+
+/// Merge `inc.UserMark` with its ranges, matched by `UserMarkGuid`. Returns
+/// guid → local `UserMarkId` of every incoming mark present after the merge,
+/// for rows that refer to marks.
+fn merge_marks(
+    tx: &Transaction<'_>,
+    locations: &HashMap<i64, i64>,
+    incoming_newer: Option<bool>,
+    report: &mut MergeReport,
+) -> Result<HashMap<String, i64>> {
+    let incoming: Vec<IncomingMark> = {
+        let mut stmt = tx.prepare(
+            "SELECT UserMarkId, UserMarkGuid, ColorIndex, LocationId, StyleIndex, Version
+             FROM inc.UserMark ORDER BY UserMarkId",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(IncomingMark {
+                id: r.get(0)?,
+                guid: r.get(1)?,
+                color: r.get(2)?,
+                location: r.get(3)?,
+                style: r.get(4)?,
+                version: r.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut map = HashMap::with_capacity(incoming.len());
+    for mark in incoming {
+        // A mark on a missing location is broken in the backup.
+        let Some(&location) = locations.get(&mark.location) else {
+            continue;
+        };
+        let ranges = mark_ranges(tx, "inc", mark.id)?;
+        let local: Option<(i64, i64, i64)> = tx
+            .query_row(
+                "SELECT UserMarkId, ColorIndex, LocationId FROM main.UserMark
+                 WHERE UserMarkGuid = ?1",
+                [&mark.guid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        match local {
+            None => {
+                // A token has one color: an overlap goes to the newer side.
+                if incoming_newer != Some(true) && overlaps_local(tx, location, &ranges)? {
+                    let summary = location_label(tx, location)?;
+                    report
+                        .conflicts
+                        .push(conflict("UserMark", &mark.guid, summary));
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO main.UserMark (ColorIndex, LocationId, StyleIndex, UserMarkGuid,
+                                                Version)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![mark.color, location, mark.style, mark.guid, mark.version],
+                )?;
+                let id = tx.last_insert_rowid();
+                put_ranges(tx, id, location, &ranges)?;
+                map.insert(mark.guid, id);
+                report.added += 1;
+            }
+            Some((id, color, local_location)) => {
+                map.insert(mark.guid.clone(), id);
+                let same = color == mark.color
+                    && local_location == location
+                    && mark_ranges(tx, "main", id)? == ranges;
+                match incoming_newer {
+                    _ if same => report.unchanged += 1,
+                    Some(true) => {
+                        tx.execute(
+                            "UPDATE main.UserMark SET ColorIndex = ?1, LocationId = ?2,
+                                                      StyleIndex = ?3
+                             WHERE UserMarkId = ?4",
+                            params![mark.color, location, mark.style, id],
+                        )?;
+                        put_ranges(tx, id, location, &ranges)?;
+                        report.updated += 1;
+                    }
+                    Some(false) => report.unchanged += 1,
+                    None => {
+                        let summary = location_label(tx, local_location)?;
+                        report
+                            .conflicts
+                            .push(conflict("UserMark", &mark.guid, summary));
+                    }
+                }
+            }
+        }
+    }
+    // Cutting overlaps can remove a whole local mark that was mapped earlier.
+    let mut gone = Vec::new();
+    for (guid, id) in &map {
+        let exists: bool = tx.query_row(
+            "SELECT count(*) > 0 FROM main.UserMark WHERE UserMarkId = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            gone.push(guid.clone());
+        }
+    }
+    for guid in gone {
+        map.remove(&guid);
+    }
+    Ok(map)
+}
+
+/// Merge `inc.InputField`, matched by (location, `TextTag`).
+fn merge_input_fields(
+    tx: &Transaction<'_>,
+    locations: &HashMap<i64, i64>,
+    incoming_newer: Option<bool>,
+    report: &mut MergeReport,
+) -> Result<()> {
+    // Not every backup has answer fields.
+    if !has_table(tx, "inc", "InputField")? || !has_table(tx, "main", "InputField")? {
+        return Ok(());
+    }
+    let incoming: Vec<(i64, String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT LocationId, TextTag, Value FROM inc.InputField ORDER BY LocationId, TextTag",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (location, tag, value) in incoming {
+        let Some(&location) = locations.get(&location) else {
+            continue;
+        };
+        let local: Option<String> = tx
+            .query_row(
+                "SELECT Value FROM main.InputField WHERE LocationId = ?1 AND TextTag = ?2",
+                params![location, tag],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match (local, incoming_newer) {
+            (None, _) => {
+                tx.execute(
+                    "INSERT INTO main.InputField (LocationId, TextTag, Value) VALUES (?1, ?2, ?3)",
+                    params![location, tag, value],
+                )?;
+                report.added += 1;
+            }
+            (Some(local), _) if local == value => report.unchanged += 1,
+            (Some(_), Some(true)) => {
+                tx.execute(
+                    "UPDATE main.InputField SET Value = ?3 WHERE LocationId = ?1 AND TextTag = ?2",
+                    params![location, tag, value],
+                )?;
+                report.updated += 1;
+            }
+            (Some(_), Some(false)) => report.unchanged += 1,
+            (Some(_), None) => {
+                let summary = location_label(tx, location)?;
+                report.conflicts.push(conflict("InputField", &tag, summary));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Copy the database out of a backup into `dest` and return the manifest.
@@ -1310,5 +1758,437 @@ mod tests {
         }
         // A failed restore leaves the data alone.
         assert_eq!(ud.summary().unwrap().marks, 1);
+    }
+
+    fn backup_of(ud: &UserData, dir: &Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        ud.export_backup(&p).unwrap();
+        p
+    }
+
+    fn set_db_time(ud: &UserData, ts: &str) {
+        ud.conn
+            .execute("UPDATE LastModified SET LastModified = ?1", [ts])
+            .unwrap();
+    }
+
+    fn db_time(ud: &UserData) -> String {
+        ud.conn
+            .query_row("SELECT LastModified FROM LastModified", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn count(ud: &UserData, table: &str) -> i64 {
+        ud.conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn watchtower() -> Loc {
+        Loc {
+            key_symbol: "w".into(),
+            meps_language: 2,
+            issue_tag: 20260800,
+            document_id: Some(2026520),
+            book: None,
+            chapter: None,
+        }
+    }
+
+    #[test]
+    fn merge_keeps_disjoint_marks_from_both_sides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        remote
+            .add_mark(&bible(2), None, 2, &[verse(5, 0, 3)])
+            .unwrap();
+        let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let r = local.merge_backup(&b).unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (1, 0, 0));
+        assert!(r.conflicts.is_empty());
+        assert_eq!(r.device.as_deref(), Some(DEVICE_NAME));
+        assert_eq!(local.marks(&bible(1)).unwrap().len(), 1);
+        assert_eq!(local.marks(&bible(2)).unwrap()[0].color, 2);
+        assert_eq!(local.marks(&bible(2)).unwrap()[0].ranges, [verse(5, 0, 3)]);
+        assert!(local.path().with_extension("db.before-restore").is_file());
+    }
+
+    #[test]
+    fn merge_replaces_an_older_safety_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        let safety = local.path().with_extension("db.before-restore");
+        fs::write(&safety, b"old copy").unwrap();
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        let copy = UserData::open(&safety).unwrap();
+        assert_eq!(count(&copy, "UserMark"), 0);
+    }
+
+    #[test]
+    fn merge_same_location_with_different_ids_makes_no_duplicate_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(9), None, 1, &[verse(1, 0, 3)])
+            .unwrap(); // LocationId 1
+        remote
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap(); // LocationId 1 = other place
+        remote
+            .add_mark(&bible(9), None, 3, &[verse(7, 0, 3)])
+            .unwrap(); // chapter 9 is id 2 here
+        let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        local.merge_backup(&b).unwrap();
+        assert_eq!(count(&local, "Location"), 2);
+        assert_eq!(local.marks(&bible(9)).unwrap().len(), 2);
+        assert_eq!(local.marks(&bible(1)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_location_without_language_stays_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .save_answer(&watchtower(), None, "tt1", "local")
+            .unwrap();
+        // JW Library writes answer locations without a language: NULL must
+        // not match 2, and NULL must match NULL.
+        remote
+            .conn
+            .execute_batch(
+                "INSERT INTO Location (LocationId, DocumentId, IssueTagNumber, KeySymbol, Type)
+                 VALUES (7, 2026520, 20260800, 'w', 0);
+                 INSERT INTO InputField VALUES (7, 'tt2', 'remote');",
+            )
+            .unwrap();
+        let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let r = local.merge_backup(&b).unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(count(&local, "Location"), 2);
+        let again = local.merge_backup(&b).unwrap();
+        assert_eq!((again.added, again.unchanged), (0, 1));
+        assert_eq!(count(&local, "Location"), 2);
+        let answers = local.answers(&watchtower()).unwrap();
+        assert_eq!(answers["tt1"], "local");
+        assert_eq!(answers["tt2"], "remote");
+    }
+
+    #[test]
+    fn merge_same_guid_newer_database_wins_marks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        let remote_path = tmp.path().join("r").join(DB_NAME);
+        let mut remote = UserData::open(&remote_path).unwrap();
+        // The remote starts as a copy of local, then recolors the mark.
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        remote.set_mark_color(&guid, 5).unwrap();
+        set_db_time(&remote, "2030-01-01T00:00:00Z");
+        set_db_time(&local, "2020-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated), (0, 1));
+        assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 5);
+        // Reverse the clocks: the local color stays.
+        set_db_time(&local, "2040-01-01T00:00:00Z");
+        local.set_mark_color(&guid, 2).unwrap();
+        set_db_time(&local, "2040-01-01T00:00:00Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r2.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.updated, 0);
+        assert_eq!(r.unchanged, 1);
+        assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 2);
+    }
+
+    #[test]
+    fn merge_same_guid_newer_database_replaces_ranges() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        remote
+            .conn
+            .execute_batch(
+                "UPDATE BlockRange SET EndToken = 8;
+                 INSERT INTO BlockRange (BlockType, Identifier, StartToken, EndToken, UserMarkId)
+                 VALUES (2, 2, 0, 4, 1);",
+            )
+            .unwrap();
+        set_db_time(&remote, "2030-01-01T00:00:00+00:00");
+        set_db_time(&local, "2029-12-31T23:59:59Z");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!(r.updated, 1);
+        let marks = local.marks(&bible(1)).unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].guid, guid);
+        assert_eq!(marks[0].ranges, [verse(1, 0, 8), verse(2, 0, 4)]);
+        assert_eq!(count(&local, "BlockRange"), 2);
+    }
+
+    #[test]
+    fn merge_equal_clock_different_color_is_a_conflict_and_keeps_local() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .add_mark(&bible(1), Some("Genesis 1"), 1, &[verse(1, 0, 3)])
+            .unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        remote.set_mark_color(&guid, 5).unwrap();
+        local.set_mark_color(&guid, 2).unwrap();
+        // The same instant, written two ways.
+        set_db_time(&remote, "2030-01-01T00:00:00Z");
+        set_db_time(&local, "2030-01-01T00:00:00+00:00");
+        let r = local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        assert_eq!((r.added, r.updated, r.unchanged), (0, 0, 0));
+        assert_eq!(r.conflicts.len(), 1);
+        assert_eq!(r.conflicts[0].table, "UserMark");
+        assert_eq!(r.conflicts[0].guid, guid);
+        assert_eq!(r.conflicts[0].summary, "Genesis 1");
+        assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 2);
+        // Nothing changed, so the local clock stays.
+        assert_eq!(db_time(&local), "2030-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn merge_overlapping_highlights_follow_the_newer_database() {
+        for remote_newer in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            let local_guid = local
+                .add_mark(&bible(1), None, 1, &[verse(1, 0, 9)])
+                .unwrap();
+            let remote_guid = remote
+                .add_mark(&bible(1), None, 2, &[verse(1, 5, 12)])
+                .unwrap();
+            let (old, new) = ("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z");
+            set_db_time(&local, if remote_newer { old } else { new });
+            set_db_time(&remote, if remote_newer { new } else { old });
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            let marks = local.marks(&bible(1)).unwrap();
+            if remote_newer {
+                assert_eq!(r.added, 1);
+                assert!(r.conflicts.is_empty());
+                assert_eq!(marks.len(), 2);
+                assert_eq!(
+                    (marks[0].guid.as_str(), marks[0].color),
+                    (local_guid.as_str(), 1)
+                );
+                assert_eq!(marks[0].ranges, [verse(1, 0, 4)]);
+                assert_eq!(
+                    (marks[1].guid.as_str(), marks[1].color),
+                    (remote_guid.as_str(), 2)
+                );
+                assert_eq!(marks[1].ranges, [verse(1, 5, 12)]);
+            } else {
+                assert_eq!(r.added, 0);
+                assert_eq!(r.conflicts.len(), 1);
+                assert_eq!(r.conflicts[0].table, "UserMark");
+                assert_eq!(r.conflicts[0].guid, remote_guid);
+                assert_eq!(marks.len(), 1);
+                assert_eq!(marks[0].guid, local_guid);
+                assert_eq!(marks[0].ranges, [verse(1, 0, 9)]);
+            }
+        }
+    }
+
+    #[test]
+    fn merge_input_fields_follow_the_newer_database() {
+        let (old, new) = ("2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z");
+        for (local_time, remote_time, expected) in [
+            (old, new, "remote"),
+            (new, old, "local"),
+            (new, new, "local"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            local
+                .save_answer(&watchtower(), None, "tt1", "local")
+                .unwrap();
+            remote
+                .save_answer(&watchtower(), None, "tt1", "remote")
+                .unwrap();
+            remote
+                .save_answer(&watchtower(), None, "tt2", "new")
+                .unwrap();
+            set_db_time(&local, local_time);
+            set_db_time(&remote, remote_time);
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            let answers = local.answers(&watchtower()).unwrap();
+            assert_eq!(answers["tt1"], expected);
+            assert_eq!(answers["tt2"], "new");
+            assert_eq!(r.added, 1);
+            assert_eq!(r.updated, i64::from(expected == "remote"));
+            if local_time == remote_time {
+                assert_eq!(r.conflicts.len(), 1);
+                assert_eq!(r.conflicts[0].table, "InputField");
+                assert_eq!(r.conflicts[0].guid, "tt1");
+            } else {
+                assert!(r.conflicts.is_empty());
+            }
+            assert_eq!(count(&local, "Location"), 1);
+        }
+    }
+
+    #[test]
+    fn merge_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
+        local
+            .save_answer(&watchtower(), None, "tt1", "local")
+            .unwrap();
+        remote
+            .add_mark(&bible(1), None, 3, &[verse(5, 0, 3)])
+            .unwrap();
+        remote
+            .add_mark(&bible(2), None, 4, &[verse(1, 2, 6), verse(2, 0, 1)])
+            .unwrap();
+        remote
+            .save_answer(&watchtower(), None, "tt2", "remote")
+            .unwrap();
+        let b = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let counts = |ud: &UserData| {
+            ["UserMark", "BlockRange", "Location", "InputField"].map(|t| count(ud, t))
+        };
+        let first = local.merge_backup(&b).unwrap();
+        assert_eq!((first.added, first.updated, first.unchanged), (3, 0, 0));
+        let after_first = counts(&local);
+        assert_eq!(after_first, [3, 4, 3, 2]);
+        set_db_time(&local, "2020-01-01T00:00:00Z");
+        let second = local.merge_backup(&b).unwrap();
+        assert_eq!((second.added, second.updated, second.unchanged), (0, 0, 3));
+        assert!(second.conflicts.is_empty());
+        assert_eq!(counts(&local), after_first);
+        // A merge that changes nothing leaves the clock alone.
+        assert_eq!(db_time(&local), "2020-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn merge_rejects_a_bad_backup_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        local
+            .add_mark(&bible(1), None, 4, &[verse(1, 0, 3)])
+            .unwrap();
+        let counts = |ud: &UserData| ["UserMark", "BlockRange", "Location"].map(|t| count(ud, t));
+        let before = counts(&local);
+        let safety = local.path().with_extension("db.before-restore");
+        let attached = |ud: &UserData| -> Vec<String> {
+            let mut stmt = ud
+                .conn
+                .prepare("SELECT name FROM pragma_database_list")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+
+        // Not a zip at all.
+        let garbage = tmp.path().join("x.jwlibrary");
+        fs::write(&garbage, b"not a backup").unwrap();
+        assert!(local.merge_backup(&garbage).is_err());
+
+        // A database without the Note table.
+        let db = tmp.path().join("nonote.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF; DROP TABLE Note;")
+                .unwrap();
+        }
+        let nonote = tmp.path().join("nonote.jwlibrary");
+        {
+            let mut zip = zip::ZipWriter::new(File::create(&nonote).unwrap());
+            zip.start_file(MANIFEST, SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                br#"{"creationDate":"x","version":1,"name":"x","type":0,"userDataBackup":
+                    {"lastModifiedDate":"x","hash":"x","databaseName":"userData.db",
+                     "deviceName":"x","schemaVersion":16}}"#,
+            )
+            .unwrap();
+            zip.start_file(DB_NAME, SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&fs::read(&db).unwrap()).unwrap();
+            zip.finish().unwrap();
+        }
+        assert!(local.merge_backup(&nonote).is_err());
+        // Both were refused before anything was touched.
+        assert!(!safety.exists());
+
+        // A backup that fails halfway: the locations are merged before the
+        // marks, whose table lacks a column.
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .add_mark(&bible(2), None, 2, &[verse(1, 0, 3)])
+            .unwrap();
+        remote
+            .conn
+            .execute_batch("ALTER TABLE UserMark DROP COLUMN Version")
+            .unwrap();
+        let broken = backup_of(&remote, tmp.path(), "broken.jwlibrary");
+        let err = local.merge_backup(&broken).unwrap_err();
+        assert!(err.to_string().contains("Version"), "{err}");
+        // It got past the checks, so the new Location was rolled back.
+        assert!(safety.exists());
+
+        assert_eq!(counts(&local), before);
+        assert_eq!(local.marks(&bible(1)).unwrap()[0].color, 4);
+        let mut fk = local.conn.prepare("PRAGMA foreign_key_check").unwrap();
+        assert!(fk.query([]).unwrap().next().unwrap().is_none());
+        drop(fk);
+        assert_eq!(attached(&local), ["main"]);
+        let leftovers = fs::read_dir(tmp.path().join("l"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".merge-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        // The data still works after the failed merges.
+        local
+            .add_mark(&bible(3), None, 1, &[verse(1, 0, 3)])
+            .unwrap();
     }
 }
