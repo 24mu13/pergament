@@ -96,7 +96,8 @@ press F for fullscreen.
   Hyperlegible Next everywhere, the Bible text included.
 - **Text size**, **updates at startup**, **second display** and **backup**.
   "Merge backups instead of replacing" (Settings > Library & data) combines a
-  backup with your data and keeps the newer version of each item.
+  backup with your data and keeps the newer version of each item. Merging
+  never deletes: an item deleted on one side comes back from the other.
 - **Cache:** shows how much space the catalog, covers and unfinished downloads
   use, and clears it. Downloaded publications and your notes stay.
 
