@@ -46,6 +46,9 @@ pub enum Error {
 
     #[error("no data directory available (set XDG_DATA_HOME or HOME)")]
     NoDataDir,
+
+    #[error("refusing to clear the cache at {path}: {reason}")]
+    UnsafeCache { path: PathBuf, reason: String },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

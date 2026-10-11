@@ -102,6 +102,8 @@ async fn cache_usage(app: AppHandle) -> ApiResult<CacheUsage> {
 async fn clear_cache(app: AppHandle) -> ApiResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        // PERGAMENT_CACHE may point anywhere; never empty the library with it.
+        pergament::cache::check_safe(&state.cache, &state.root).map_err(|e| e.to_string())?;
         // Release the open catalog first; it reloads on next use.
         *state.catalog.lock().map_err(|e| e.to_string())? = None;
         pergament::cache::clear(&state.cache).map_err(|e| e.to_string())
