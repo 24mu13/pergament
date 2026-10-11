@@ -324,6 +324,22 @@ describe("Merging backups", () => {
     ]);
   });
 
+  it("does not call a merge failed when only the conflict dialog fails", async () => {
+    localStorage.setItem("mergeBackups", "true");
+    backend.merge_backup = () => report([{ table: "Note", guid: "g1", summary: "Dusk visits" }]);
+    vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+    vi.mocked(ask).mockResolvedValue(true);
+    vi.mocked(message).mockRejectedValue(new Error("no window"));
+    await dataTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge backup…" }));
+    await waitFor(() => expect(message).toHaveBeenCalled());
+    expect(await screen.findByText("Merged 3 changes")).toBeTruthy();
+    await act(async () => {
+      await vi.mocked(message).mock.results[0].value.catch(() => undefined);
+    });
+    expect(screen.queryByText(/Merge failed/)).toBeNull();
+  });
+
   it("restores instead of merging when it is off", async () => {
     backend.merge_backup = () => report([]);
     backend.restore_backup = () => restoreSummary;

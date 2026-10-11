@@ -392,15 +392,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { title: t("Merge backup?"), kind: "info", okLabel: t("Merge") },
       );
       if (!ok) return;
+      let report;
       try {
-        const report = await api.mergeBackup(path);
-        setUserVersion((v) => v + 1);
-        toast(mergeToast(report));
-        if (report.conflicts.length > 0) {
-          await messageDialog(conflictText(report.conflicts), { title: t("Conflicts"), kind: "warning" });
-        }
+        report = await api.mergeBackup(path);
       } catch (e) {
         toast(t("Merge failed: {error}", { error: String(e) }));
+        return;
+      }
+      setUserVersion((v) => v + 1);
+      toast(mergeToast(report));
+      if (report.conflicts.length > 0) {
+        // The merge is done either way; without a dialog the list goes to a toast.
+        const text = conflictText(report.conflicts);
+        await messageDialog(text, { title: t("Conflicts"), kind: "warning" }).catch(() => toast(text));
       }
       return;
     }
