@@ -17,6 +17,7 @@ import { PublicationView } from "./views/publication";
 import { ReaderView } from "./views/reader";
 import { SettingsView } from "./views/settings";
 import { t } from "./lib/i18n";
+import { installFocusModality } from "./lib/focus";
 import "./styles.css";
 
 function CurrentView() {
@@ -82,6 +83,8 @@ function Shell() {
     </div>
   );
 }
+
+installFocusModality();
 
 // The second display is the same page in another window; it shows only what the app sends.
 createRoot(document.getElementById("root")!).render(
