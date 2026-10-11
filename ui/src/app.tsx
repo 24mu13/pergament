@@ -95,8 +95,8 @@ interface AppContextValue {
   languageName: (code: string) => string;
   /** Running downloads by `taskKey`. */
   downloads: Record<string, Progress>;
-  /** Download and import a catalog publication; resolves to its directory. `lang` defaults to the publication language. */
-  download: (entry: CatalogEntry, lang?: string) => Promise<string | null>;
+  /** Download and import a catalog publication; resolves to its directory. `lang` defaults to the publication language; `quiet` skips the success toast. */
+  download: (entry: CatalogEntry, lang?: string, options?: { quiet?: boolean }) => Promise<string | null>;
   /** Newer versions of downloaded publications, found by checking the catalog. */
   updates: {
     items: UpdateInfo[];
@@ -270,12 +270,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const langRef = useRef(lang);
   langRef.current = lang;
   const download = useCallback(
-    async (entry: CatalogEntry, lang?: string) => {
+    async (entry: CatalogEntry, lang?: string, options?: { quiet?: boolean }) => {
       const key = taskKey(entry);
       setDownloads((d) => ({ ...d, [key]: { task: key, done: 0, total: entry.item.size } }));
       try {
         const dir = await api.downloadPublication(entry.item, lang ?? langRef.current);
-        toast(t("Imported {title}", { title: entry.item.issue_title || entry.item.title }));
+        if (!options?.quiet) toast(t("Imported {title}", { title: entry.item.issue_title || entry.item.title }));
         await refreshPublications();
         setCatalogVersion((v) => v + 1);
         return dir;

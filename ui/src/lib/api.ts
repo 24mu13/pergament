@@ -385,7 +385,7 @@ export const api = {
     invoke<DatedPage | null>("dated_page", { lang, kind, date }),
   missingEntry: (lang: string, href: string) => invoke<CatalogEntry | null>("missing_entry", { lang, href }),
   referencedPublications: (dir: string, lang: string) =>
-    invoke<CatalogEntry[] | null>("referenced_publications", { dir, lang }),
+    invoke<LanguageEntry[] | null>("referenced_publications", { dir, lang }),
   pageUserData: (target: Target) => invoke<PageUserData>("page_user_data", { target }),
   saveAnswer: (target: Target, tag: string, value: string) => invoke<void>("save_answer", { target, tag, value }),
   addMark: (target: Target, color: number, ranges: MarkRange[]) =>

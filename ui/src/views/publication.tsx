@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { DownloadCloud, FileText, Star } from "lucide-react";
 import { AppBar, BarButton, useApp } from "@/app";
-import { api, documentTarget, type CatalogEntry, type PubDetail, type TocNode } from "@/lib/api";
+import { api, documentTarget, type LanguageEntry, type PubDetail, type TocNode } from "@/lib/api";
 import { booksTabIndex, hasBooks, shortBookName } from "@/lib/bible";
 import { t } from "@/lib/i18n";
-import { confirmText } from "@/lib/references";
+import { confirmText, failedText, importedText } from "@/lib/references";
 import { GoToButton } from "@/components/go-to";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -103,27 +103,47 @@ function FavoriteButton({ dir }: { dir: string }) {
 /** Downloads the publications this one links to, after showing what that costs. */
 function ReferencesButton({ dir }: { dir: string }) {
   const { lang, download, toast, catalogVersion } = useApp();
-  const [missing, setMissing] = useState<CatalogEntry[]>([]);
+  // `undefined` while scanning, `null` without a catalog.
+  const [missing, setMissing] = useState<LanguageEntry[] | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const running = useRef(false);
   useEffect(() => {
     let live = true;
-    api.referencedPublications(dir, lang).then((m) => live && setMissing(m ?? []), () => undefined);
+    api.referencedPublications(dir, lang).then((m) => live && setMissing(m), () => undefined);
     return () => {
       live = false;
     };
   }, [dir, lang, catalogVersion]);
-  if (missing.length === 0) return null;
+  if (missing === undefined || (missing !== null && missing.length === 0)) return null;
   const run = async () => {
-    const ok = await ask(confirmText(missing), {
-      title: t("Download referenced publications?"),
-      okLabel: t("Download"),
-    });
-    if (!ok) return;
-    let failed = 0;
-    for (const entry of missing) if ((await download(entry)) === null) failed++;
-    if (failed > 0) toast(t("{count} downloads failed", { count: failed }));
+    if (missing === null) {
+      toast(t("Load the catalog first to download referenced publications."));
+      return;
+    }
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      const ok = await ask(confirmText(missing.map((m) => m.entry)), {
+        title: t("Download referenced publications?"),
+        okLabel: t("Download"),
+      });
+      if (!ok) return;
+      let imported = 0;
+      let failed = 0;
+      for (const { code, entry } of missing) {
+        if ((await download(entry, code, { quiet: true })) === null) failed++;
+        else imported++;
+      }
+      if (imported > 0) toast(importedText(imported));
+      if (failed > 0) toast(failedText(failed));
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
   };
   return (
-    <BarButton label="Download referenced publications" onClick={() => void run()}>
+    <BarButton label="Download referenced publications" onClick={() => void run()} disabled={busy}>
       <DownloadCloud size={18} strokeWidth={1.6} />
     </BarButton>
   );
