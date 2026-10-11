@@ -117,6 +117,8 @@ const scenes = [
     await page.getByText("Interface language").waitFor();
     await page.getByRole("tab", { name: "Library & data" }).click();
     await page.getByRole("heading", { name: "Cache" }).waitFor();
+    // The tab is a little taller than the window; show the whole Cache section.
+    await page.getByRole("tabpanel").evaluate((el) => el.scrollTo(0, el.scrollHeight));
   }],
 ].filter(([name]) => only.length === 0 || only.some((o) => name.startsWith(o)));
 
