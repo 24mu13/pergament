@@ -510,12 +510,21 @@ async fn referenced_publications(
     app: AppHandle,
     dir: String,
     lang: String,
-) -> ApiResult<Option<Vec<api::CatalogEntry>>> {
+) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
-        with_catalog(&app, &lang, |c, meps, lib| {
-            let hrefs = api::publication_hrefs(lib, &dir)?;
-            api::missing_references(c, meps, lib, &hrefs)
-        })
+        let Some(catalog) = cached_catalog(&app)? else {
+            return Ok(None);
+        };
+        // The scan renders every document. It uses its own library handle so the
+        // shared library and the catalog stay free for other commands meanwhile.
+        let state = app.state::<AppState>();
+        let own = Library::open(&state.root).map_err(|e| e.to_string())?;
+        let hrefs = api::publication_hrefs(&own, &dir)?;
+        let catalog = catalog.lock().map_err(|e| e.to_string())?;
+        let meps = catalog
+            .meps_language(&lang)
+            .ok_or_else(|| format!("unknown language code {lang:?}"))?;
+        api::missing_references(&catalog, meps, &own, &hrefs).map(Some)
     })
     .await
     .map_err(|e| e.to_string())?

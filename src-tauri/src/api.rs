@@ -1,6 +1,7 @@
 //! P        assert_eq!(langs.iter().map(|l| l.code.as_str()).collect::<Vec<_>>(), ["X"]);ain functions behind the Tauri commands, so they can be tested without
 //! a running app. Everything returned is serialized for the frontend.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use pergament::catalog::{
@@ -252,8 +253,11 @@ pub fn update_info(update: pergament::updates::Update) -> UpdateInfo {
     }
 }
 
-fn entries(items: Vec<CatalogItem>, library: &Library) -> ApiResult<Vec<CatalogEntry>> {
-    let local: std::collections::HashMap<(String, i64, i64), String> = library
+/// The directory of each downloaded publication, by (symbol, issue tag, language).
+type LocalMap = HashMap<(String, i64, i64), String>;
+
+fn local_map(library: &Library) -> ApiResult<LocalMap> {
+    Ok(library
         .list()
         .map_err(err)?
         .into_iter()
@@ -263,20 +267,28 @@ fn entries(items: Vec<CatalogItem>, library: &Library) -> ApiResult<Vec<CatalogE
                 e.dir_name,
             )
         })
-        .collect();
+        .collect())
+}
+
+fn entry_of(item: CatalogItem, local: &LocalMap) -> CatalogEntry {
+    CatalogEntry {
+        category: category_name(item.publication_type),
+        image_url: item
+            .image
+            .as_ref()
+            .map(|p| format!("{MEDIA_SCHEME}://localhost/{CATALOG_IMAGES}/{p}")),
+        local: local
+            .get(&(item.symbol.clone(), item.issue_tag, item.meps_language))
+            .cloned(),
+        item,
+    }
+}
+
+fn entries(items: Vec<CatalogItem>, library: &Library) -> ApiResult<Vec<CatalogEntry>> {
+    let local = local_map(library)?;
     Ok(items
         .into_iter()
-        .map(|item| CatalogEntry {
-            category: category_name(item.publication_type),
-            image_url: item
-                .image
-                .as_ref()
-                .map(|p| format!("{MEDIA_SCHEME}://localhost/{CATALOG_IMAGES}/{p}")),
-            local: local
-                .get(&(item.symbol.clone(), item.issue_tag, item.meps_language))
-                .cloned(),
-            item,
-        })
+        .map(|item| entry_of(item, &local))
         .collect())
 }
 
@@ -629,37 +641,46 @@ pub fn dated_page(
     Ok(None)
 }
 
-/// The catalog publication a link points into, so it can be downloaded. Bible
-/// links without a book document fall back to the study Bible in `meps`.
+/// The catalog publication a link points into. Bible links without a book
+/// document fall back to the study Bible in `meps`.
+fn linked_item(catalog: &Catalog, meps: i64, link: &Link) -> ApiResult<Option<CatalogItem>> {
+    let in_language = |code: &str| catalog.meps_language(code).unwrap_or(meps);
+    match link {
+        Link::Document {
+            lang_code,
+            meps_document_id,
+        } => catalog
+            .by_document(in_language(lang_code), *meps_document_id)
+            .map_err(err),
+        Link::BookVerse {
+            lang_code,
+            book_document,
+            ..
+        } => catalog
+            .by_document(in_language(lang_code), *book_document)
+            .map_err(err),
+        Link::Bible { .. } => catalog.find("nwtsty", meps, None).map_err(err),
+        _ => Ok(None),
+    }
+}
+
+/// The catalog publication a link points into, so it can be downloaded.
 pub fn missing_entry(
     catalog: &Catalog,
     meps: i64,
     library: &Library,
     href: &str,
 ) -> ApiResult<Option<CatalogEntry>> {
-    let in_language = |code: &str| catalog.meps_language(code).unwrap_or(meps);
-    let item = match Link::parse(href) {
-        Some(Link::Document {
-            lang_code,
-            meps_document_id,
-        }) => catalog
-            .by_document(in_language(&lang_code), meps_document_id)
-            .map_err(err)?,
-        Some(Link::BookVerse {
-            lang_code,
-            book_document,
-            ..
-        }) => catalog
-            .by_document(in_language(&lang_code), book_document)
-            .map_err(err)?,
-        Some(Link::Bible { .. }) => catalog.find("nwtsty", meps, None).map_err(err)?,
-        _ => None,
+    let Some(link) = Link::parse(href) else {
+        return Ok(None);
     };
+    let item = linked_item(catalog, meps, &link)?;
     Ok(entries(item.into_iter().collect(), library)?.pop())
 }
 
 /// `pergament://pub|verse|note/…` link targets in rendered HTML, first-seen order, deduped.
 pub fn collect_hrefs(html: &str) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for value in attr_values(html, "href") {
         let wanted = [
@@ -669,35 +690,81 @@ pub fn collect_hrefs(html: &str) -> Vec<String> {
         ]
         .iter()
         .any(|p| value.starts_with(p));
-        if wanted && !out.iter().any(|h| h == value) {
+        if wanted && seen.insert(value) {
             out.push(value.to_owned());
         }
     }
     out
 }
 
-/// Catalog publications the links point into that are not downloaded yet.
+/// What a link points at, ignoring the position inside the document: links with
+/// the same key resolve to the same publication.
+#[derive(Hash, PartialEq, Eq)]
+enum TargetKey {
+    Document(String, i64),
+    Bible,
+}
+
+fn target_key(link: &Link) -> Option<TargetKey> {
+    match link {
+        Link::Document {
+            lang_code,
+            meps_document_id,
+        } => Some(TargetKey::Document(lang_code.clone(), *meps_document_id)),
+        Link::BookVerse {
+            lang_code,
+            book_document,
+            ..
+        } => Some(TargetKey::Document(lang_code.clone(), *book_document)),
+        Link::Bible { .. } => Some(TargetKey::Bible),
+        _ => None,
+    }
+}
+
+/// Catalog publications the links point into that cannot be opened yet: no
+/// downloaded publication holds the target and the publication itself is not
+/// downloaded. Each is listed once, with its catalog language code.
 pub fn missing_references(
     catalog: &Catalog,
     meps: i64,
     library: &Library,
     hrefs: &[String],
-) -> ApiResult<Vec<CatalogEntry>> {
-    let mut out: Vec<CatalogEntry> = Vec::new();
+) -> ApiResult<Vec<LanguageEntry>> {
+    let local = local_map(library)?;
+    let mut seen: HashSet<TargetKey> = HashSet::new();
+    let mut found: HashSet<(String, i64, i64)> = HashSet::new();
+    let mut out: Vec<LanguageEntry> = Vec::new();
     for href in hrefs {
-        let Some(entry) = missing_entry(catalog, meps, library, href)? else {
+        let Some(link) = Link::parse(href) else {
             continue;
         };
-        let same = |o: &CatalogEntry| {
-            (&o.item.symbol, o.item.issue_tag, o.item.meps_language)
-                == (
-                    &entry.item.symbol,
-                    entry.item.issue_tag,
-                    entry.item.meps_language,
-                )
+        let Some(key) = target_key(&link) else {
+            continue;
         };
-        if entry.local.is_none() && !out.iter().any(same) {
-            out.push(entry);
+        if !seen.insert(key) {
+            continue;
+        }
+        // Links that open already are not missing, whatever the catalog says.
+        if navigate::resolve(library, None, &link)
+            .map_err(err)?
+            .is_some()
+        {
+            continue;
+        }
+        let Some(item) = linked_item(catalog, meps, &link)? else {
+            continue;
+        };
+        let Some(code) = catalog.language_code(item.meps_language).map(str::to_owned) else {
+            continue;
+        };
+        let entry = entry_of(item, &local);
+        let id = (
+            entry.item.symbol.clone(),
+            entry.item.issue_tag,
+            entry.item.meps_language,
+        );
+        if entry.local.is_none() && found.insert(id) {
+            out.push(LanguageEntry { code, entry });
         }
     }
     Ok(out)
@@ -707,6 +774,7 @@ pub fn missing_references(
 pub fn publication_hrefs(library: &Library, dir: &str) -> ApiResult<Vec<String>> {
     let (_, publication) = open_entry(library, dir)?;
     let renderer = Renderer::new(&publication, RenderOptions::default());
+    let mut seen: HashSet<String> = HashSet::new();
     let mut hrefs: Vec<String> = Vec::new();
     for doc in publication.documents().map_err(err)? {
         if !doc.has_content {
@@ -716,7 +784,7 @@ pub fn publication_hrefs(library: &Library, dir: &str) -> ApiResult<Vec<String>>
             continue;
         };
         for h in collect_hrefs(&html) {
-            if !hrefs.contains(&h) {
+            if seen.insert(h.clone()) {
                 hrefs.push(h);
             }
         }
@@ -1093,6 +1161,11 @@ mod tests {
             .collect()
     }
 
+    fn ref_keys(found: &[LanguageEntry]) -> Vec<String> {
+        let entries: Vec<CatalogEntry> = found.iter().map(|l| l.entry.clone()).collect();
+        keys(&entries)
+    }
+
     #[test]
     fn collects_publication_hrefs_once() {
         let html = r##"<a href="pergament://pub/X:1001070144/1-1">a</a>
@@ -1121,8 +1194,79 @@ mod tests {
             "pergament://pub/X:999/1-1".to_owned(), // not in the catalog
         ];
         let found = missing_references(&cat, 2, &lib, &hrefs).unwrap();
-        assert_eq!(keys(&found), vec!["w26_2_20260800", "lff_2_0"]);
-        assert!(found.iter().all(|e| e.local.is_none()));
+        assert_eq!(ref_keys(&found), vec!["w26_2_20260800", "lff_2_0"]);
+        assert!(found.iter().all(|e| e.entry.local.is_none()));
+    }
+
+    /// Pretend `symbol` (German, `issue`) is downloaded and holds the documents `meps_ids`.
+    fn install(root: &std::path::Path, symbol: &str, issue: i64, meps_ids: &[i64]) {
+        let dir = format!("{symbol}_2_{issue}");
+        std::fs::create_dir_all(root.join("publications").join(&dir)).unwrap();
+        let db =
+            rusqlite::Connection::open(root.join("publications").join(&dir).join("c.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE Document (DocumentId INTEGER PRIMARY KEY, MepsDocumentId INTEGER);",
+        )
+        .unwrap();
+        for id in meps_ids {
+            db.execute("INSERT INTO Document VALUES (?1, ?1)", [id])
+                .unwrap();
+        }
+        drop(db);
+        let index = rusqlite::Connection::open(root.join("index.sqlite")).unwrap();
+        index
+            .execute(
+                "INSERT INTO publication (symbol, meps_language, issue_tag, year, title, dir_name,
+                     db_file, contents_hash, imported_at)
+                 VALUES (?1, 2, ?2, 2026, 't', ?3, 'c.db', 'h', 0)",
+                rusqlite::params![symbol, issue.to_string(), dir],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn missing_references_carry_the_catalog_language_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        // The UI language is English (0), the link is German: the item and its code are German.
+        let hrefs = vec!["pergament://pub/X:1001070144/1-1".to_owned()];
+        let found = missing_references(&cat, 0, &lib, &hrefs).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].code, "X");
+        assert_eq!(found[0].entry.item.meps_language, 2);
+    }
+
+    #[test]
+    fn links_that_open_already_are_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let root = dir.path().join("lib");
+        let lib = Library::open(&root).unwrap();
+        // An older issue holds the document the catalog attributes to the August issue.
+        install(&root, "w25", 20250800, &[1001070144]);
+        let hrefs = vec![
+            "pergament://pub/X:1001070144/1-1".to_owned(),
+            "pergament://pub/X:1001070200/1-1".to_owned(),
+        ];
+        let found = missing_references(&cat, 2, &lib, &hrefs).unwrap();
+        assert_eq!(ref_keys(&found), vec!["lff_2_0"]);
+    }
+
+    #[test]
+    fn downloaded_publications_are_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let root = dir.path().join("lib");
+        let lib = Library::open(&root).unwrap();
+        // Downloaded, but the link target is not in it, so only the catalog entry says where it lives.
+        install(&root, "w26", 20260800, &[42]);
+        let hrefs = vec![
+            "pergament://pub/X:1001070144/1-1".to_owned(),
+            "pergament://pub/X:1001070200/1-1".to_owned(),
+        ];
+        let found = missing_references(&cat, 2, &lib, &hrefs).unwrap();
+        assert_eq!(ref_keys(&found), vec!["lff_2_0"]);
     }
 
     #[test]
