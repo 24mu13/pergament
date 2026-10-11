@@ -310,6 +310,11 @@ export const de: Record<string, string> = {
   "Download referenced publications": "Referenzierte Publikationen herunterladen",
   "Download referenced publications?": "Referenzierte Publikationen herunterladen?",
   "… and {count} more": "… und {count} weitere",
+  "1 publication, {size} in total:": "1 Publikation, insgesamt {size}:",
   "{count} publications, {size} in total:": "{count} Publikationen, insgesamt {size}:",
+  "1 download failed": "1 Download fehlgeschlagen",
   "{count} downloads failed": "{count} Downloads fehlgeschlagen",
+  "Imported 1 publication": "1 Publikation importiert",
+  "Imported {count} publications": "{count} Publikationen importiert",
+  "Load the catalog first to download referenced publications.": "Lade zuerst den Katalog, um referenzierte Publikationen herunterzuladen.",
 };
