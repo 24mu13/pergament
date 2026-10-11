@@ -291,6 +291,20 @@ export const de: Record<string, string> = {
   "Zoom in": "Vergrößern",
   "Zoom out": "Verkleinern",
   "Reset zoom": "Zoom zurücksetzen",
+  // Cache
+  Cache: "Zwischenspeicher",
+  Catalog: "Katalog",
+  "Cover images": "Titelbilder",
+  "Unfinished downloads": "Unfertige Downloads",
+  Total: "Gesamt",
+  "Clear cache": "Zwischenspeicher leeren",
+  "Clear cache?": "Zwischenspeicher leeren?",
+  "Cache cleared": "Zwischenspeicher geleert",
+  "Could not clear the cache: {error}": "Der Zwischenspeicher konnte nicht geleert werden: {error}",
+  "Cached files are downloaded again when you need them.": "Zwischengespeicherte Dateien werden bei Bedarf erneut heruntergeladen.",
+  "Removes the catalog, cover images and unfinished downloads. Downloaded publications and your notes stay. The catalog (about 58 MB) is downloaded again when you next need it.":
+    "Entfernt den Katalog, Titelbilder und unfertige Downloads. Heruntergeladene Publikationen und deine Notizen bleiben erhalten. Der Katalog (etwa 58 MB) wird beim nächsten Bedarf erneut heruntergeladen.",
+  "Needs network": "Benötigt Netzwerk",
   // Updates
   Updates: "Aktualisierungen",
   Update: "Aktualisieren",

@@ -30,6 +30,7 @@ import { UpdatesTab } from "@/views/updates";
 import { SettingsView } from "@/views/settings";
 import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 beforeEach(() => {
   calls.length = 0;
@@ -134,6 +135,35 @@ describe("Settings", () => {
     expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole("tab", { name: "About" }));
     expect(await screen.findByText(/unofficial reader/)).toBeTruthy();
+  });
+});
+
+describe("Settings cache", () => {
+  const usage = { catalog: 58_000_000, covers: 2_000_000, partial: 0, other: 400_000, total: 60_400_000 };
+  const open = async () => {
+    backend.cache_usage = () => usage;
+    backend.clear_cache = () => null;
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+    expect(await screen.findByText("60 MB")).toBeTruthy();
+  };
+  const count = (cmd: string) => calls.filter((c) => c.cmd === cmd).length;
+
+  it("keeps the cache when the confirmation is declined", async () => {
+    vi.mocked(ask).mockResolvedValue(false);
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "Clear cache" }));
+    await waitFor(() => expect(ask).toHaveBeenCalled());
+    expect(count("clear_cache")).toBe(0);
+  });
+
+  it("clears the cache once confirmed and measures it again", async () => {
+    vi.mocked(ask).mockResolvedValue(true);
+    await open();
+    const before = count("cache_usage");
+    fireEvent.click(screen.getByRole("button", { name: "Clear cache" }));
+    await waitFor(() => expect(count("clear_cache")).toBe(1));
+    await waitFor(() => expect(count("cache_usage")).toBeGreaterThan(before));
   });
 });
 
