@@ -506,6 +506,22 @@ async fn dated_page(
 }
 
 #[tauri::command]
+async fn referenced_publications(
+    app: AppHandle,
+    dir: String,
+    lang: String,
+) -> ApiResult<Option<Vec<api::CatalogEntry>>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_catalog(&app, &lang, |c, meps, lib| {
+            let hrefs = api::publication_hrefs(lib, &dir)?;
+            api::missing_references(c, meps, lib, &hrefs)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn missing_entry(
     app: AppHandle,
     lang: String,
@@ -908,6 +924,7 @@ pub fn run() {
             download_publication,
             dated_page,
             missing_entry,
+            referenced_publications,
             page_user_data,
             save_answer,
             add_mark,

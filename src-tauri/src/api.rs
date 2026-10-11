@@ -12,7 +12,7 @@ use pergament::links::{Link, MediaKind, MediaRef};
 use pergament::mediator;
 use pergament::navigate::{self, Page, Target, TargetKind};
 use pergament::reader::{BibleBook, TocNode};
-use pergament::render::media_name;
+use pergament::render::{RenderOptions, Renderer, media_name};
 use pergament::userdata::{Loc, Mark, Note, UserData};
 use pergament::{Entry, Library, Publication};
 use serde::Serialize;
@@ -500,11 +500,13 @@ fn date_string(n: i64) -> String {
 
 /// Values of `attr="…"` in raw publication HTML, in order.
 fn attr_values<'h>(html: &'h str, attr: &str) -> Vec<&'h str> {
-    let needle = format!("{attr}=\"");
+    let needle = format!("{attr}=");
     html.match_indices(&needle)
         .filter_map(|(i, _)| {
             let rest = &html[i + needle.len()..];
-            rest.find('"').map(|end| &rest[..end])
+            let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+            let rest = &rest[1..];
+            rest.find(quote).map(|end| &rest[..end])
         })
         .collect()
 }
@@ -654,6 +656,72 @@ pub fn missing_entry(
         _ => None,
     };
     Ok(entries(item.into_iter().collect(), library)?.pop())
+}
+
+/// `pergament://pub|verse|note/…` link targets in rendered HTML, first-seen order, deduped.
+pub fn collect_hrefs(html: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in attr_values(html, "href") {
+        let wanted = [
+            "pergament://pub/",
+            "pergament://verse/",
+            "pergament://note/",
+        ]
+        .iter()
+        .any(|p| value.starts_with(p));
+        if wanted && !out.iter().any(|h| h == value) {
+            out.push(value.to_owned());
+        }
+    }
+    out
+}
+
+/// Catalog publications the links point into that are not downloaded yet.
+pub fn missing_references(
+    catalog: &Catalog,
+    meps: i64,
+    library: &Library,
+    hrefs: &[String],
+) -> ApiResult<Vec<CatalogEntry>> {
+    let mut out: Vec<CatalogEntry> = Vec::new();
+    for href in hrefs {
+        let Some(entry) = missing_entry(catalog, meps, library, href)? else {
+            continue;
+        };
+        let same = |o: &CatalogEntry| {
+            (&o.item.symbol, o.item.issue_tag, o.item.meps_language)
+                == (
+                    &entry.item.symbol,
+                    entry.item.issue_tag,
+                    entry.item.meps_language,
+                )
+        };
+        if entry.local.is_none() && !out.iter().any(same) {
+            out.push(entry);
+        }
+    }
+    Ok(out)
+}
+
+/// Every link target in the documents of `dir`; documents that fail to render are skipped.
+pub fn publication_hrefs(library: &Library, dir: &str) -> ApiResult<Vec<String>> {
+    let (_, publication) = open_entry(library, dir)?;
+    let renderer = Renderer::new(&publication, RenderOptions::default());
+    let mut hrefs: Vec<String> = Vec::new();
+    for doc in publication.documents().map_err(err)? {
+        if !doc.has_content {
+            continue;
+        }
+        let Ok(html) = renderer.document(doc.id) else {
+            continue;
+        };
+        for h in collect_hrefs(&html) {
+            if !hrefs.contains(&h) {
+                hrefs.push(h);
+            }
+        }
+    }
+    Ok(hrefs)
 }
 
 /// The user data location of a page, and a title to store with it.
@@ -963,7 +1031,8 @@ mod tests {
              CREATE TABLE PublicationAttribute (Name TEXT, Id INTEGER PRIMARY KEY);
              CREATE TABLE PublicationAttributeMap (PublicationId INTEGER, PublicationAttributeId INTEGER);
              CREATE TABLE CuratedAsset (ListType INTEGER, SortOrder INTEGER, PublicationAssetId INTEGER);
-             CREATE TABLE DatedText (Class INTEGER, Start TEXT, End TEXT, PublicationId INTEGER);",
+             CREATE TABLE DatedText (Class INTEGER, Start TEXT, End TEXT, PublicationId INTEGER);
+             CREATE TABLE PublicationDocument (PublicationId INTEGER, DocumentId INTEGER);",
         )
         .unwrap();
         // (id, meps, issue, title, symbol, key symbol)
@@ -1003,6 +1072,11 @@ mod tests {
             )
             .unwrap();
         }
+        c.execute(
+            "INSERT INTO PublicationDocument VALUES (1, 1001070144), (3, 1001070200)",
+            [],
+        )
+        .unwrap();
         drop(c);
         Catalog::open(&path, "test".into()).unwrap()
     }
@@ -1017,6 +1091,38 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn collects_publication_hrefs_once() {
+        let html = r##"<a href="pergament://pub/X:1001070144/1-1">a</a>
+            <a href="https://example.org/">b</a> <a href="#fn1">c</a>
+            <a href="pergament://pub/X:1001070144/1-1">dup</a>
+            <a href='pergament://verse/X:1001070005/1:1'>v</a>"##;
+        assert_eq!(
+            collect_hrefs(html),
+            vec![
+                "pergament://pub/X:1001070144/1-1".to_owned(),
+                "pergament://verse/X:1001070005/1:1".to_owned(),
+            ]
+        );
+        assert!(collect_hrefs("<p>no links</p>").is_empty());
+    }
+
+    #[test]
+    fn missing_references_lists_each_publication_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        let hrefs = vec![
+            "pergament://pub/X:1001070144/1-1".to_owned(),
+            "pergament://pub/X:1001070144/2-2".to_owned(), // same publication
+            "pergament://pub/X:1001070200/1-1".to_owned(),
+            "pergament://pub/X:999/1-1".to_owned(), // not in the catalog
+        ];
+        let found = missing_references(&cat, 2, &lib, &hrefs).unwrap();
+        assert_eq!(keys(&found), vec!["w26_2_20260800", "lff_2_0"]);
+        assert!(found.iter().all(|e| e.local.is_none()));
     }
 
     #[test]
