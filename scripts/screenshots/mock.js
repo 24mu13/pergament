@@ -627,6 +627,8 @@
     media_downloads: () => [],
     remove_media: () => null,
     check_updates: () => [],
+    cache_usage: () => ({ catalog: 58_000_000, covers: 9_400_000, partial: 0, other: 7_300_000, total: 74_700_000 }),
+    clear_cache: () => null,
     year_text: () => ({ text: "“Carry the lamp ahead of you.”", reference: "Lanterns 10:4" }),
     open_display: () => null,
     close_display: () => null,

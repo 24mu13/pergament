@@ -175,6 +175,21 @@ export const de: Record<string, string> = {
   "Restore failed: {error}": "Wiederherstellen fehlgeschlagen: {error}",
   "Restored {marks} highlights and {notes} notes": "{marks} Markierungen und {notes} Notizen wiederhergestellt",
   " from {device}": " von {device}",
+  "Merge backup…": "Sicherung zusammenführen…",
+  "Merge backup?": "Sicherung zusammenführen?",
+  Merge: "Zusammenführen",
+  "Merging adds what is only in the backup and keeps the newer version of everything that is in both. Nothing is deleted. Your current data is kept as userData.db.before-restore.":
+    "Beim Zusammenführen wird hinzugefügt, was nur in der Sicherung steht, und von allem, was in beiden steht, bleibt die neuere Version erhalten. Es wird nichts gelöscht. Deine aktuellen Daten bleiben als userData.db.before-restore erhalten.",
+  "Merge failed: {error}": "Zusammenführen fehlgeschlagen: {error}",
+  "Merge backups instead of replacing": "Sicherungen zusammenführen statt ersetzen",
+  "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; with merging turned on, backups are merged into it instead and the newer version of everything in both is kept. Either way the previous data is kept as userData.db.before-restore in the library folder.":
+    "Markierungen, Notizen, Tags und Lesezeichen als .jwlibrary-Datei. Beim Wiederherstellen werden die aktuellen Daten ersetzt; ist das Zusammenführen eingeschaltet, werden Sicherungen stattdessen hineingeführt und von allem, was in beiden steht, bleibt die neuere Version. In beiden Fällen bleiben die bisherigen Daten als userData.db.before-restore im Bibliotheksordner erhalten.",
+  "Nothing new in the backup": "Die Sicherung enthält nichts Neues",
+  "Merged 1 change": "1 Änderung zusammengeführt",
+  "Merged {count} changes": "{count} Änderungen zusammengeführt",
+  Conflicts: "Konflikte",
+  "1 conflict, your version was kept:": "1 Konflikt, deine Version wurde behalten:",
+  "{count} conflicts, your version was kept:": "{count} Konflikte, deine Version wurde behalten:",
   "Backups are .jwlibrary files with highlights, notes, tags and bookmarks.":
     "Sicherungen sind .jwlibrary-Dateien mit Markierungen, Notizen, Tags und Lesezeichen.",
   "Notes and Tags": "Notizen und Tags",
@@ -226,6 +241,9 @@ export const de: Record<string, string> = {
   "Catalog: {error}": "Katalog: {error}",
 
   // Settings
+  Interface: "Oberfläche",
+  Reading: "Lesen",
+  "Library & data": "Bibliothek & Daten",
   "Interface language": "Sprache der Oberfläche",
   "Follow system": "Wie das System",
   English: "English",
@@ -235,8 +253,6 @@ export const de: Record<string, string> = {
   Dark: "Dunkel",
   "Text size": "Textgröße",
   "In the beginning God created the heavens and the earth.": "Am Anfang erschuf Gott Himmel und Erde.",
-  "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; the previous data is kept as userData.db.before-restore in the library folder.":
-    "Markierungen, Notizen, Tags und Lesezeichen als .jwlibrary-Datei. Beim Wiederherstellen werden die aktuellen Daten ersetzt; die bisherigen Daten bleiben als userData.db.before-restore im Bibliotheksordner erhalten.",
   About: "Info",
   "Pergament is an unofficial reader for publications you import or download yourself, for personal use. It is not affiliated with Jehovah's Witnesses or the Watch Tower Bible and Tract Society and contains no publication content. No telemetry.":
     "Pergament ist ein inoffizieller Leser für Publikationen, die du selbst importierst oder herunterlädst, zum persönlichen Gebrauch. Es steht in keiner Verbindung zu Jehovas Zeugen oder zur Wachtturm-Bibel- und Traktat-Gesellschaft und enthält keine Publikationsinhalte. Keine Telemetrie.",
@@ -288,6 +304,22 @@ export const de: Record<string, string> = {
   "Zoom in": "Vergrößern",
   "Zoom out": "Verkleinern",
   "Reset zoom": "Zoom zurücksetzen",
+  // Cache
+  Cache: "Zwischenspeicher",
+  Catalog: "Katalog",
+  "Cover images": "Titelbilder",
+  "Unfinished downloads": "Unfertige Downloads",
+  Total: "Gesamt",
+  "Clear cache": "Zwischenspeicher leeren",
+  "Clear cache?": "Zwischenspeicher leeren?",
+  "Cache cleared": "Zwischenspeicher geleert",
+  "Cannot measure the cache": "Der Zwischenspeicher kann nicht gemessen werden",
+  "Wait for the running downloads to finish.": "Warte, bis die laufenden Downloads fertig sind.",
+  "Could not clear the cache: {error}": "Der Zwischenspeicher konnte nicht geleert werden: {error}",
+  "Cached files are downloaded again when you need them.": "Zwischengespeicherte Dateien werden bei Bedarf erneut heruntergeladen.",
+  "Removes the catalog, cover images and unfinished downloads. Downloaded publications and your notes stay. The catalog (about 58 MB) is downloaded again when you next need it.":
+    "Entfernt den Katalog, Titelbilder und unfertige Downloads. Heruntergeladene Publikationen und deine Notizen bleiben erhalten. Der Katalog (etwa 58 MB) wird beim nächsten Bedarf erneut heruntergeladen.",
+  "Needs network": "Benötigt Netzwerk",
   // Updates
   Updates: "Aktualisierungen",
   Update: "Aktualisieren",
@@ -307,4 +339,14 @@ export const de: Record<string, string> = {
   "Check for publication updates at startup": "Beim Start auf Aktualisierungen von Publikationen prüfen",
   "Compares your downloaded publications with the catalog, which is refreshed at most once a day, and only if you have loaded the catalog before. Nothing is downloaded until you update.":
     "Vergleicht deine heruntergeladenen Publikationen mit dem Katalog, der höchstens einmal am Tag aktualisiert wird, und nur, wenn du den Katalog schon einmal geladen hast. Es wird nichts heruntergeladen, bis du aktualisierst.",
+  "Download referenced publications (needs network)": "Referenzierte Publikationen herunterladen (benötigt Netzwerk)",
+  "Download referenced publications?": "Referenzierte Publikationen herunterladen?",
+  "… and {count} more": "… und {count} weitere",
+  "1 publication, {size} in total:": "1 Publikation, insgesamt {size}:",
+  "{count} publications, {size} in total:": "{count} Publikationen, insgesamt {size}:",
+  "1 download failed": "1 Download fehlgeschlagen",
+  "{count} downloads failed": "{count} Downloads fehlgeschlagen",
+  "Imported 1 publication": "1 Publikation importiert",
+  "Imported {count} publications": "{count} Publikationen importiert",
+  "Load the catalog first to download referenced publications.": "Lade zuerst den Katalog, um referenzierte Publikationen herunterzuladen.",
 };

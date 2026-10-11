@@ -3,6 +3,7 @@ import { taskKey, useApp } from "@/app";
 import { api, type UpdateInfo } from "@/lib/api";
 import { CatalogPrompt, EntryImage, mb } from "@/components/catalog";
 import { TileMenu, entryTarget } from "@/components/tile-menu";
+import { NetworkBadge } from "@/components/network-badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { t } from "@/lib/i18n";
@@ -75,6 +76,7 @@ export function UpdatesTab() {
         <Button variant="outline" disabled={updates.checking} onClick={() => void updates.check()}>
           {updates.checking ? t("Checking…") : t("Check now")}
         </Button>
+        <NetworkBadge className="ml-0" />
       </div>
       {count > 0 && (
         <ul className="border-t border-line">

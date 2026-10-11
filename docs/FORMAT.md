@@ -376,6 +376,59 @@ Checked against one backup made by JW Library on iOS (schema version 16,
   playlists and `IndependentMedia` (not used here yet).
 - `LastModified` holds one timestamp that the app's triggers update.
 
+### Merging
+
+How Pergament merges a backup into the current data (setting "Merge backups
+instead of replacing"). These are Pergament's own rules, not JW Library
+behavior. [own]
+
+- Before anything is written, the current database is copied to
+  `userData.db.before-restore` (an older copy is replaced). The merge runs in
+  one transaction; on an error nothing changes.
+- Locations are matched the way the editor finds a page: same `Type`,
+  `Track`, `KeySymbol`, `MepsLanguage` and `IssueTagNumber` (NULL equals
+  NULL), and same `DocumentId`, `BookNumber` and `ChapterNumber` with NULL
+  counted as 0. Failing that, a row with the same value in one of the UNIQUE
+  keys (`BookNumber`, `ChapterNumber`, `KeySymbol`, `MepsLanguage`, `Type`)
+  or (`KeySymbol`, `IssueTagNumber`, `MepsLanguage`, `DocumentId`, `Track`,
+  `Type`) is the same location. Ids are remapped; a missing location is added.
+- Matching keys: highlights by `UserMarkGuid`, notes by `Guid`, tags by
+  (`Type`, `Name`), bookmarks by (`PublicationLocationId`, `Slot`). Rows with
+  a new key are added.
+- Input fields are matched by page and `TextTag` against the row the editor
+  shows: of the page's locations, a location without a language included
+  (JW Library leaves it empty), the one with the lowest `LocationId`. A
+  backup row that its own editor would not show, because the backup has the
+  same field on an earlier location of the page, is left out.
+- A highlight with another `UserMarkGuid` but the same location, color and
+  ranges as a local one is the same highlight: nothing is added, and notes
+  of the backup's highlight are linked to the local one.
+- Recency for a row with the same key and different content: notes compare
+  their own `Note.LastModified`; highlights, bookmarks and input fields
+  compare the database-wide `LastModified` of the two databases. Timestamps
+  are compared as instants with `julianday`, so `Z` and `+00:00` both work.
+  A newer backup row replaces the local one; a highlight's ranges and a
+  note's tags are replaced together with the row. A note that wins keeps its
+  local highlight when the backup's highlight was left out.
+- When the backup's highlight, bookmark or input field is not newer (older,
+  equal, or with a timestamp that cannot be parsed, e.g. `+0000` without a
+  colon), the local row is kept and the backup's is reported as a conflict,
+  since the database-wide clock may not say which row was edited last. A
+  note that is older by its own timestamp is kept without a report; equal
+  or unparseable note timestamps with different text are a conflict.
+- A new highlight that overlaps a local one with another `UserMarkGuid`
+  follows the newer database: if the incoming one is newer, the local ranges
+  are cut back around it; otherwise it is skipped and reported as a conflict.
+- Location-level `TagMap` rows (favorites) are unioned. A note's tags are
+  taken over with the note.
+- After a merge that added or replaced something, the database-wide
+  `LastModified` becomes the later of the two databases' values; it is not set
+  to the time of the merge, so merging an old backup does not make the data
+  look newer than they are. A merge that changes nothing leaves it alone.
+- Deletions are not propagated: a row missing on one side stays, so an item
+  deleted on one side comes back when the other side's backup is merged.
+- Playlists and `IndependentMedia` are not merged.
+
 ## Unknown / not relied upon
 
 - What the `C` constant protects beyond obfuscation. We only reproduce the

@@ -51,6 +51,15 @@ export function saveReadingFont(font: ReadingFont) {
   write("readingFont", font);
 }
 
+/** Whether a backup is merged into the data instead of replacing it. */
+export function loadMergeBackups(): boolean {
+  return read("mergeBackups") === "true";
+}
+
+export function saveMergeBackups(on: boolean) {
+  write("mergeBackups", String(on));
+}
+
 /** Content width: a centered column (the default) or the whole window. */
 export type Layout = "centered" | "wide";
 
