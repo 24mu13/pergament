@@ -711,6 +711,19 @@ async fn restore_backup(app: AppHandle, path: String) -> ApiResult<pergament::us
     .map_err(|e| e.to_string())?
 }
 
+/// Merge a `.jwlibrary` backup into the user data instead of replacing it.
+#[tauri::command]
+async fn merge_backup(app: AppHandle, path: String) -> ApiResult<pergament::userdata::MergeReport> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .user()?
+            .merge_backup(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Language list (code, names), cached for a week.
 #[tauri::command]
 async fn languages(app: AppHandle) -> ApiResult<Vec<Language>> {
@@ -989,6 +1002,7 @@ pub fn run() {
             open_location,
             export_backup,
             restore_backup,
+            merge_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pergament");

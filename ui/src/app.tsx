@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { ask, message as messageDialog, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
 import type { MediaRef } from "@/lib/api";
+import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
@@ -30,6 +31,7 @@ import {
   loadFontScale,
   loadLayout,
   loadReadingFont,
+  loadMergeBackups,
   loadSecondDisplay,
   loadUpdateCheck,
   saveSecondDisplay,
@@ -41,6 +43,7 @@ import {
   saveFontScale,
   saveLayout,
   saveReadingFont,
+  saveMergeBackups,
   type ReadingFont,
   type Layout,
   toggleFavorite as toggleStoredFavorite,
@@ -84,6 +87,9 @@ interface AppContextValue {
   setLayout: (l: Layout) => void;
   readingFont: ReadingFont;
   setReadingFont: (f: ReadingFont) => void;
+  /** Restoring a backup merges it into the data instead of replacing them. */
+  mergeBackups: boolean;
+  setMergeBackups: (on: boolean) => void;
   importFiles: () => Promise<void>;
   /** Selected language code, e.g. `X`. */
   lang: string;
@@ -166,6 +172,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [fontScale, setFontScaleState] = useState(loadFontScale);
   const [layout, setLayoutState] = useState<Layout>(loadLayout);
   const [readingFont, setReadingFontState] = useState<ReadingFont>(loadReadingFont);
+  const [mergeBackups, setMergeBackupsState] = useState(loadMergeBackups);
   const [lang, setLangState] = useState(loadLang);
   const [uiLang, setUiLangState] = useState<UiLangSetting>(loadUiLang);
   const [languages, setLanguages] = useState<Language[]>([]);
@@ -377,6 +384,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const picked = await openDialog({ multiple: false, filters: [{ name: "Backup", extensions: ["jwlibrary"] }] });
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (!path) return;
+    if (mergeBackups) {
+      const ok = await ask(
+        t(
+          "Merging adds what is only in the backup and keeps the newer version of everything that is in both. Nothing is deleted. Your current data is kept as userData.db.before-restore.",
+        ),
+        { title: t("Merge backup?"), kind: "info", okLabel: t("Merge") },
+      );
+      if (!ok) return;
+      try {
+        const report = await api.mergeBackup(path);
+        setUserVersion((v) => v + 1);
+        toast(mergeToast(report));
+        if (report.conflicts.length > 0) {
+          await messageDialog(conflictText(report.conflicts), { title: t("Conflicts"), kind: "warning" });
+        }
+      } catch (e) {
+        toast(t("Merge failed: {error}", { error: String(e) }));
+      }
+      return;
+    }
     const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
       title: t("Restore backup?"),
       kind: "warning",
@@ -393,7 +420,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       toast(t("Restore failed: {error}", { error: String(e) }));
     }
-  }, [toast]);
+  }, [toast, mergeBackups]);
 
   const names = useMemo(() => new Map(languages.map((l) => [l.code, l.vernacular])), [languages]);
 
@@ -506,6 +533,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         saveReadingFont(f);
         setReadingFontState(f);
       },
+      mergeBackups,
+      setMergeBackups: (on) => {
+        saveMergeBackups(on);
+        setMergeBackupsState(on);
+      },
       importFiles,
       lang,
       setLang: (code) => {
@@ -560,6 +592,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fontScale,
       layout,
       readingFont,
+      mergeBackups,
       importFiles,
       lang,
       uiLang,

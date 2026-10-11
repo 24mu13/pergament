@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn() }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "main" }) }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), message: vi.fn(), open: vi.fn(), save: vi.fn() }));
 
 import { AppProvider, useApp } from "@/app";
 import { MeetingsView } from "@/views/meetings";
@@ -30,7 +30,7 @@ import { UpdatesTab } from "@/views/updates";
 import { SettingsView } from "@/views/settings";
 import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 
 beforeEach(() => {
   calls.length = 0;
@@ -240,6 +240,82 @@ describe("Personal Study", () => {
     expect(titles()).toEqual(["Dusk visits"]);
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "zzz" } });
     expect(screen.getByText("No notes match.")).toBeTruthy();
+  });
+});
+
+describe("Merging backups", () => {
+  beforeEach(() => {
+    vi.mocked(message).mockClear();
+    vi.mocked(ask).mockClear();
+  });
+  const emptyUser = () => {
+    backend.user_data_summary = () => ({ marks: 0, notes: 0, tags: 0, bookmarks: 0, device: null });
+    backend.tags = () => [];
+    backend.bookmarks = () => [];
+    backend.all_notes = () => [];
+  };
+  const dataTab = async () => {
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+  };
+  const report = (conflicts: { table: string; guid: string; summary: string }[]) => ({
+    added: 2, updated: 1, unchanged: 0, conflicts, device: null,
+  });
+
+  it("is off by default and the checkbox is remembered", async () => {
+    await dataTab();
+    const box = (await screen.findByLabelText("Merge backups instead of replacing")) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByRole("button", { name: "Restore backup…" })).toBeTruthy();
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    expect(localStorage.getItem("mergeBackups")).toBe("true");
+    expect(screen.getByRole("button", { name: "Merge backup…" })).toBeTruthy();
+  });
+
+  it("switches the button label in Personal Study too", async () => {
+    emptyUser();
+    renderIn(<PersonalView />);
+    expect(await screen.findByRole("button", { name: "Restore backup…" })).toBeTruthy();
+    cleanup();
+    localStorage.setItem("mergeBackups", "true");
+    renderIn(<PersonalView />);
+    expect(await screen.findByRole("button", { name: "Merge backup…" })).toBeTruthy();
+  });
+
+  it("merges instead of restoring when it is on, and does nothing when declined", async () => {
+    localStorage.setItem("mergeBackups", "true");
+    backend.merge_backup = () => report([]);
+    backend.restore_backup = () => ({ marks: 0, notes: 0, tags: 0, bookmarks: 0, device: null });
+    vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+    vi.mocked(ask).mockResolvedValue(false);
+    await dataTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge backup…" }));
+    await waitFor(() => expect(ask).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.some((c) => c.cmd === "merge_backup" || c.cmd === "restore_backup")).toBe(false);
+
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Merge backup…" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "merge_backup")).toBe(true));
+    expect(calls.find((c) => c.cmd === "merge_backup")!.args).toEqual({ path: "/tmp/b.jwlibrary" });
+    expect(calls.some((c) => c.cmd === "restore_backup")).toBe(false);
+    expect(await screen.findByText("Merged 3 changes")).toBeTruthy();
+    expect(message).not.toHaveBeenCalled();
+  });
+
+  it("shows the conflicts in a dialog", async () => {
+    localStorage.setItem("mergeBackups", "true");
+    backend.merge_backup = () => report([{ table: "Note", guid: "g1", summary: "Dusk visits" }]);
+    vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+    vi.mocked(ask).mockResolvedValue(true);
+    await dataTab();
+    fireEvent.click(await screen.findByRole("button", { name: "Merge backup…" }));
+    await waitFor(() => expect(message).toHaveBeenCalled());
+    expect(vi.mocked(message).mock.calls[0]).toEqual([
+      "1 conflict, your version was kept:\nNote: Dusk visits",
+      { title: "Conflicts", kind: "warning" },
+    ]);
   });
 });
 

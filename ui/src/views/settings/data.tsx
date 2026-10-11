@@ -78,7 +78,7 @@ function CacheSection() {
 }
 
 export function DataTab() {
-  const { createBackup, restoreBackup, display, updates } = useApp();
+  const { createBackup, restoreBackup, mergeBackups, setMergeBackups, display, updates } = useApp();
   return (
     <div className="space-y-10">
       <section>
@@ -126,12 +126,21 @@ export function DataTab() {
             {t("Create backup")}
           </button>
           <button onClick={() => void restoreBackup()} className="rounded-md border border-line bg-surface px-4 py-2 text-sm hover:bg-bar">
-            {t("Restore backup…")}
+            {mergeBackups ? t("Merge backup…") : t("Restore backup…")}
           </button>
         </div>
-        <p className="mt-2 text-sm text-muted">
+        <label className="mt-3 flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={mergeBackups}
+            onChange={(e) => setMergeBackups(e.target.checked)}
+            className="mt-1 h-4 w-4 accent-[var(--accent)]"
+          />
+          <span>{t("Merge backups instead of replacing")}</span>
+        </label>
+        <p className="mt-2 max-w-xl text-sm text-muted">
           {t(
-            "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; the previous data is kept as userData.db.before-restore in the library folder.",
+            "Highlights, notes, tags and bookmarks as a .jwlibrary file. Restoring replaces the current data; with merging turned on, backups are merged into it instead and the newer version of everything in both is kept. Either way the previous data is kept as userData.db.before-restore in the library folder.",
           )}
         </p>
       </section>

@@ -285,6 +285,21 @@ export interface Bookmark {
   location: Loc & { title: string | null };
 }
 
+export interface Conflict {
+  table: string;
+  /** An opaque key, not meant for display. */
+  guid: string;
+  summary: string;
+}
+
+export interface MergeReport {
+  added: number;
+  updated: number;
+  unchanged: number;
+  conflicts: Conflict[];
+  device: string | null;
+}
+
 export interface UserDataSummary {
   marks: number;
   notes: number;
@@ -409,6 +424,7 @@ export const api = {
   openLocation: (loc: Loc) => invoke<Target | null>("open_location", { loc }),
   exportBackup: (path: string) => invoke<void>("export_backup", { path }),
   restoreBackup: (path: string) => invoke<UserDataSummary>("restore_backup", { path }),
+  mergeBackup: (path: string) => invoke<MergeReport>("merge_backup", { path }),
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),

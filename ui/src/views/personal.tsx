@@ -11,7 +11,7 @@ import { t } from "@/lib/i18n";
 
 /** Notes, tags and bookmarks from user data, plus backups. */
 export function PersonalView() {
-  const { push, toast, userVersion, createBackup, restoreBackup } = useApp();
+  const { push, toast, userVersion, createBackup, restoreBackup, mergeBackups } = useApp();
   const [summary, setSummary] = useState<UserDataSummary | null>(null);
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [tag, setTag] = useState<number | null>(null);
@@ -68,7 +68,7 @@ export function PersonalView() {
               onClick={() => void restoreBackup()}
               className="flex items-center gap-2 rounded-md border border-line bg-surface px-4 py-2 text-sm hover:bg-bar"
             >
-              <FolderOpen size={17} /> {t("Restore backup…")}
+              <FolderOpen size={17} /> {mergeBackups ? t("Merge backup…") : t("Restore backup…")}
             </button>
           </div>
           <p className="mt-2 text-[13px] text-muted">
