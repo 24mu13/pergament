@@ -226,6 +226,9 @@ export const de: Record<string, string> = {
   "Catalog: {error}": "Katalog: {error}",
 
   // Settings
+  Interface: "Oberfläche",
+  Reading: "Lesen",
+  "Library & data": "Bibliothek & Daten",
   "Interface language": "Sprache der Oberfläche",
   "Follow system": "Wie das System",
   English: "English",

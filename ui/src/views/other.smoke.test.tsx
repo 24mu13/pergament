@@ -119,9 +119,21 @@ describe("Settings", () => {
   it("switches to the easy-to-read font and remembers it", async () => {
     renderIn(<SettingsView />);
     expect(document.documentElement.dataset.font).toBe("standard");
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Reading" }));
     fireEvent.click(await screen.findByRole("button", { name: "Easy to read" }));
     expect(localStorage.getItem("readingFont")).toBe("legible");
     expect(document.documentElement.dataset.font).toBe("legible");
+  });
+
+  it("groups the settings into four tabs", async () => {
+    renderIn(<SettingsView />);
+    for (const name of ["Interface", "Reading", "Library & data", "About"]) {
+      expect(await screen.findByRole("tab", { name })).toBeTruthy();
+    }
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Library & data" }));
+    expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "About" }));
+    expect(await screen.findByText(/unofficial reader/)).toBeTruthy();
   });
 });
 
