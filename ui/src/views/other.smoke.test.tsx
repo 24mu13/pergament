@@ -133,10 +133,14 @@ describe("Settings", () => {
     for (const name of ["Interface", "Reading", "Library & data", "About"]) {
       expect(await screen.findByRole("tab", { name })).toBeTruthy();
     }
+    expect(screen.getByRole("tablist", { name: "Settings" })).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Library & data" }));
     expect(await screen.findByRole("heading", { name: "Backup" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Library & data" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Interface" }).getAttribute("aria-selected")).toBe("false");
     fireEvent.mouseDown(screen.getByRole("tab", { name: "About" }));
     expect(await screen.findByText(/unofficial reader/)).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "About" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("remembers the selected tab when the view comes back", async () => {

@@ -22,7 +22,7 @@ export function SettingsView() {
       <AppBar title={t("Settings")} />
       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
         <div className="page pb-0 pt-6">
-          <TabsList>
+          <TabsList aria-label={t("Settings")}>
             <TabsTrigger value="interface">{t("Interface")}</TabsTrigger>
             <TabsTrigger value="reading">{t("Reading")}</TabsTrigger>
             <TabsTrigger value="data">{t("Library & data")}</TabsTrigger>
