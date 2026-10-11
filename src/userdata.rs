@@ -1388,6 +1388,24 @@ struct IncomingNote {
     location: Option<i64>,
 }
 
+/// How a note is shown in a conflict: its title, or the start of its text.
+fn note_summary(title: Option<String>, content: Option<String>) -> String {
+    const MAX: usize = 40;
+    if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+        return title;
+    }
+    let text = content
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.chars().count() > MAX {
+        text.chars().take(MAX).collect::<String>() + "…"
+    } else {
+        text
+    }
+}
+
 /// Merge `inc.Note` with its tags, matched by `Guid`; the note's own
 /// `LastModified` decides.
 fn merge_notes(
@@ -1463,10 +1481,10 @@ fn merge_notes(
             }
             Some((_, Some(diff), ..)) if diff < 0.0 => report.unchanged += 1,
             Some((_, _, true, ..)) => report.unchanged += 1,
-            Some((_, _, false, title, _)) => {
+            Some((_, _, false, title, content)) => {
                 report
                     .conflicts
-                    .push(conflict("Note", &note.guid, title.unwrap_or_default()));
+                    .push(conflict("Note", &note.guid, note_summary(title, content)));
             }
         }
     }
@@ -3143,6 +3161,35 @@ mod tests {
         let kept = note(&local, &guid);
         assert_eq!(kept.content, "a");
         assert_eq!(kept.tags, ["One"]);
+    }
+
+    #[test]
+    fn merge_untitled_note_conflict_shows_the_start_of_the_text() {
+        for (content, summary) in [
+            ("  Short\n text ", "Short text"),
+            (
+                "A rather long note that goes on and on about many things",
+                "A rather long note that goes on and on a…",
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+            let guid = local
+                .save_note(Some(&bible(1)), None, &note_input("", content, &[]))
+                .unwrap();
+            let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+            remote
+                .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+                .unwrap();
+            edit_note(&mut remote, &guid, "", "other", &[]);
+            set_note_time(&remote, &guid, "2030-01-01T00:00:00Z");
+            set_note_time(&local, &guid, "2030-01-01T00:00:00Z");
+            let r = local
+                .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+                .unwrap();
+            assert_eq!(r.conflicts.len(), 1);
+            assert_eq!(r.conflicts[0].summary, summary);
+        }
     }
 
     #[test]
