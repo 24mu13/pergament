@@ -1,6 +1,7 @@
 //! Updated versions of downloaded publications: the catalog lists a file
 //! with a different signature than the one that was imported.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -50,13 +51,43 @@ pub fn differs(entry: &Entry, installed_size: u64, item: &CatalogItem) -> bool {
     }
 }
 
+/// Types of publication that are not checked: their files are not distributed
+/// through the catalog as updates, so the lookup would never find anything.
+const NOT_CHECKED: &[&str] = &["Manual/Guidelines", "Curriculum", "Talk"];
+
+fn checked(entry: &Entry) -> bool {
+    !entry
+        .publication_type
+        .as_deref()
+        .is_some_and(|t| NOT_CHECKED.iter().any(|n| n.eq_ignore_ascii_case(t)))
+}
+
 /// The installed publications that have an update, in library order.
 pub fn available(library: &Library, catalog: &Catalog) -> Result<Vec<Update>> {
     let mut found = Vec::new();
-    for entry in library.list()? {
+    let entries: Vec<Entry> = library.list()?.into_iter().filter(checked).collect();
+    // One pass per language instead of a catalog scan per publication.
+    let mut by_language: HashMap<i64, HashMap<(String, i64), CatalogItem>> = HashMap::new();
+    for entry in &entries {
+        if by_language.contains_key(&entry.meps_language) {
+            continue;
+        }
+        let all = catalog.in_language(entry.meps_language)?;
+        // The catalog lists some publications twice; like `find`, the first row
+        // counts. The key symbol wins over a dated symbol that happens to be the same.
+        let mut items = HashMap::new();
+        for item in &all {
+            items.entry((item.key_symbol.clone(), item.issue_tag)).or_insert_with(|| item.clone());
+        }
+        for item in all {
+            items.entry((item.symbol.clone(), item.issue_tag)).or_insert(item);
+        }
+        by_language.insert(entry.meps_language, items);
+    }
+    for entry in entries {
         // Undated publications have issue tag 0 in the catalog.
         let issue = entry.issue_tag.parse::<i64>().unwrap_or(0);
-        let Some(item) = catalog.find(&entry.symbol, entry.meps_language, Some(issue))? else {
+        let Some(item) = by_language[&entry.meps_language].get(&(entry.symbol.clone(), issue)).cloned() else {
             continue;
         };
         let Some(size) = dir_size(&library.publication_dir(&entry)) else {
@@ -121,6 +152,18 @@ mod tests {
             attributes: vec![],
             expanded_size: expanded,
         }
+    }
+
+    #[test]
+    fn guidelines_curricula_and_talks_are_not_checked() {
+        let mut e = entry(None);
+        assert!(checked(&e));
+        for t in ["Manual/Guidelines", "Curriculum", "Talk", "talk"] {
+            e.publication_type = Some(t.into());
+            assert!(!checked(&e), "{t}");
+        }
+        e.publication_type = Some("Brochure".into());
+        assert!(checked(&e));
     }
 
     #[test]
