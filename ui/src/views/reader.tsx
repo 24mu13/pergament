@@ -17,6 +17,7 @@ import {
   type Target,
   type VerseStudy,
 } from "@/lib/api";
+import { restoreScroll } from "@/lib/scroll";
 import { applyMarks, blockElements, markText, rangeText, selectionRanges, titleFromText } from "@/lib/marks";
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
@@ -59,7 +60,7 @@ function outlineRange(o: ChapterStudy["outline"][number]): string {
     : `${o.begin_chapter}:${o.begin_verse}–${o.end_chapter}:${o.end_verse}`;
 }
 
-export function ReaderView({ target, note }: { target: Target; note?: boolean }) {
+export function ReaderView({ target, note, scroll }: { target: Target; note?: boolean; scroll?: number }) {
   const { push, replace, toast, lang, userVersion, publications, playRecording, showImage, layout } = useApp();
   const [refs, setRefs] = useState<PaneRef[]>([]);
   const [page, setPage] = useState<Page | null>(null);
@@ -72,6 +73,7 @@ export function ReaderView({ target, note }: { target: Target; note?: boolean })
   /** Answers typed on this page, which win over the loaded ones until they are reloaded. */
   const answers = useRef<Record<string, string>>({});
   const paneRef = useRef<HTMLElement>(null);
+  const resumed = useRef(false);
   const detail = usePublication(target.publication);
   const chapter = "chapter" in target.kind ? target.kind.chapter : null;
   const dated = "dated" in target.kind ? target.kind.dated.date : null;
@@ -193,7 +195,13 @@ export function ReaderView({ target, note }: { target: Target; note?: boolean })
     const root = articleRef.current;
     if (!root || !split) return;
     if (page?.fragment) flash(root.querySelector(`[id="${CSS.escape(page.fragment)}"]`));
-    else root.closest(".overflow-y-auto")?.scrollTo({ top: 0 });
+    else {
+      const el = root.closest<HTMLElement>(".overflow-y-auto");
+      // Coming back to the tab continues where the user stopped, once.
+      if (scroll && el && !resumed.current) restoreScroll(el, scroll);
+      else el?.scrollTo({ top: 0 });
+      resumed.current = true;
+    }
     if (note && chapter && study) selectVerse(`${chapter.chapter}:${chapter.verse}`);
     // Runs once per loaded page and study data, not on every selection.
   }, [split, page, owners, study]);

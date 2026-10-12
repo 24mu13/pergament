@@ -71,9 +71,13 @@ const cachedMeetings = new Map<string, Meetings | null>();
 const cachedLocal = new Map<string, LocalPages>();
 const weekKey = (lang: string, week: Date) => `${lang}|${isoDate(week)}`;
 
-export function MeetingsView() {
-  const { lang, languageName, catalogVersion, toast, publications } = useApp();
-  const [week, setWeek] = useState(() => weekStart(new Date()));
+export function MeetingsView({ week: shown }: { week?: string }) {
+  const { lang, languageName, catalogVersion, toast, publications, replace } = useApp();
+  const [week, setWeek] = useState(() => (shown ? weekStart(new Date(`${shown}T12:00`)) : weekStart(new Date())));
+  // The week is part of the view, so a tab switch brings the user back to it.
+  useEffect(() => {
+    if (isoDate(week) !== (shown ?? isoDate(weekStart(new Date())))) replace({ name: "meetings", week: isoDate(week) });
+  }, [week]);
   const [data, setData] = useState<Meetings | null | undefined>(cachedMeetings.get(weekKey(lang, week)));
   const thisWeek = isoDate(weekStart(new Date())) === isoDate(week);
 
