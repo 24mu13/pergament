@@ -259,7 +259,8 @@ only. The full text is in [LICENSE](LICENSE). The notes below describe how the
 project is published and what you should know before using it. They do not add
 restrictions to the GPL.
 
-**Font.** The "Easy to read" setting uses Atkinson Hyperlegible Next, which is
+**Fonts.** The "Easy to read" setting uses Atkinson Hyperlegible Next and the Bible
+text uses Noto Serif. Both are
 shipped with the app (`ui/src/fonts`) under the SIL Open Font License 1.1. The
 license text is next to the files.
 
