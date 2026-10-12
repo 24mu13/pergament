@@ -24,6 +24,7 @@ const BY_TYPE: Record<string, { id: number; name: string }> = {
   "Meeting Workbook": { id: 30, name: "Meeting Workbooks" },
   Program: { id: 31, name: "Programs" },
   Curriculum: { id: -2, name: "Curriculum" },
+  Talk: { id: -3, name: "Outlines" },
   Outline: { id: -3, name: "Outlines" },
 };
 

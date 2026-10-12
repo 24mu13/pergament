@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleMinus, CirclePlus } from "lucide-react";
 import { useApp } from "@/app";
-import { api, chapterTarget, type PubCard } from "@/lib/api";
+import { api, chapterTarget, type Mark, type PubCard } from "@/lib/api";
+import { applyMarks } from "@/lib/marks";
 import { t } from "@/lib/i18n";
 import { extractVerses, rangeText, type BibleRange } from "@/lib/parallel";
 import { loadParallel, saveParallel } from "@/lib/settings";
@@ -9,13 +10,15 @@ import { MediaImg } from "@/components/media-img";
 
 /** Verses of a Bible link in every included Bible of the library. */
 export function ParallelPane({ href, range, onBack }: { href: string; range: BibleRange; onBack: () => void }) {
-  const { publications, lang, languageName, openTarget } = useApp();
+  const { publications, lang, languageName, openTarget, userVersion } = useApp();
   const bibles = useMemo(() => publications.filter((p) => p.isBible), [publications]);
   const [included, setIncluded] = useState<string[] | null>(loadParallel);
   const [customizing, setCustomizing] = useState(false);
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [bookTitle, setBookTitle] = useState("");
   const loaded = useRef(new Map<string, string>());
+  /** The reader's highlights per Bible and chapter. */
+  const [marks, setMarks] = useState<Record<string, { chapter: number; marks: Mark[] }[]>>({});
 
   const shown = useMemo(() => {
     if (included) {
@@ -47,6 +50,41 @@ export function ParallelPane({ href, range, onBack }: { href: string; range: Bib
       live = false;
     };
   }, [shown, href, range]);
+
+  useEffect(() => {
+    let live = true;
+    const chapters = Array.from({ length: range.to[0] - range.from[0] + 1 }, (_, i) => range.from[0] + i);
+    for (const bible of shown) {
+      Promise.all(
+        chapters.map((chapter) =>
+          api
+            .pageUserData(chapterTarget(bible.dir, range.book, chapter))
+            .then((u) => ({ chapter, marks: u.marks }))
+            .catch(() => ({ chapter, marks: [] as Mark[] })),
+        ),
+      ).then((m) => live && setMarks((s) => ({ ...s, [bible.dir]: m })));
+    }
+    return () => {
+      live = false;
+    };
+  }, [shown, range, userVersion]);
+
+  /** The verses with the highlights drawn in. */
+  const marked = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [dir, html] of Object.entries(texts)) {
+      const found = marks[dir]?.filter((m) => m.marks.length > 0) ?? [];
+      if (found.length === 0) {
+        out[dir] = html;
+        continue;
+      }
+      const box = document.createElement("div");
+      box.innerHTML = html;
+      for (const m of found) applyMarks(box, m.marks, m.chapter);
+      out[dir] = box.innerHTML;
+    }
+    return out;
+  }, [texts, marks]);
 
   // Book name in the first Bible that has the book.
   useEffect(() => {
@@ -95,7 +133,7 @@ export function ParallelPane({ href, range, onBack }: { href: string; range: Bib
             </button>
             <div
               className="reader pane-reader bible px-5 py-3"
-              dangerouslySetInnerHTML={{ __html: texts[b.dir] ?? "" }}
+              dangerouslySetInnerHTML={{ __html: marked[b.dir] ?? "" }}
             />
           </section>
         ))}

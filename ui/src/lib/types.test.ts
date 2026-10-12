@@ -86,6 +86,10 @@ describe("category sections", () => {
     expect(categoryOf({ publicationType: "Guidelines" }).id).toBe(17);
   });
 
+  it("sorts talks into Outlines, not Other", () => {
+    expect(categoryOf({ publicationType: "Talk" })).toEqual({ id: -3, name: "Outlines" });
+  });
+
   it("splits Guidelines by first attribute without knowing the names", () => {
     const s = sectionsFor(17, [
       entry("a", 2020, ["Meetings"]),

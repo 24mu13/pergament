@@ -1,9 +1,10 @@
 import { MediaImg } from "@/components/media-img";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { BookOpen, ChevronLeft, ChevronRight, CloudDownload } from "lucide-react";
 import { taskKey, useApp } from "@/app";
-import { api, type CatalogEntry, type Page, type Target } from "@/lib/api";
+import { api, type CatalogEntry, type Mark, type Page, type Target } from "@/lib/api";
+import { applyMarks } from "@/lib/marks";
 import { citedBy, extractParagraphs, markCited, splitPage } from "@/lib/page";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,7 @@ export function ReferencePane({
   /** The missing publication was downloaded; resolve the link again. */
   onRetry: () => void;
 }) {
+  const { userVersion } = useApp();
   if (pref.kind === "bible") return <ParallelPane href={pref.href} range={pref.range} onBack={onBack} />;
   if (pref.kind === "research") {
     return (
@@ -60,7 +62,7 @@ export function ReferencePane({
         <span className="flex-1 pr-11 text-center text-sm">{t("Publication Reference")}</span>
       </div>
       {pref.kind === "page" ? (
-        <ReferencePage pref={pref} onFollow={onFollow} />
+        <ReferencePage key={`${JSON.stringify(pref.target)}|${pref.href}|${userVersion}`} pref={pref} onFollow={onFollow} />
       ) : (
         <MissingReference pref={pref} onRetry={onRetry} />
       )}
@@ -80,6 +82,25 @@ function ReferencePage({ pref, onFollow }: { pref: Extract<PaneRef, { kind: "pag
   }, [pref.page.html, pref.href]);
   const card = publications.find((p) => p.dir === pref.target.publication);
   const isChapter = "chapter" in pref.target.kind;
+
+  // The reader's highlights show in the pane too. The page remounts per reference and
+  // per restored backup (see the key), so marks never land on another page's text.
+  const [marks, setMarks] = useState<Mark[]>([]);
+  useEffect(() => {
+    let live = true;
+    setMarks([]);
+    api
+      .pageUserData(pref.target)
+      .then((u) => live && setMarks(u.marks))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [pref.target]);
+  useEffect(() => {
+    if (ref.current) applyMarks(ref.current, marks);
+    // body: a new page replaces the markup, which drops the highlights.
+  }, [marks, body]);
 
   useEffect(() => {
     const root = ref.current;

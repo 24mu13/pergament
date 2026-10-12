@@ -24,7 +24,7 @@ import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
-import { currentView, initialNav, navReducer, type View } from "@/lib/nav";
+import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
   inLanguage,
   loadFavorites,
@@ -54,6 +54,7 @@ import {
 } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
+import { scroller } from "@/lib/scroll";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu } from "@/components/language-menu";
 
@@ -69,6 +70,8 @@ interface AppContextValue {
   push: (view: View) => void;
   replace: (view: View) => void;
   root: (view: View) => void;
+  /** Go to a rail section, back to where the user left it. */
+  switchTo: (section: Section, view: View, scroll?: number) => void;
   back: () => void;
   openTarget: (target: Target, note?: boolean) => void;
   publications: PubCard[];
@@ -517,6 +520,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       push: (view) => dispatch({ type: "push", view }),
       replace: (view) => dispatch({ type: "replace", view }),
       root: (view) => dispatch({ type: "root", view }),
+      switchTo: (section, view, scroll) => dispatch({ type: "switch", to: section, view, scroll }),
       back: () => dispatch({ type: "back" }),
       openTarget: (target, note) => dispatch({ type: "push", view: { name: "reader", target, note } }),
       publications,
@@ -724,15 +728,15 @@ function RailButton({
 
 /** Icon rail on the left; the menu button expands labels. */
 export function Rail() {
-  const { view, root, publications, toast, lang } = useApp();
+  const { view, switchTo, publications, toast, lang } = useApp();
   const [expanded, setExpanded] = useState(false);
   const bibles = inLanguage(publications, lang).filter((p) => p.isBible);
   const bible = bibles.find((p) => p.symbol === "nwtsty") ?? bibles[0];
   const inBible =
     (view.name === "publication" || view.name === "chapters") && bible !== undefined && view.dir === bible.dir;
-  const go = (v: View) => {
+  const go = (section: Section, v: View) => {
     setExpanded(false);
-    root(v);
+    switchTo(section, v, scroller()?.scrollTop);
   };
   const icon = { size: 18, strokeWidth: 1.6 };
   return (
@@ -742,7 +746,7 @@ export function Rail() {
       <RailButton label="Menu" toggles active={false} expanded={expanded} onClick={() => setExpanded((e) => !e)}>
         <Menu {...icon} />
       </RailButton>
-      <RailButton label="Home" active={view.name === "home"} expanded={expanded} onClick={() => go({ name: "home" })}>
+      <RailButton label="Home" active={view.name === "home"} expanded={expanded} onClick={() => go("home", { name: "home" })}>
         <Home {...icon} />
       </RailButton>
       <RailButton
@@ -750,7 +754,7 @@ export function Rail() {
         active={inBible || (view.name === "reader" && "chapter" in view.target.kind)}
         expanded={expanded}
         onClick={() =>
-          bible ? go({ name: "publication", dir: bible.dir }) : toast(t("No Bible in this language in your library yet"))
+          bible ? go("bible", { name: "publication", dir: bible.dir }) : toast(t("No Bible in this language in your library yet"))
         }
       >
         <BookOpen {...icon} />
@@ -759,7 +763,7 @@ export function Rail() {
         label="Library"
         active={view.name === "library" || view.name === "category" || view.name === "media"}
         expanded={expanded}
-        onClick={() => go({ name: "library" })}
+        onClick={() => go("library", { name: "library" })}
       >
         <LibraryBig {...icon} />
       </RailButton>
@@ -767,7 +771,7 @@ export function Rail() {
         label="Meetings"
         active={view.name === "meetings"}
         expanded={expanded}
-        onClick={() => go({ name: "meetings" })}
+        onClick={() => go("meetings", { name: "meetings" })}
       >
         <Users {...icon} />
       </RailButton>
@@ -775,7 +779,7 @@ export function Rail() {
         label="Personal Study"
         active={view.name === "personal"}
         expanded={expanded}
-        onClick={() => go({ name: "personal" })}
+        onClick={() => go("personal", { name: "personal" })}
       >
         <Gem {...icon} />
       </RailButton>
@@ -784,7 +788,7 @@ export function Rail() {
         label="Settings"
         active={view.name === "settings"}
         expanded={expanded}
-        onClick={() => go({ name: "settings" })}
+        onClick={() => go("settings", { name: "settings" })}
       >
         <Settings {...icon} />
       </RailButton>

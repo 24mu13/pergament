@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { AppProvider, Rail, TitleStrip, useApp } from "./app";
 import { GoTo } from "./components/go-to";
@@ -18,10 +18,16 @@ import { ReaderView } from "./views/reader";
 import { SettingsView } from "./views/settings";
 import { t } from "./lib/i18n";
 import { installFocusModality } from "./lib/focus";
+import { restoreScroll, scroller } from "./lib/scroll";
 import "./styles.css";
 
 function CurrentView() {
   const { view } = useApp();
+  // Coming back to a section, a view continues where it was left. The reader does that itself once its text is there.
+  useLayoutEffect(() => {
+    const el = scroller();
+    if (view.scroll && view.name !== "reader" && el) restoreScroll(el, view.scroll);
+  }, [view]);
   switch (view.name) {
     case "home":
       return <HomeView />;
@@ -30,7 +36,7 @@ function CurrentView() {
     case "chapters":
       return <ChaptersView dir={view.dir} book={view.book} />;
     case "reader":
-      return <ReaderView target={view.target} note={view.note} />;
+      return <ReaderView target={view.target} note={view.note} scroll={view.scroll} />;
     case "online":
       return <OnlineView />;
     case "settings":
@@ -42,7 +48,7 @@ function CurrentView() {
     case "media":
       return <MediaCategoryView key={view.key} catKey={view.key} title={view.title} />;
     case "meetings":
-      return <MeetingsView />;
+      return <MeetingsView week={view.week} />;
     case "personal":
       return <PersonalView />;
   }
