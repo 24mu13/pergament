@@ -240,6 +240,13 @@ impl Catalog {
             .optional()?)
     }
 
+    /// Every publication of a language, in one pass. Looking up many publications
+    /// with [`Catalog::find`] scans the catalog each time, as its only index does
+    /// not cover the dated symbol.
+    pub fn in_language(&self, meps_language: i64) -> Result<Vec<CatalogItem>> {
+        self.items("WHERE p.MepsLanguageId = ?1", params![meps_language])
+    }
+
     /// The same publication (dated symbol and issue) in every language the
     /// catalog lists, by MEPS language id.
     pub fn languages_of(&self, symbol: &str, issue_tag: i64) -> Result<Vec<CatalogItem>> {

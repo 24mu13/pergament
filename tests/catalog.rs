@@ -165,6 +165,15 @@ fn find_by_key_or_dated_symbol() {
 }
 
 #[test]
+fn lists_every_publication_of_a_language() {
+    let (_t, c) = open();
+    let items = c.in_language(2).unwrap();
+    assert!(items.iter().any(|i| i.symbol == "wp25"));
+    assert!(items.iter().all(|i| i.meps_language == 2));
+    assert!(c.in_language(999).unwrap().is_empty());
+}
+
+#[test]
 fn items_carry_the_unpacked_size() {
     let (_t, c) = open();
     let item = c.find("wp", 2, None).unwrap().unwrap();
