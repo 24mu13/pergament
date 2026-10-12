@@ -33,11 +33,11 @@ interface Token {
 }
 
 /** Elements of one block: the parts of a verse, or a paragraph. */
-export function blockElements(root: Element, blockType: number, identifier: number): Element[] {
+export function blockElements(root: Element, blockType: number, identifier: number, chapter?: number): Element[] {
   if (blockType === BLOCK_VERSE) {
     return [...root.querySelectorAll("span.v[id]")].filter((el) => {
-      const m = /^v\d+-\d+-(\d+)-\d+$/.exec(el.id);
-      return m !== null && Number(m[1]) === identifier;
+      const m = /^v\d+-(\d+)-(\d+)-\d+$/.exec(el.id);
+      return m !== null && Number(m[2]) === identifier && (chapter === undefined || Number(m[1]) === chapter);
     });
   }
   const el = root.querySelector(`[id="p${identifier}"]`);
@@ -73,8 +73,8 @@ export function tokens(elements: Element[]): Token[] {
 }
 
 /** Wrap tokens `start..=end` of a block in `<mark>` elements. */
-function wrap(root: Element, range: MarkRange, mark: Mark) {
-  const toks = tokens(blockElements(root, range.blockType, range.identifier)).slice(range.start, range.end + 1);
+function wrap(root: Element, range: MarkRange, mark: Mark, chapter?: number) {
+  const toks = tokens(blockElements(root, range.blockType, range.identifier, chapter)).slice(range.start, range.end + 1);
   // One span of text per node, wrapped from the back so offsets stay valid.
   const spans = new Map<Text, [number, number]>();
   for (const t of toks) {
@@ -94,8 +94,9 @@ function wrap(root: Element, range: MarkRange, mark: Mark) {
   }
 }
 
-export function applyMarks(root: Element, marks: Mark[]) {
-  for (const mark of marks) for (const r of mark.ranges) wrap(root, r, mark);
+/** `chapter` limits verse highlights to that chapter, for text that spans several. */
+export function applyMarks(root: Element, marks: Mark[], chapter?: number) {
+  for (const mark of marks) for (const r of mark.ranges) wrap(root, r, mark, chapter);
 }
 
 /** Token ranges covered by a selection inside `root`. */
