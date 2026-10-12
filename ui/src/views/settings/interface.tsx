@@ -5,12 +5,12 @@ import { t, uiLanguages } from "@/lib/i18n";
 import type { UiLangSetting } from "@/lib/i18n";
 
 const uiLangs: { value: UiLangSetting; label: string }[] = [
-  { value: "system", label: "Follow system" },
+  { value: "system", label: "System" },
   ...uiLanguages().map((l) => ({ value: l.code, label: l.name })),
 ];
 
 const themes: { value: Theme; label: string }[] = [
-  { value: "system", label: "Follow system" },
+  { value: "system", label: "System" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ];
