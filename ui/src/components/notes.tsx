@@ -210,7 +210,7 @@ export function NoteEditor({
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     return () => {
-      if (opener?.isConnected && opener !== document.body) opener.focus();
+      if (opener?.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
     };
   }, []);
 
@@ -222,8 +222,13 @@ export function NoteEditor({
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
+  // Leaving full mode, fit the panel back into the area: the window may have shrunk meanwhile.
+  useEffect(() => {
+    if (!full) setPos((p) => p && clampPanel(p, dims.current, area()));
+  }, [full]);
   // Remember the size the user drags the panel to, but not one forced on it by a small
-  // window: shrunk onto its max-width/height, or grown only to the CSS minimum.
+  // window: shrunk onto its max-width/height, or grown only to the CSS minimum. Each axis
+  // counts on its own, so a forced width does not drop a height the user did change.
   useEffect(() => {
     const el = ref.current;
     if (!el || full || typeof ResizeObserver === "undefined") return;
@@ -232,15 +237,14 @@ export function NoteEditor({
     const seen = new ResizeObserver(() => {
       const s = size();
       const d = dims.current;
-      if (s.width === d.width && s.height === d.height) return;
       const style = getComputedStyle(el);
-      if (
-        forced(s.width, d.width, parseFloat(style.maxWidth), parseFloat(style.minWidth)) ||
-        forced(s.height, d.height, parseFloat(style.maxHeight), parseFloat(style.minHeight))
-      )
-        return;
-      dims.current = s;
-      saveNoteSize(s);
+      const next = {
+        width: forced(s.width, d.width, parseFloat(style.maxWidth), parseFloat(style.minWidth)) ? d.width : s.width,
+        height: forced(s.height, d.height, parseFloat(style.maxHeight), parseFloat(style.minHeight)) ? d.height : s.height,
+      };
+      if (next.width === d.width && next.height === d.height) return;
+      dims.current = next;
+      saveNoteSize(next);
     });
     seen.observe(el, { box: "border-box" });
     return () => seen.disconnect();

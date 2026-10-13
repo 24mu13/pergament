@@ -220,6 +220,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toggleFavorite = useCallback((key: string) => setFavorites(toggleStoredFavorite(key)), []);
   const [player, setPlayer] = useState<AppContextValue["player"]>(null);
   const [note, setNote] = useState<AppContextValue["note"]>(null);
+  const noteRef = useRef(note);
+  noteRef.current = note;
   const noteDirty = useRef(false);
   const systemDark = useSystemDark();
   const dark = prefersDark(theme, systemDark);
@@ -567,9 +569,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const closeNote = useCallback(
     async (id?: number, { force = false } = {}) => {
-      if (!force && !(await mayDiscard())) return;
+      // A save that finishes after another note was opened must not touch that one.
+      const current = () => id === undefined || noteRef.current?.id === id;
+      if (!current() || (!force && !(await mayDiscard())) || !current()) return;
       noteDirty.current = false;
-      setNote((n) => (id === undefined || n?.id === id ? null : n));
+      setNote(null);
     },
     [mayDiscard],
   );

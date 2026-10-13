@@ -452,6 +452,38 @@ describe("Floating note", () => {
     expect(JSON.parse(localStorage.getItem("noteSize")!).height).toBe(height - 16);
   });
 
+  it("fits back into a window that shrank while maximized", async () => {
+    const width = window.innerWidth;
+    try {
+      const editor = await openEditor();
+      fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      fireEvent(window, new Event("resize"));
+      fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
+      const x = Number(/translate\((-?\d+)px/.exec(editor.style.transform)![1]);
+      expect(x + parseInt(editor.style.width)).toBeLessThanOrEqual(600);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    }
+  });
+
+  it("does not mark a newer note as saved when an older save finishes late", async () => {
+    let finish!: () => void;
+    backend.save_note = () => new Promise<string>((r) => (finish = () => r("n1")));
+    const editor = await openEditor();
+    fireEvent.click(within(editor).getByText("Save"));
+    // While the save runs, open another note and start typing in it.
+    fireEvent.click(screen.getByText("other"));
+    const other = await screen.findByDisplayValue("Another");
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "unsaved" } });
+    await act(async () => finish());
+    expect(screen.getByDisplayValue("Another")).toBe(other);
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("unsaved")).toBeTruthy();
+  });
+
   it("asks before another note replaces unsaved text", async () => {
     renderIn(
       <>

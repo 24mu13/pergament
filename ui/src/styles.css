@@ -199,7 +199,8 @@ body {
 ::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 5px;
-  background: var(--border) padding-box;
+  /* 80% of --muted keeps the thumb at 3:1 or more against every surface, in both themes. */
+  background: color-mix(in srgb, var(--muted) 80%, transparent) padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--muted);
