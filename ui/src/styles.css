@@ -183,6 +183,28 @@ body {
   padding-left: 1em;
 }
 
+/*
+ * Styled scrollbars. WebKitGTK draws its native overlay scrollbars above all page
+ * content, so the reader's scrollbar showed through the floating note editor;
+ * styled ones are painted with the page and stay behind it.
+ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: var(--border) padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+
 /* A note's Markdown (lib/markdown.ts), in cards and the editor preview. */
 .note-md > * + * {
   margin-top: 0.4em;
