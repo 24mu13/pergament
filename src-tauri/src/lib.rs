@@ -4,7 +4,7 @@
 pub mod api;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 use pergament::Library;
@@ -30,6 +30,9 @@ pub struct AppState {
     root: PathBuf,
     cache: PathBuf,
     catalog: Mutex<Option<Arc<Mutex<Catalog>>>>,
+    /// Held shared by everything that opens or uses the cached catalog, and exclusively while the
+    /// cache is cleared, so its files are never deleted from under a live connection.
+    cache_gate: RwLock<()>,
     /// Shared client for catalog images, so their requests are rate limited together.
     image_client: Mutex<Client>,
 }
@@ -45,6 +48,13 @@ impl AppState {
         self.user
             .lock()
             .map_err(|_| "user data lock poisoned".to_owned())
+    }
+
+    /// Use the cached catalog until the guard drops; clearing the cache waits for it.
+    fn cache_use(&self) -> ApiResult<RwLockReadGuard<'_, ()>> {
+        self.cache_gate
+            .read()
+            .map_err(|_| "cache lock poisoned".to_owned())
     }
 }
 
@@ -104,13 +114,18 @@ async fn clear_cache(app: AppHandle) -> ApiResult<()> {
         let state = app.state::<AppState>();
         // PERGAMENT_CACHE may point anywhere; never empty the library with it.
         pergament::cache::check_safe(&state.cache, &state.root).map_err(|e| e.to_string())?;
-        // Release the open catalog and keep the lock while deleting, so nothing
-        // reopens it in between; it reloads on next use.
-        let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
-        *catalog = None;
-        let result = pergament::cache::clear(&state.cache).map_err(|e| e.to_string());
-        drop(catalog);
-        result
+        // Refuse while a download or catalog load is using the cache, instead of waiting: a
+        // waiting writer would hold up every new catalog request behind it.
+        let _gate = match state.cache_gate.try_write() {
+            Ok(gate) => gate,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err("The cache is in use by a download or a catalog load. Try again when it has finished.".to_owned());
+            }
+            Err(_) => return Err("cache lock poisoned".to_owned()),
+        };
+        // Release the open catalog; it reloads on next use.
+        *state.catalog.lock().map_err(|e| e.to_string())? = None;
+        pergament::cache::clear(&state.cache).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -188,6 +203,7 @@ async fn download_media(
 ) -> ApiResult<api::MediaDownload> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         let client = Client::new(HttpConfig::default());
         let found = mediator::category(
             &client,
@@ -349,6 +365,13 @@ async fn import_files(app: AppHandle, paths: Vec<String>) -> ApiResult<Vec<Impor
 
 fn catalog(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
     let state = app.state::<AppState>();
+    let _gate = state.cache_use()?;
+    catalog_unguarded(app)
+}
+
+/// [`catalog`] for callers that already hold the cache gate.
+fn catalog_unguarded(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
+    let state = app.state::<AppState>();
     if let Some(c) = state.catalog.lock().map_err(|e| e.to_string())?.clone() {
         return Ok(c);
     }
@@ -385,6 +408,18 @@ fn with_catalog<T>(
     lang: &str,
     f: impl FnOnce(&Catalog, i64, &Library) -> ApiResult<T>,
 ) -> ApiResult<Option<T>> {
+    let state = app.state::<AppState>();
+    let _gate = state.cache_use()?;
+    with_catalog_unguarded(app, lang, f)
+}
+
+/// [`with_catalog`] for callers that already hold the cache gate.
+fn with_catalog_unguarded<T>(
+    app: &AppHandle,
+    lang: &str,
+    f: impl FnOnce(&Catalog, i64, &Library) -> ApiResult<T>,
+) -> ApiResult<Option<T>> {
+    let state = app.state::<AppState>();
     let Some(catalog) = cached_catalog(app)? else {
         return Ok(None);
     };
@@ -392,9 +427,13 @@ fn with_catalog<T>(
     let meps = catalog
         .meps_language(lang)
         .ok_or_else(|| format!("unknown language code {lang:?}"))?;
-    let state = app.state::<AppState>();
     let lib = state.lib()?;
     f(&catalog, meps, &lib).map(Some)
+}
+
+#[tauri::command]
+fn last_verse(state: State<'_, AppState>, dir: String, book: i64, chapter: i64) -> ApiResult<i64> {
+    api::last_verse(&*state.lib()?, &dir, book, chapter)
 }
 
 #[tauri::command]
@@ -440,9 +479,13 @@ fn book_overview(
 /// Whether a catalog is available without downloading.
 #[tauri::command]
 async fn catalog_cached(app: AppHandle) -> ApiResult<bool> {
-    tauri::async_runtime::spawn_blocking(move || Ok(cached_catalog(&app)?.is_some()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard_state = app.state::<AppState>();
+        let _gate = guard_state.cache_use()?;
+        Ok(cached_catalog(&app)?.is_some())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Downloaded publications that have a newer version in the catalog. Looks at
@@ -453,6 +496,7 @@ async fn catalog_cached(app: AppHandle) -> ApiResult<bool> {
 async fn check_updates(app: AppHandle) -> ApiResult<Option<Vec<api::UpdateInfo>>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         if Catalog::open_cached(&state.cache)
             .map_err(|e| e.to_string())?
             .is_none()
@@ -560,14 +604,16 @@ async fn referenced_publications(
     lang: String,
 ) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(catalog) = cached_catalog(&app)? else {
-            return Ok(None);
-        };
         // The scan renders every document. It uses its own library handle so the
         // shared library and the catalog stay free for other commands meanwhile.
         let state = app.state::<AppState>();
         let own = Library::open(&state.root).map_err(|e| e.to_string())?;
         let hrefs = api::publication_hrefs(&own, &dir)?;
+        // The cache is only needed for the lookup after the scan.
+        let _gate = state.cache_use()?;
+        let Some(catalog) = cached_catalog(&app)? else {
+            return Ok(None);
+        };
         let catalog = catalog.lock().map_err(|e| e.to_string())?;
         let meps = catalog
             .meps_language(&lang)
@@ -753,8 +799,10 @@ async fn catalog_search(
     query: String,
 ) -> ApiResult<Vec<api::CatalogEntry>> {
     tauri::async_runtime::spawn_blocking(move || {
-        catalog(&app)?;
-        with_catalog(&app, &lang, |c, meps, lib| {
+        let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
+        catalog_unguarded(&app)?;
+        with_catalog_unguarded(&app, &lang, |c, meps, lib| {
             api::search_entries(c, meps, lib, &query)
         })
         .map(Option::unwrap_or_default)
@@ -771,6 +819,8 @@ async fn catalog_languages(
     issue_tag: i64,
 ) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
+        let guard_state = app.state::<AppState>();
+        let _gate = guard_state.cache_use()?;
         let Some(catalog) = cached_catalog(&app)? else {
             return Ok(None);
         };
@@ -807,6 +857,7 @@ async fn download_publication(
 ) -> ApiResult<String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         let client = Client::new(HttpConfig::default());
         let mut lib = Library::open(&state.root).map_err(|e| e.to_string())?;
         let req = Request {
@@ -919,6 +970,7 @@ pub fn run() {
             root,
             cache,
             catalog: Mutex::new(None),
+            cache_gate: RwLock::new(()),
             image_client: Mutex::new(Client::new(HttpConfig {
                 min_interval: Duration::from_millis(100),
                 max_retries: 2,
@@ -985,6 +1037,7 @@ pub fn run() {
             languages,
             chapter_study,
             book_overview,
+            last_verse,
             research_verses,
             research_guide,
             catalog_cached,

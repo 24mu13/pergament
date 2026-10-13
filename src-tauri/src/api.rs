@@ -1,4 +1,4 @@
-//! P        assert_eq!(langs.iter().map(|l| l.code.as_str()).collect::<Vec<_>>(), ["X"]);ain functions behind the Tauri commands, so they can be tested without
+//! Plain functions behind the Tauri commands, so they can be tested without
 //! a running app. Everything returned is serialized for the frontend.
 
 use std::collections::{HashMap, HashSet};
@@ -173,6 +173,12 @@ pub fn research_verses(
         Some(guide) => guide.guide_verses(book, chapter).map_err(err),
         None => Ok(Vec::new()),
     }
+}
+
+/// The highest verse number of a chapter of a Bible.
+pub fn last_verse(library: &Library, bible_dir: &str, book: i64, chapter: i64) -> ApiResult<i64> {
+    let (_, bible) = open_entry(library, bible_dir)?;
+    bible.last_verse(book, chapter).map_err(err)
 }
 
 /// An excerpt of the Research Guide for a verse.

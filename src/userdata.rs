@@ -848,12 +848,20 @@ impl UserData {
     /// Copy the database to `userData.db.before-restore`, replacing an older copy.
     fn write_safety_copy(&self) -> Result<()> {
         let copy = self.path.with_extension("db.before-restore");
-        match fs::remove_file(&copy) {
+        // Write beside it and rename, so a failed vacuum keeps the older copy.
+        let temp = self.path.with_extension("db.before-restore.tmp");
+        match fs::remove_file(&temp) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
-        self.conn
-            .execute("VACUUM INTO ?1", [copy.to_string_lossy().as_ref()])?;
+        let written = self
+            .conn
+            .execute("VACUUM INTO ?1", [temp.to_string_lossy().as_ref()]);
+        if let Err(e) = written {
+            let _ = fs::remove_file(&temp);
+            return Err(e.into());
+        }
+        fs::rename(&temp, &copy)?;
         Ok(())
     }
 
@@ -1395,6 +1403,8 @@ struct IncomingNote {
     /// local one (skipped as a conflict, or cut away).
     had_mark: bool,
     location: Option<i64>,
+    /// The note has a location in the backup that was not imported.
+    had_location: bool,
 }
 
 /// How a note is shown in a conflict: its title, or the start of its text.
@@ -1426,7 +1436,8 @@ fn merge_notes(
 ) -> Result<()> {
     let incoming: Vec<IncomingNote> = {
         let mut stmt = tx.prepare(
-            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId, n.UserMarkId IS NOT NULL
+            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId, n.UserMarkId IS NOT NULL,
+                    n.LocationId IS NOT NULL
              FROM inc.Note n
              LEFT JOIN inc.UserMark u ON u.UserMarkId = n.UserMarkId
              ORDER BY n.NoteId",
@@ -1441,6 +1452,7 @@ fn merge_notes(
                 mark: mark.and_then(|g| marks.get(&g).copied()),
                 had_mark: r.get(4)?,
                 location: location.and_then(|l| locations.get(&l).copied()),
+                had_location: r.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -1475,15 +1487,27 @@ fn merge_notes(
                 // A backup highlight that did not make it here leaves the
                 // note on its local one rather than on none.
                 let keep_mark = note.had_mark && note.mark.is_none();
+                let keep_location = note.had_location && note.location.is_none();
+                // The place in the text belongs to the location, so it stays with it.
                 tx.execute(
                     "UPDATE main.Note
-                     SET (Title, Content, LastModified, BlockType, BlockIdentifier) =
-                         (SELECT Title, Content, LastModified, BlockType, BlockIdentifier
-                          FROM inc.Note WHERE NoteId = ?1),
+                     SET (Title, Content, LastModified) =
+                         (SELECT Title, Content, LastModified FROM inc.Note WHERE NoteId = ?1),
+                         BlockType = CASE WHEN ?6 THEN BlockType
+                                     ELSE (SELECT BlockType FROM inc.Note WHERE NoteId = ?1) END,
+                         BlockIdentifier = CASE WHEN ?6 THEN BlockIdentifier
+                                     ELSE (SELECT BlockIdentifier FROM inc.Note WHERE NoteId = ?1) END,
                          UserMarkId = CASE WHEN ?5 THEN UserMarkId ELSE ?2 END,
-                         LocationId = ?3
+                         LocationId = CASE WHEN ?6 THEN LocationId ELSE ?3 END
                      WHERE NoteId = ?4",
-                    params![note.id, note.mark, note.location, id, keep_mark],
+                    params![
+                        note.id,
+                        note.mark,
+                        note.location,
+                        id,
+                        keep_mark,
+                        keep_location
+                    ],
                 )?;
                 put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
                 report.updated += 1;
@@ -2191,6 +2215,26 @@ mod tests {
         assert_eq!(local.marks(&bible(2)).unwrap()[0].color, 2);
         assert_eq!(local.marks(&bible(2)).unwrap()[0].ranges, [verse(5, 0, 3)]);
         assert!(local.path().with_extension("db.before-restore").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_safety_copy_keeps_the_older_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let dir = local.path().parent().unwrap().to_owned();
+        let safety = local.path().with_extension("db.before-restore");
+        fs::write(&safety, b"old copy").unwrap();
+        // VACUUM INTO cannot create its file in a read-only directory.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let failed = local.write_safety_copy().is_err();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // Root ignores the permissions, so there is nothing to check then.
+        if failed {
+            assert_eq!(fs::read(&safety).unwrap(), b"old copy");
+            assert!(!local.path().with_extension("db.before-restore.tmp").exists());
+        }
     }
 
     #[test]
@@ -2945,6 +2989,42 @@ mod tests {
         let merged = note(&local, &guid);
         assert_eq!(merged.content, "new");
         assert_eq!(merged.mark_guid, Some(mark));
+    }
+
+    #[test]
+    fn merge_winning_note_keeps_its_place_when_the_backup_location_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .save_note(Some(&bible(1)), None, &note_input("T", "old", &[]))
+            .unwrap();
+        local
+            .conn
+            .execute("UPDATE Note SET BlockType = 2, BlockIdentifier = 3", [])
+            .unwrap();
+        let before = note(&local, &guid).location;
+        assert!(before.is_some());
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        // The backup note points at a location its database does not have.
+        remote
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 UPDATE Note SET Content = 'new', LocationId = 9999, BlockType = 2, BlockIdentifier = 7;",
+            )
+            .unwrap();
+        set_note_time(&remote, &guid, "2030-01-01T00:00:00Z");
+        set_note_time(&local, &guid, "2020-01-01T00:00:00Z");
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        let merged = note(&local, &guid);
+        assert_eq!(merged.content, "new");
+        assert_eq!(merged.location, before);
+        assert_eq!(merged.block_identifier, Some(3));
     }
 
     #[test]

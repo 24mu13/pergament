@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LocateFixed } from "lucide-react";
 import { BarButton, useApp } from "@/app";
 import { api, chapterTarget } from "@/lib/api";
-import { namedBooks, parseReference } from "@/lib/bible";
+import { namedBooks, parseReference, pickBible } from "@/lib/bible";
 import { inLanguage } from "@/lib/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,7 @@ export function GoToButton() {
 
 /** The "go to" box: type a reference such as "Heb 10:24" and the reader opens there. Opens with Ctrl+G. */
 export function GoTo() {
-  const { publications, lang, openTarget, toast } = useApp();
+  const { publications, lang, bibles, view, openTarget, toast } = useApp();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [bible, setBible] = useState<{ dir: string; books: ReturnType<typeof namedBooks> } | null>(null);
@@ -35,8 +35,12 @@ export function GoTo() {
   const show = () => {
     // Asking again while the box is open must not make it forget where focus has to go back to.
     if (isOpen.current) return;
-    const bibles = inLanguage(publications, lang).filter((p) => p.isBible);
-    const found = bibles.find((p) => p.symbol === "nwtsty") ?? bibles[0];
+    // The Bible open in the reader wins, then the one chosen for the language.
+    const openDir = view.name === "reader" ? view.target.publication : "dir" in view ? view.dir : null;
+    const open = publications.find((p) => p.isBible && p.dir === openDir);
+    const here = inLanguage(publications, lang).filter((p) => p.isBible);
+    const chosen = pickBible(here, bibles[lang] ?? null);
+    const found = open ?? chosen;
     if (!found) return toast(t("No Bible in this language in your library yet"));
     before.current = document.activeElement;
     setBible(null);
@@ -87,9 +91,16 @@ export function GoTo() {
   }, [open]);
 
   if (!open) return null;
-  const go = () => {
+  const go = async () => {
     const ref = bible && parseReference(text, bible.books);
     if (!bible || !ref) return setMissed(true);
+    try {
+      if (ref.verse != null && (ref.verse < 1 || ref.verse > (await api.lastVerse(bible.dir, ref.book, ref.chapter)))) {
+        return setMissed(true);
+      }
+    } catch (e) {
+      return toast(String(e));
+    }
     setOpen(false);
     openTarget(chapterTarget(bible.dir, ref.book, ref.chapter, ref.verse ?? 1));
   };
@@ -116,7 +127,7 @@ export function GoTo() {
         }}
         onSubmit={(e) => {
           e.preventDefault();
-          go();
+          void go();
         }}
         className="flex w-[min(90vw,420px)] flex-col gap-3 rounded-md border border-line bg-surface p-4 shadow-sm"
       >

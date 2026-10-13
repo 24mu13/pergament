@@ -437,6 +437,8 @@ export const api = {
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),
+  lastVerse: (dir: string, book: number, chapter: number) =>
+    invoke<number>("last_verse", { dir, book, chapter }),
   researchVerses: (dir: string, book: number, chapter: number) =>
     invoke<number[]>("research_verses", { dir, book, chapter }),
   researchGuide: (dir: string, book: number, chapter: number, verse: number) =>
