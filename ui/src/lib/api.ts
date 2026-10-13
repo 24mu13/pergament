@@ -27,6 +27,8 @@ export interface BibleBook {
   chapter_title: string;
   book_document_id: number | null;
   chapters: number;
+  /** Verses in each chapter, in chapter order. */
+  verses?: number[];
 }
 
 export interface PubCard {

@@ -23,8 +23,8 @@ export function booksTabIndex(toc: TocNode[]): number {
  */
 export function namedBooks(
   toc: TocNode[],
-  books: { number: number; title: string; chapters: number }[],
-): { number: number; title: string; chapters: number }[] {
+  books: { number: number; title: string; chapters: number; verses?: number[] }[],
+): { number: number; title: string; chapters: number; verses?: number[] }[] {
   const names = new Map<number, string>();
   const walk = (nodes: TocNode[]) =>
     nodes.forEach((n) => {
@@ -32,7 +32,7 @@ export function namedBooks(
       walk(n.children);
     });
   walk(toc);
-  return books.map((b) => ({ number: b.number, chapters: b.chapters, title: names.get(b.number) ?? b.title }));
+  return books.map((b) => ({ number: b.number, chapters: b.chapters, verses: b.verses, title: names.get(b.number) ?? b.title }));
 }
 
 /** A place in a Bible: chapter, and the verse if one was given. */
@@ -62,7 +62,10 @@ function bookNames(title: string): string[] {
  * only has to start a book's name ("Heb" for Hebrews), and a book number may be written with or without a dot. Returns
  * null when no book fits or the chapter does not exist.
  */
-export function parseReference(input: string, books: { number: number; title: string; chapters: number }[]): Reference | null {
+export function parseReference(
+  input: string,
+  books: { number: number; title: string; chapters: number; verses?: number[] }[],
+): Reference | null {
   const m = input.trim().match(/^(\d)?[.\s]*(\p{L}[\p{L}.\s]*?)\s*(?:(\d+)(?:\s*[:,.]\s*(\d+))?)?$/u);
   if (!m) return null;
   const query = plain(`${m[1] ?? ""} ${m[2]}`);
@@ -74,10 +77,18 @@ export function parseReference(input: string, books: { number: number; title: st
       .sort((a, b) => a.title.length - b.title.length || a.number - b.number)[0];
   if (!book) return null;
   // A single number after a book of one chapter ("Jude 5") is the verse.
-  if (book.chapters === 1 && m[3] && !m[4]) return { book: book.number, chapter: 1, verse: Number(m[3]) };
+  const fits = (chapter: number, verse: number) => {
+    const count = book.verses?.[chapter - 1];
+    return verse >= 1 && (count == null || verse <= count);
+  };
+  if (book.chapters === 1 && m[3] && !m[4]) {
+    return fits(1, Number(m[3])) ? { book: book.number, chapter: 1, verse: Number(m[3]) } : null;
+  }
   const chapter = m[3] ? Number(m[3]) : 1;
   if (chapter < 1 || chapter > book.chapters) return null;
-  return { book: book.number, chapter, verse: m[4] ? Number(m[4]) : null };
+  const verse = m[4] ? Number(m[4]) : null;
+  if (verse != null && !fits(chapter, verse)) return null;
+  return { book: book.number, chapter, verse };
 }
 
 /** One Bible a language can be read in: downloaded (`dir`), in the catalog (`entry`), or both. */

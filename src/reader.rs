@@ -35,6 +35,9 @@ pub struct BibleBook {
     pub chapter_title: String,
     pub book_document_id: Option<i64>,
     pub chapters: i64,
+    /// Verses in each chapter, in chapter order. A chapter with a verse 0 counts it, so this
+    /// may exceed the last verse number by one.
+    pub verses: Vec<i64>,
 }
 
 /// A verse position: book, chapter, verse.
@@ -269,19 +272,35 @@ impl Publication {
             .conn
             .prepare(&format!("{BOOK_SELECT} ORDER BY b.BibleBookId"))?;
         let rows = stmt.query_map([], book_from_row)?;
+        let mut books: Vec<BibleBook> = rows.collect::<rusqlite::Result<_>>()?;
+        for book in &mut books {
+            book.verses = self.chapter_verses(book.number)?;
+        }
+        Ok(books)
+    }
+
+    fn chapter_verses(&self, book: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT LastVerseId - FirstVerseId + 1 FROM BibleChapter
+             WHERE BookNumber = ?1 ORDER BY ChapterNumber",
+        )?;
+        let rows = stmt.query_map([book], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn bible_book(&self, number: i64) -> Result<BibleBook> {
         self.require_bible()?;
-        self.conn
+        let mut book = self
+            .conn
             .query_row(
                 &format!("{BOOK_SELECT} WHERE b.BibleBookId = ?1"),
                 [number],
                 book_from_row,
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("Bible book {number}")))
+            .ok_or_else(|| Error::NotFound(format!("Bible book {number}")))?;
+        book.verses = self.chapter_verses(number)?;
+        Ok(book)
     }
 
     pub fn chapter(&self, book: i64, chapter: i64) -> Result<Chapter> {
@@ -958,6 +977,7 @@ fn book_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<BibleBook> {
         chapter_title: r.get(2)?,
         book_document_id: r.get(3)?,
         chapters: r.get(4)?,
+        verses: Vec::new(),
     })
 }
 
