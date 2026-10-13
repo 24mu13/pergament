@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "./api";
-import { clampPanel, filterNotes } from "./notes";
+import { clampPanel, filterNotes, fitPanelSize } from "./notes";
 
 const note = (guid: string, over: Partial<Note> = {}): Note => ({
   guid,
@@ -61,5 +61,23 @@ describe("clampPanel", () => {
 
   it("pins a panel larger than the area to its top left", () => {
     expect(clampPanel({ x: 50, y: 50 }, { width: 1200, height: 900 }, bounds)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("fitPanelSize", () => {
+  const bounds = { width: 1000, height: 800 };
+  const min = { width: 320, height: 280 };
+
+  it("keeps a size that fits", () => {
+    expect(fitPanelSize({ width: 500, height: 400 }, min, bounds)).toEqual({ width: 500, height: 400 });
+  });
+
+  it("grows a size below the minimum and shrinks one larger than the area", () => {
+    expect(fitPanelSize({ width: 100, height: 50 }, min, bounds)).toEqual(min);
+    expect(fitPanelSize({ width: 1400, height: 900 }, min, bounds)).toEqual(bounds);
+  });
+
+  it("lets the area win over the minimum", () => {
+    expect(fitPanelSize({ width: 100, height: 100 }, min, { width: 300, height: 200 })).toEqual({ width: 300, height: 200 });
   });
 });

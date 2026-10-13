@@ -41,3 +41,9 @@ export function clampPanel(pos: Point, size: Size, bounds: Size): Point {
   const fit = (v: number, room: number) => Math.max(0, Math.min(v, room));
   return { x: fit(pos.x, bounds.width - size.width), y: fit(pos.y, bounds.height - size.height) };
 }
+
+/** A floating panel's size, at least `min` but never larger than the area. */
+export function fitPanelSize(size: Size, min: Size, bounds: Size): Size {
+  const fit = (v: number, low: number, high: number) => Math.min(Math.max(v, low), high);
+  return { width: fit(size.width, min.width, bounds.width), height: fit(size.height, min.height, bounds.height) };
+}

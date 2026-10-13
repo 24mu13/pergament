@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { GripHorizontal, NotebookPen, Pencil, Trash2, X } from "lucide-react";
+import { GripHorizontal, Maximize2, Minimize2, NotebookPen, Pencil, Trash2, X } from "lucide-react";
 import { useApp } from "@/app";
 import { api, type Note, type NoteInput } from "@/lib/api";
-import { clampPanel, type Point } from "@/lib/notes";
+import { clampPanel, fitPanelSize, type Point, type Size } from "@/lib/notes";
+import { loadNoteSize, saveNoteSize } from "@/lib/settings";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -113,10 +114,16 @@ export function NoteCard({
 
 /** Space kept between the editor and the edges of the content area when it first opens. */
 const EDGE = 16;
+/** The editor's size until the user resizes it, and the smallest it can be. */
+const DEFAULT_SIZE = { width: 440, height: 420 };
+const MIN_SIZE = { width: 320, height: 280 };
+
+const translate = (p: Point) => `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
 
 /**
  * A floating panel to write or change a note. It does not block the app, so
- * the user can keep reading, and can be dragged by its header.
+ * the user can keep reading. It can be dragged by its header, resized from its
+ * corner, and maximized to fill the content area.
  */
 export function NoteEditor({
   note,
@@ -140,6 +147,9 @@ export function NoteEditor({
 
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<Point | null>(null);
+  const [full, setFull] = useState(false);
+  /** The size outside full mode; the user changes it with the resize handle. */
+  const dims = useRef<Size>(loadNoteSize() ?? DEFAULT_SIZE);
   const area = () => {
     const parent = ref.current?.offsetParent as HTMLElement | null;
     return { width: parent?.clientWidth ?? window.innerWidth, height: parent?.clientHeight ?? window.innerHeight };
@@ -149,7 +159,7 @@ export function NoteEditor({
   useLayoutEffect(() => {
     const bounds = area();
     const bar = document.querySelector<HTMLElement>("#content > div:first-child")?.offsetHeight ?? bounds.height;
-    const s = size();
+    const s = (dims.current = fitPanelSize(dims.current, MIN_SIZE, { width: bounds.width - 2 * EDGE, height: bar - 2 * EDGE }));
     setPos(clampPanel({ x: bounds.width - s.width - EDGE, y: bar - s.height - EDGE }, s, bounds));
   }, []);
   useEffect(() => {
@@ -157,16 +167,52 @@ export function NoteEditor({
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
+  // Remember the size the user drags the panel to.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || full || typeof ResizeObserver === "undefined") return;
+    const seen = new ResizeObserver(() => {
+      const s = size();
+      if (s.width === dims.current.width && s.height === dims.current.height) return;
+      dims.current = s;
+      saveNoteSize(s);
+    });
+    seen.observe(el, { box: "border-box" });
+    return () => seen.disconnect();
+  }, [full]);
+
+  const placed = (p: Point): React.CSSProperties => {
+    const bounds = area();
+    return {
+      left: 0,
+      top: 0,
+      transform: translate(p),
+      width: dims.current.width,
+      height: dims.current.height,
+      maxWidth: bounds.width - p.x,
+      maxHeight: bounds.height - p.y,
+    };
+  };
 
   const drag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button") || !pos) return;
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button") || !pos || full) return;
     // Without this WebKit starts a text selection that follows the pointer over the page behind.
     e.preventDefault();
     const start = { x: e.clientX - pos.x, y: e.clientY - pos.y };
     const handle = e.currentTarget;
+    const panel = ref.current!;
     handle.setPointerCapture(e.pointerId);
-    const move = (ev: PointerEvent) => setPos(clampPanel({ x: ev.clientX - start.x, y: ev.clientY - start.y }, size(), area()));
+    // Moving writes the transform directly and React only learns the end position:
+    // a render and layout per pointer move made dragging lag in WebKitGTK.
+    const s = size();
+    const bounds = area();
+    let at = pos;
+    const move = (ev: PointerEvent) => {
+      at = clampPanel({ x: ev.clientX - start.x, y: ev.clientY - start.y }, s, bounds);
+      panel.style.transform = translate(at);
+    };
     const up = () => {
+      setPos(at);
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
       handle.removeEventListener("pointercancel", up);
@@ -181,20 +227,36 @@ export function NoteEditor({
       ref={ref}
       role="dialog"
       aria-label={note.guid ? t("Edit note") : t("New note")}
-      style={pos ? { left: pos.x, top: pos.y } : { visibility: "hidden" }}
-      className="absolute z-35 flex w-[min(calc(100%-2rem),440px)] flex-col gap-3 rounded-md border border-line bg-surface p-4 shadow-lg"
+      style={full ? { left: 0, top: 0, width: "100%", height: "100%" } : pos ? placed(pos) : { visibility: "hidden" }}
+      className={cn(
+        "absolute z-35 flex min-h-[280px] min-w-[320px] flex-col gap-3 overflow-hidden border border-line bg-surface p-4 shadow-lg will-change-transform",
+        full ? "rounded-none" : "resize rounded-md",
+      )}
     >
       <div
         onPointerDown={drag}
-        className="-mx-4 -mt-4 flex cursor-move touch-none items-center justify-between gap-2 rounded-t-md border-b border-line bg-bar px-4 py-2 select-none"
+        className={cn(
+          "-mx-4 -mt-4 flex touch-none items-center justify-between gap-2 border-b border-line bg-bar px-4 py-2 select-none",
+          !full && "cursor-move rounded-t-md",
+        )}
       >
         <h2 className="flex items-center gap-2 font-semibold">
-          <GripHorizontal size={16} className="text-muted" aria-hidden />
+          {!full && <GripHorizontal size={16} className="text-muted" aria-hidden />}
           {note.guid ? t("Edit note") : t("New note")}
         </h2>
-        <button aria-label={t("Close")} onClick={onClose}>
-          <X size={20} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            aria-label={full ? t("Restore size") : t("Maximize")}
+            title={full ? t("Restore size") : t("Maximize")}
+            aria-pressed={full}
+            onClick={() => setFull((f) => !f)}
+          >
+            {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+          </button>
+          <button aria-label={t("Close")} onClick={onClose}>
+            <X size={20} />
+          </button>
+        </div>
       </div>
       <input
         id="note-title"
@@ -210,7 +272,7 @@ export function NoteEditor({
         rows={6}
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        className="resize-y rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+        className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
       />
       <input
         id="note-tags"

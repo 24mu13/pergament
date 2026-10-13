@@ -151,6 +151,8 @@ export const de: Record<string, string> = {
   "Discard note?": "Notiz verwerfen?",
   "The note you are writing has not been saved.": "Die Notiz, die du gerade schreibst, ist noch nicht gespeichert.",
   Discard: "Verwerfen",
+  Maximize: "Maximieren",
+  "Restore size": "Ursprüngliche Größe",
 
   // Meetings
   "Previous week": "Vorige Woche",

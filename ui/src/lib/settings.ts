@@ -207,3 +207,17 @@ export function loadBibles(): Record<string, string> {
 export function saveBibles(bibles: Record<string, string>) {
   write("bibles", JSON.stringify(bibles));
 }
+
+/** The size the user last gave the floating note editor. */
+export function loadNoteSize(): { width: number; height: number } | null {
+  try {
+    const s = JSON.parse(read("noteSize") ?? "null");
+    return Number.isFinite(s?.width) && Number.isFinite(s?.height) ? { width: s.width, height: s.height } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveNoteSize(size: { width: number; height: number }) {
+  write("noteSize", JSON.stringify(size));
+}

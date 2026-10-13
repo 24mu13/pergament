@@ -311,6 +311,23 @@ describe("Floating note", () => {
     expect(fireEvent.pointerDown(within(editor).getByRole("button", { name: "Close" }), { button: 0, pointerId: 1 })).toBe(true);
   });
 
+  it("fills the content area and goes back to its size", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    expect(editor.style.width).toBe("440px");
+    fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
+    expect(editor.style.width).toBe("100%");
+    expect(editor.style.height).toBe("100%");
+    fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
+    expect(editor.style.width).toBe("440px");
+  });
+
   it("asks before another note replaces unsaved text", async () => {
     renderIn(
       <>
