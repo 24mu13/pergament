@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { Play } from "lucide-react";
 import { AppBar, useApp } from "@/app";
 import { api, chapterTarget, documentTarget, type BookOverview, type Page } from "@/lib/api";
 import { usePublication } from "./publication";
+import { hydrateMedia } from "@/lib/media";
 import { t } from "@/lib/i18n";
 
 export function ChaptersView({ dir, book }: { dir: string; book: number }) {
@@ -12,6 +13,7 @@ export function ChaptersView({ dir, book }: { dir: string; book: number }) {
   const [overview, setOverview] = useState<BookOverview | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const info = detail?.books.find((b) => b.number === book);
+  const overviewRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let live = true;
@@ -32,6 +34,11 @@ export function ChaptersView({ dir, book }: { dir: string; book: number }) {
       live = false;
     };
   }, [dir, book]);
+
+  // The page is inserted as HTML; its jwmedia: pictures need their sources.
+  useEffect(() => {
+    if (page && overviewRef.current) hydrateMedia(overviewRef.current);
+  }, [page]);
 
   /** Entries of the overview link to verses; they open the chapter. */
   const follow = async (e: MouseEvent) => {
@@ -93,7 +100,7 @@ export function ChaptersView({ dir, book }: { dir: string; book: number }) {
             aria-label={t("Study pane")}
             className="study-pane shrink-0 border-t border-line bg-surface px-5 py-4 lg:w-[min(40%,34rem)] lg:overflow-y-auto lg:border-l lg:border-t-0"
           >
-            <article className="reader overview" onClick={(e) => void follow(e)} dangerouslySetInnerHTML={{ __html: page.html }} />
+            <article ref={overviewRef} className="reader overview" onClick={(e) => void follow(e)} dangerouslySetInnerHTML={{ __html: page.html }} />
           </aside>
         )}
       </div>
