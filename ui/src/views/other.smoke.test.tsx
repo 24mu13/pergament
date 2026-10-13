@@ -250,6 +250,24 @@ describe("Personal Study", () => {
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "zzz" } });
     expect(screen.getByText("No notes match.")).toBeTruthy();
   });
+
+  it("shows a note's Markdown formatted, with links only underlined", async () => {
+    backend.user_data_summary = () => ({ marks: 0, notes: 1, tags: 0, bookmarks: 0, device: null });
+    backend.tags = () => [];
+    backend.bookmarks = () => [];
+    backend.all_notes = () => [
+      { ...note("a", "Dusk visits", 1, "2026-10-03T00:00:00Z"), content: "Bring **tea**\n- cups\n- [map](https://example.org)\n<b>raw</b>" },
+    ];
+    renderIn(<PersonalView />);
+    const tea = await screen.findByText("tea");
+    const card = tea.closest(".note-md")!;
+    expect(tea.tagName).toBe("STRONG");
+    expect(card.querySelectorAll("li")).toHaveLength(2);
+    expect(card.querySelector("a")).toBeNull();
+    expect(within(card as HTMLElement).getByText("map").className).toBe("md-link");
+    expect(card.querySelector("b")).toBeNull();
+    expect(card.textContent).toContain("<b>raw</b>");
+  });
 });
 
 describe("Floating note", () => {
@@ -326,6 +344,29 @@ describe("Floating note", () => {
     expect(editor.style.height).toBe("100%");
     fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
     expect(editor.style.width).toBe("440px");
+  });
+
+  it("previews Markdown and opens its links in the browser", async () => {
+    backend.open_external = () => undefined;
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), {
+      target: { value: "**Love** for [all](https://example.org/)\n- first\n- second" },
+    });
+    fireEvent.click(within(editor).getByRole("button", { name: "Preview" }));
+    const preview = within(editor).getByTestId("note-preview");
+    expect(preview.querySelector("strong")?.textContent).toBe("Love");
+    expect(preview.querySelectorAll("li")).toHaveLength(2);
+    fireEvent.click(within(preview).getByText("all"));
+    await waitFor(() => expect(calls.find((c) => c.cmd === "open_external")?.args).toEqual({ url: "https://example.org/" }));
+    fireEvent.click(within(editor).getByRole("button", { name: "Write" }));
+    expect((within(editor).getByPlaceholderText("Note") as HTMLTextAreaElement).value).toContain("**Love**");
   });
 
   it("asks before another note replaces unsaved text", async () => {

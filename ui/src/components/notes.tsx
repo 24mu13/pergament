@@ -3,6 +3,7 @@ import { GripHorizontal, Maximize2, Minimize2, NotebookPen, Pencil, Trash2, X } 
 import { useApp } from "@/app";
 import { api, type Note, type NoteInput } from "@/lib/api";
 import { clampPanel, fitPanelSize, type Point, type Size } from "@/lib/notes";
+import { renderMarkdown } from "@/lib/markdown";
 import { loadNoteSize, saveNoteSize } from "@/lib/settings";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { cn } from "@/lib/utils";
@@ -88,7 +89,12 @@ export function NoteCard({
       <div className="min-w-0 flex-1">
         {subtitle && <div className="truncate text-xs text-muted">{subtitle}</div>}
         {note.title && <div className="font-semibold">{note.title}</div>}
-        {note.content && <div className="line-clamp-4 whitespace-pre-wrap text-sm text-fg/85">{note.content}</div>}
+        {note.content && (
+          <div
+            className="note-md line-clamp-4 text-sm text-fg/85"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(note.content, { links: false }) }}
+          />
+        )}
         {note.tags.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
             {note.tags.map((t) => (
@@ -142,6 +148,15 @@ export function NoteEditor({
   const [title, setTitle] = useState(note.title ?? "");
   const [content, setContent] = useState(note.content ?? "");
   const [tags, setTags] = useState((note.tags ?? []).join(", "));
+  const [preview, setPreview] = useState(false);
+  const { toast } = useApp();
+  /** Links in the preview open in the browser, not in the app's window. */
+  const openLink = (e: React.MouseEvent) => {
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) return;
+    e.preventDefault();
+    api.openExternal(a.href).catch((err) => toast(String(err)));
+  };
   const dirty = title !== (note.title ?? "") || content !== (note.content ?? "") || tags !== (note.tags ?? []).join(", ");
   useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
 
@@ -266,14 +281,38 @@ export function NoteEditor({
         onChange={(e) => setTitle(e.target.value)}
         className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
       />
-      <textarea
-        id="note-content"
-        placeholder={t("Note")}
-        rows={6}
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
-      />
+      <div role="group" aria-label={t("Note")} className="-mb-1.5 flex justify-end gap-1 text-xs">
+        {[false, true].map((on) => (
+          <button
+            key={String(on)}
+            type="button"
+            aria-pressed={preview === on}
+            onClick={() => setPreview(on)}
+            className="rounded px-2 py-0.5 text-muted hover:text-fg aria-pressed:bg-bar aria-pressed:font-medium aria-pressed:text-fg"
+          >
+            {on ? t("Preview") : t("Write")}
+          </button>
+        ))}
+      </div>
+      {preview ? (
+        <div
+          data-testid="note-preview"
+          onClick={openLink}
+          className="note-md min-h-0 flex-1 overflow-auto rounded-md border border-line px-3 py-2"
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdown(content, { links: true }) || `<p class="text-muted">${t("Nothing to preview")}</p>`,
+          }}
+        />
+      ) : (
+        <textarea
+          id="note-content"
+          placeholder={t("Note")}
+          rows={6}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+        />
+      )}
       <input
         id="note-tags"
         placeholder={t("Tags, separated by commas")}

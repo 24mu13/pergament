@@ -153,6 +153,9 @@ export const de: Record<string, string> = {
   Discard: "Verwerfen",
   Maximize: "Maximieren",
   "Restore size": "Ursprüngliche Größe",
+  Write: "Schreiben",
+  Preview: "Vorschau",
+  "Nothing to preview": "Noch nichts geschrieben",
 
   // Meetings
   "Previous week": "Vorige Woche",
