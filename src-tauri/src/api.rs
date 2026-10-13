@@ -1,4 +1,4 @@
-//! P        assert_eq!(langs.iter().map(|l| l.code.as_str()).collect::<Vec<_>>(), ["X"]);ain functions behind the Tauri commands, so they can be tested without
+//! Plain functions behind the Tauri commands, so they can be tested without
 //! a running app. Everything returned is serialized for the frontend.
 
 use std::collections::{HashMap, HashSet};
