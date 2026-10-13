@@ -18,7 +18,7 @@ import {
   type VerseStudy,
 } from "@/lib/api";
 import { restoreScroll } from "@/lib/scroll";
-import { applyMarks, blockElements, markText, rangeText, selectionRanges, titleFromText } from "@/lib/marks";
+import { applyMarks, blockElements, markText, rangeText, selectionRanges } from "@/lib/marks";
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
@@ -199,7 +199,7 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
       const el = root.closest<HTMLElement>(".overflow-y-auto");
       // Coming back to the tab continues where the user stopped, once.
       if (scroll && el && !resumed.current) restoreScroll(el, scroll);
-      else el?.scrollTo({ top: 0 });
+      else if (!(noteGuid && user.notes.some((n) => n.guid === noteGuid && n.blockIdentifier != null))) el?.scrollTo({ top: 0 });
       resumed.current = true;
     }
     if (note && chapter && study) selectVerse(`${chapter.chapter}:${chapter.verse}`);
