@@ -310,6 +310,29 @@ describe("Chapters of a Bible book", () => {
     await waitFor(() => expect(calls.some((c) => c.cmd === "media_links" && (c.args as { media: { track: number } }).media.track === 400)).toBe(true));
   });
 
+  it("follows external and missing links in the overview instead of ignoring them", async () => {
+    backend.publication = () => ({
+      card: card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Studienbibel", isBible: true }),
+      toc: [],
+      books: [{ number: 40, title: "Matthäus", chapter_title: "Matthäus", book_document_id: 145, chapters: 28 }],
+    });
+    backend.book_overview = () => ({ document: 144, video: null });
+    backend.render_page = () => ({
+      title: "Übersicht",
+      fragment: null,
+      name: "x",
+      html: `<p><a href="https://example.test/a">Außen</a> <a href="jwpub://p/X:9/">Fehlt</a></p>`,
+    });
+    backend.open_external = () => undefined;
+    backend.link_action = ({ href }: { href: string }) =>
+      href.startsWith("https") ? { kind: "external", url: href } : { kind: "missing", url: "jw.org/x" };
+    renderIn(<ChaptersView dir="nwtsty_2" book={40} />);
+    fireEvent.click(await screen.findByText("Außen"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_external")).toBe(true));
+    fireEvent.click(screen.getByText("Fehlt"));
+    expect(await screen.findByText(/Not in your library: jw.org\/x/)).toBeTruthy();
+  });
+
   it("has no video button for a book without an introduction video", async () => {
     backend.publication = () => ({
       card: card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Studienbibel", isBible: true }),

@@ -22,6 +22,7 @@ import { inLanguage } from "@/lib/settings";
 import { Input } from "@/components/ui/input";
 import { CatalogPrompt } from "@/components/catalog";
 import { CategoryTile } from "@/components/category-tile";
+import { BIBLE_CATEGORY } from "@/lib/use-catalog-bibles";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GridCard } from "@/components/cover";
 import { HomeLibraryGrid } from "./downloaded";
@@ -31,9 +32,6 @@ import { DownloadedRecordings, MediaTab } from "./media";
 import { UpdatesTab } from "./updates";
 import { useMediaDownloads } from "@/components/media-card";
 import { t } from "@/lib/i18n";
-
-/** The catalog category of Bibles (see CATEGORIES in src/catalog.rs). */
-const BIBLE_CATEGORY = 1;
 
 /** Icons per category id (see CATEGORIES in src/catalog.rs). */
 const ICONS: Record<number, LucideIcon> = {

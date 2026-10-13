@@ -574,7 +574,8 @@ impl Publication {
     }
 
     /// The introduction video of a book, as its key symbol and track; not every book has one yet. Other videos of
-    /// the book's documents are clips inside notes and carry no key symbol.
+    /// the book's documents are clips inside notes and carry no key symbol. A query error (older publications may
+    /// lack these tables) counts as "no video"; the overview itself still works without one.
     pub fn book_video(&self, book: i64) -> Result<Option<(String, u32)>> {
         self.require_bible()?;
         Ok(self

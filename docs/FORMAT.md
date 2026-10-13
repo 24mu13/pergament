@@ -149,6 +149,9 @@ HTML fragments (no `<html>`/`<body>`), with elements carrying
   **2 = parallel account** (Mat 4:1 → Mar 1:12, 13 and Luk 4:1-4), 3 = quotation
   from an earlier book (references in Matthew point into Isaiah, Micah, …). A
   block can mix classes (555 do in the German Study Bible).
+- **Bible book intro videos**: a `Multimedia` row with `video/mp4`, a `KeySymbol` (`nwtsv`) and a `Track` (book number × 10: Mat 400) that
+  `DocumentMultimedia` ties to the book's document (`BookDocumentId`) or its introduction (`IntroDocumentId`). Other
+  videos of those documents are clips in notes with an empty `KeySymbol`. The recording is fetched like any linked one.
 - **Bible links**: `<a href="jwpub://b/NWTR/{book}:{ch}:{v}-{book}:{ch}:{v}" class="b">`.
 - **Publication links**: `<a href="jwpub://p/X:{MepsDocumentId}/" class="xt" data-xtid="N">`,
   where `X` is the MEPS language code. Some carry a suffix after the slash,
@@ -443,7 +446,7 @@ behavior. [own]
   `data-vlid`.
 - `BibleCitation.SortPosition`.
 - The suffix in publication links like `jwpub://p/X:1001070144/1-1`.
-- `VerseMultimediaMap` (media attached to verses) and the Bible book intro videos (`DocumentMultimedia`) are not shown yet; only recordings linked from the text and those in the Video and Audio tabs play.
+- `VerseMultimediaMap` (media attached to verses) is not shown yet; only recordings linked from the text, the book intro videos and those in the Video and Audio tabs play.
 - Full list of `Document.Class`/`Type` values across other publication types.
 - `contentFormat` values other than `z-a`.
 - Whether older `schemaVersion`s (e.g. 8 in [jwapi]) differ in a way that matters.

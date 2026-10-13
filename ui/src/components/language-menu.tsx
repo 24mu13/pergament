@@ -68,13 +68,25 @@ export function LanguageMenu({
     };
   }, [open]);
 
-  // Close once a download that kept the menu open has finished.
-  const downloading = (languages ?? []).some((l) => translations?.choicesFor(l.code).some((c) => translations.progress(c)));
-  const wasDownloading = useRef(false);
+  // A download picked here keeps the menu open to show its progress and closes it once it is over, however it ended.
+  const [picked, setPicked] = useState<BibleChoice | null>(null);
+  const running = picked ? translations?.progress(picked) : undefined;
+  const sawProgress = useRef(false);
   useEffect(() => {
-    if (wasDownloading.current && !downloading) setOpen(false);
-    wasDownloading.current = downloading;
-  }, [downloading]);
+    if (!picked) return;
+    if (running) sawProgress.current = true;
+    else if (sawProgress.current) {
+      sawProgress.current = false;
+      setPicked(null);
+      setOpen(false);
+    }
+  }, [picked, running]);
+  useEffect(() => {
+    if (!open) {
+      sawProgress.current = false;
+      setPicked(null);
+    }
+  }, [open]);
 
   const byCode = useMemo(() => new Map(languages?.map((l) => [l.code, l]) ?? []), [languages]);
   const current = byCode.get(value);
@@ -104,8 +116,8 @@ export function LanguageMenu({
             disabled={!!running}
             onClick={() => {
               translations!.onPick(c);
-              // A download keeps the menu open to show its progress; the effect above closes it when done.
               if (c.dir) setOpen(false);
+              else setPicked(c);
               setQuery("");
             }}
             className={cn("flex w-full items-center gap-3 py-2 pl-7 pr-4 text-left hover:bg-bar", active && "text-accent")}

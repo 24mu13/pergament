@@ -25,6 +25,7 @@ export const de: Record<string, string> = {
   "Pick a translation to download. More languages are in the language menu.": "Wähle eine Übersetzung zum Herunterladen. Weitere Sprachen findest du im Sprachmenü.",
   "Parallel accounts": "Parallelberichte",
   "Introduction video": "Einführungsvideo",
+  "Not in your library: {link}": "Nicht in deiner Bibliothek: {link}",
   "Language list unavailable: {error}": "Sprachliste nicht verfügbar: {error}",
   "Loading…": "Lädt…",
 

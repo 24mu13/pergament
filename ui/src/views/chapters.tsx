@@ -40,7 +40,22 @@ export function ChaptersView({ dir, book }: { dir: string; book: number }) {
     e.preventDefault();
     try {
       const action = await api.linkAction(dir, a.getAttribute("href")!);
-      if (action.kind === "open") openTarget(action.target);
+      switch (action.kind) {
+        case "open":
+          openTarget(action.target);
+          break;
+        case "external":
+          await api.openExternal(action.url);
+          break;
+        case "media":
+          await playRecording(action.media);
+          break;
+        case "missing":
+          toast(t("Not in your library: {link}", { link: action.url ?? a.getAttribute("href") ?? "" }));
+          break;
+        case "ignore":
+          break;
+      }
     } catch (err) {
       toast(t("Cannot follow link: {error}", { error: String(err) }));
     }
