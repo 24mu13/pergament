@@ -6,7 +6,7 @@ type ViewKind =
   | { name: "home" }
   | { name: "publication"; dir: string; tab?: number }
   | { name: "chapters"; dir: string; book: number }
-  | { name: "reader"; target: Target; note?: boolean }
+  | { name: "reader"; target: Target; note?: boolean; noteGuid?: string }
   | { name: "online" }
   | { name: "settings" }
   | { name: "library"; tab?: LibraryTab }

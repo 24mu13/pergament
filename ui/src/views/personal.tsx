@@ -52,10 +52,10 @@ export function PersonalView() {
     };
   }, [tag, version, userVersion, toast]);
 
-  const open = async (loc: Loc) => {
+  const open = async (loc: Loc, noteGuid?: string) => {
     try {
       const target = await api.openLocation(loc);
-      if (target) push({ name: "reader", target });
+      if (target) push({ name: "reader", target, noteGuid });
       else toast(t("This publication is not in your library"));
     } catch (e) {
       toast(String(e));
@@ -150,7 +150,7 @@ export function PersonalView() {
                     <NoteCard
                       note={n}
                       subtitle={n.location?.title ?? undefined}
-                      onClick={n.location ? () => void open(n.location!) : () => setEditing(n)}
+                      onClick={n.location ? () => void open(n.location!, n.guid) : () => setEditing(n)}
                     />
                   </div>
                   <button
