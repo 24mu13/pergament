@@ -26,7 +26,6 @@ import { linkedItem } from "@/lib/recording";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
 import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
-  inLanguage,
   loadFavorites,
   loadFontScale,
   loadLayout,
@@ -36,6 +35,7 @@ import {
   loadUpdateCheck,
   saveSecondDisplay,
   saveUpdateCheck,
+  loadBibles,
   loadLang,
   loadUiLang,
   loadTheme,
@@ -47,6 +47,7 @@ import {
   type ReadingFont,
   type Layout,
   toggleFavorite as toggleStoredFavorite,
+  saveBibles,
   saveLang,
   saveUiLang,
   saveTheme,
@@ -56,7 +57,9 @@ import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
 import { scroller } from "@/lib/scroll";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
-import { LanguageMenu } from "@/components/language-menu";
+import { LanguageMenu, type Translations } from "@/components/language-menu";
+import { useCatalogBibles } from "@/lib/use-catalog-bibles";
+import { bibleChoices, pickBible } from "@/lib/bible";
 
 interface Toast {
   id: number;
@@ -66,6 +69,8 @@ interface Toast {
 
 interface AppContextValue {
   view: View;
+  /** The rail section the current view belongs to. */
+  section: Section;
   canGoBack: boolean;
   push: (view: View) => void;
   replace: (view: View) => void;
@@ -94,6 +99,10 @@ interface AppContextValue {
   mergeBackups: boolean;
   setMergeBackups: (on: boolean) => void;
   importFiles: () => Promise<void>;
+  /** Symbol of the Bible last picked per language code. */
+  bibles: Record<string, string>;
+  /** Remember which Bible a language's Bible tab opens. */
+  chooseBible: (lang: string, symbol: string) => void;
   /** Selected language code, e.g. `X`. */
   lang: string;
   setLang: (code: string) => void;
@@ -177,6 +186,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [readingFont, setReadingFontState] = useState<ReadingFont>(loadReadingFont);
   const [mergeBackups, setMergeBackupsState] = useState(loadMergeBackups);
   const [lang, setLangState] = useState(loadLang);
+  const [bibles, setBibles] = useState(loadBibles);
   const [uiLang, setUiLangState] = useState<UiLangSetting>(loadUiLang);
   const [languages, setLanguages] = useState<Language[]>([]);
   const [downloads, setDownloads] = useState<Record<string, Progress>>({});
@@ -516,6 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppContextValue>(
     () => ({
       view: currentView(nav),
+      section: nav.section,
       canGoBack: nav.stack.length > 1,
       push: (view) => dispatch({ type: "push", view }),
       replace: (view) => dispatch({ type: "replace", view }),
@@ -555,6 +566,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setMergeBackupsState(on);
       },
       importFiles,
+      bibles,
+      chooseBible: (code, symbol) =>
+        setBibles((b) => {
+          const next = { ...b, [code]: symbol };
+          saveBibles(next);
+          return next;
+        }),
       lang,
       setLang: (code) => {
         saveLang(code);
@@ -611,6 +629,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       mergeBackups,
       importFiles,
       lang,
+      bibles,
+      nav.section,
       uiLang,
       names,
       downloads,
@@ -728,12 +748,11 @@ function RailButton({
 
 /** Icon rail on the left; the menu button expands labels. */
 export function Rail() {
-  const { view, switchTo, publications, toast, lang } = useApp();
+  const { view, switchTo, publications, lang, bibles } = useApp();
   const [expanded, setExpanded] = useState(false);
-  const bibles = inLanguage(publications, lang).filter((p) => p.isBible);
-  const bible = bibles.find((p) => p.symbol === "nwtsty") ?? bibles[0];
+  const bible = pickBible(bibleChoices(lang, publications, []), bibles[lang] ?? null);
   const inBible =
-    (view.name === "publication" || view.name === "chapters") && bible !== undefined && view.dir === bible.dir;
+    (view.name === "publication" || view.name === "chapters") && publications.some((p) => p.isBible && p.dir === view.dir);
   const go = (section: Section, v: View) => {
     setExpanded(false);
     switchTo(section, v, scroller()?.scrollTop);
@@ -751,11 +770,9 @@ export function Rail() {
       </RailButton>
       <RailButton
         label="Bible"
-        active={inBible || (view.name === "reader" && "chapter" in view.target.kind)}
+        active={inBible || view.name === "bible" || (view.name === "reader" && "chapter" in view.target.kind)}
         expanded={expanded}
-        onClick={() =>
-          bible ? go("bible", { name: "publication", dir: bible.dir }) : toast(t("No Bible in this language in your library yet"))
-        }
+        onClick={() => go("bible", bible ? { name: "publication", dir: bible.dir! } : { name: "bible" })}
       >
         <BookOpen {...icon} />
       </RailButton>
@@ -863,6 +880,32 @@ function MoreMenu() {
   );
 }
 
+/**
+ * The Bibles each language offers, downloaded or from the catalog, and what picking one does: select its language,
+ * remember it for the Bible tab, download it if needed and open it. Only reads the catalog while `enabled`.
+ */
+export function useBibleTranslations(enabled: boolean): Translations | undefined {
+  const { lang, setLang, publications, bibles, chooseBible, download, downloads, switchTo, catalogVersion } = useApp();
+  const libraryCodes = [...new Set(publications.map((p) => p.langCode).filter((c): c is string => !!c))];
+  // Only the languages in the library and the selected one list catalog Bibles; reading the rest would be a lot of queries.
+  const catalogBibles = useCatalogBibles([lang, ...libraryCodes], enabled, catalogVersion);
+  if (!enabled) return undefined;
+  const choicesFor = (code: string) => bibleChoices(code, publications, catalogBibles[code] ?? []);
+  return {
+    choicesFor,
+    current: pickBible(choicesFor(lang), bibles[lang] ?? null)?.symbol ?? null,
+    progress: (c) => (c.entry ? downloads[taskKey(c.entry)] : undefined),
+    onPick: (c) => {
+      setLang(c.lang);
+      chooseBible(c.lang, c.symbol);
+      void (async () => {
+        const dir = c.dir ?? (c.entry ? await download(c.entry, c.lang, { quiet: true }) : null);
+        if (dir) switchTo("bible", { name: "publication", dir });
+      })();
+    },
+  };
+}
+
 /** Top bar of a view: title (with optional subtitle) and actions on the right. */
 export function AppBar({
   title,
@@ -873,8 +916,9 @@ export function AppBar({
   subtitle?: string;
   children?: ReactNode;
 }) {
-  const { push, lang, setLang, publications } = useApp();
+  const { push, lang, setLang, publications, section } = useApp();
   const libraryCodes = [...new Set(publications.map((p) => p.langCode).filter((c): c is string => !!c))];
+  const translations = useBibleTranslations(section === "bible");
   return (
     <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-surface pl-4 pr-2">
       <div className="min-w-0 flex-1 leading-tight">
@@ -885,7 +929,7 @@ export function AppBar({
       <BarButton label="Search and download" onClick={() => push({ name: "online" })}>
         <Search size={18} strokeWidth={1.6} />
       </BarButton>
-      <LanguageMenu value={lang} onChange={setLang} libraryCodes={libraryCodes} />
+      <LanguageMenu value={lang} onChange={setLang} libraryCodes={libraryCodes} translations={translations} />
       <MoreMenu />
     </header>
   );

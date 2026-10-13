@@ -24,6 +24,7 @@ vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save: vi.fn() }));
 
 import { AppProvider } from "@/app";
+import { BibleView } from "@/views/bible";
 import { CategoryView, LibraryView } from "@/views/library";
 import { MediaCategoryView } from "@/views/media";
 
@@ -237,5 +238,41 @@ describe("Coming back to a page", () => {
     };
     renderIn(<CategoryView id={5} title="Books" />);
     await waitFor(() => expect(screen.queryByPlaceholderText("Filter")).toBeNull());
+  });
+});
+
+describe("Bibles", () => {
+  it("are not a Library category, since the Bible tab downloads them", async () => {
+    backend.categories = () => [
+      { id: 1, name: "Bible", count: 3 },
+      { id: 4, name: "Brochures and Booklets", count: 2 },
+    ];
+    publications = [card({ dir: "nwt_2", symbol: "nwt", title: "Bibel", publicationType: "Bible", isBible: true })];
+    renderIn(<LibraryView />);
+    await screen.findByText("Brochures and Booklets");
+    expect(screen.queryByText("Bible")).toBeNull();
+  });
+
+  it("are listed by the Bible tab for download when the language has none", async () => {
+    items = [entry("nwtsty", "Bible", null, "Studienausgabe"), entry("nwt", "Bible", null, "Neue-Welt-Übersetzung")];
+    publications = [];
+    renderIn(<BibleView />);
+    expect(await screen.findByText("Studienausgabe")).toBeTruthy();
+    expect(screen.getByText("Neue-Welt-Übersetzung")).toBeTruthy();
+    expect(calls.some((c) => c.cmd === "category" && (c.args as { id: number }).id === 1)).toBe(true);
+  });
+});
+
+describe("Bible downloads", () => {
+  it("show their progress on the translation while they run", async () => {
+    items = [entry("nwtsty", "Bible", null, "Studienausgabe"), entry("nwt", "Bible", null, "Neue-Welt-Übersetzung")];
+    publications = [];
+    backend.download_publication = () => new Promise(() => undefined);
+    renderIn(<BibleView />);
+    fireEvent.click(await screen.findByText("Studienausgabe"));
+    const bar = await screen.findByRole("progressbar", { name: "Studienausgabe" });
+    expect(bar).toBeTruthy();
+    expect(screen.getByText("0%")).toBeTruthy();
+    expect(screen.queryByRole("progressbar", { name: "Neue-Welt-Übersetzung" })).toBeNull();
   });
 });

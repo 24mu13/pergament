@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Languages } from "lucide-react";
+import { Check, Download, Languages } from "lucide-react";
 import { api, type Language } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { t } from "@/lib/i18n";
+import type { BibleChoice } from "@/lib/bible";
+import { Progress } from "@/components/ui/progress";
 
 // The list is the same for the whole session; load it once.
 let cache: Promise<Language[]> | null = null;
@@ -15,15 +17,30 @@ export function loadLanguages(): Promise<Language[]> {
   return cache;
 }
 
+/** The Bibles of each language, so a language with several lists them to pick from. */
+export interface Translations {
+  choicesFor: (code: string) => BibleChoice[];
+  /** Symbol of the Bible that is open in the selected language. */
+  current: string | null;
+  onPick: (choice: BibleChoice) => void;
+  /** The running download of a translation, if any. */
+  progress: (choice: BibleChoice) => { done: number; total: number | null } | undefined;
+}
+
+/** Percent done of a download; null while its size is unknown. */
+export const percent = (p: { done: number; total: number | null }) => (p.total ? Math.min(100, (p.done / p.total) * 100) : null);
+
 /** Language button for the top-right corner of the app bar. */
 export function LanguageMenu({
   value,
   onChange,
   libraryCodes,
+  translations,
 }: {
   value: string;
   onChange: (code: string) => void;
   libraryCodes: string[];
+  translations?: Translations;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -51,6 +68,14 @@ export function LanguageMenu({
     };
   }, [open]);
 
+  // Close once a download that kept the menu open has finished.
+  const downloading = (languages ?? []).some((l) => translations?.choicesFor(l.code).some((c) => translations.progress(c)));
+  const wasDownloading = useRef(false);
+  useEffect(() => {
+    if (wasDownloading.current && !downloading) setOpen(false);
+    wasDownloading.current = downloading;
+  }, [downloading]);
+
   const byCode = useMemo(() => new Map(languages?.map((l) => [l.code, l]) ?? []), [languages]);
   const current = byCode.get(value);
   const q = query.trim().toLowerCase();
@@ -60,7 +85,48 @@ export function LanguageMenu({
   const inLibrary = libraryCodes.map((c) => byCode.get(c) ?? { code: c, name: c, vernacular: c, rtl: false, signLanguage: false });
   const all = (languages ?? []).filter((l) => !libraryCodes.includes(l.code));
 
-  const row = (l: Language) => (
+  const row = (l: Language) => {
+    const choices = translations?.choicesFor(l.code) ?? [];
+    return choices.length > 1 ? translationRows(l, choices) : languageRow(l);
+  };
+
+  const translationRows = (l: Language, choices: BibleChoice[]) => (
+    <div key={l.code} role="group" aria-label={l.vernacular}>
+      <div className="px-4 pt-2 text-xs text-muted" dir={l.rtl ? "rtl" : undefined}>
+        {l.vernacular} <span>· {l.name}</span>
+      </div>
+      {choices.map((c) => {
+        const active = l.code === value && c.symbol === translations!.current;
+        const running = translations!.progress(c);
+        return (
+          <button
+            key={c.symbol}
+            disabled={!!running}
+            onClick={() => {
+              translations!.onPick(c);
+              // A download keeps the menu open to show its progress; the effect above closes it when done.
+              if (c.dir) setOpen(false);
+              setQuery("");
+            }}
+            className={cn("flex w-full items-center gap-3 py-2 pl-7 pr-4 text-left hover:bg-bar", active && "text-accent")}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{c.title}</span>
+              {running && <Progress value={percent(running)} label={c.title} className="mt-1.5 h-1" />}
+            </span>
+            {running ? (
+              <span className="text-xs tabular-nums text-muted">{percent(running) != null ? `${Math.round(percent(running)!)}%` : t("Loading…")}</span>
+            ) : (
+              !c.dir && <Download size={15} aria-label={t("Not downloaded")} className="text-muted" />
+            )}
+            {active && <Check size={16} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const languageRow = (l: Language) => (
     <button
       key={l.code}
       onClick={() => {

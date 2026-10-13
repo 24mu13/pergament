@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-  BookOpen,
   BookText,
   CalendarClock,
   Castle,
@@ -33,9 +32,11 @@ import { UpdatesTab } from "./updates";
 import { useMediaDownloads } from "@/components/media-card";
 import { t } from "@/lib/i18n";
 
+/** The catalog category of Bibles (see CATEGORIES in src/catalog.rs). */
+const BIBLE_CATEGORY = 1;
+
 /** Icons per category id (see CATEGORIES in src/catalog.rs). */
 const ICONS: Record<number, LucideIcon> = {
-  1: BookOpen,
   2: BookText,
   4: NotebookTabs,
   6: Layers,
@@ -97,7 +98,8 @@ export function LibraryView({ tab = "publications" }: { tab?: LibraryTab }) {
   const updating = updates.items.some((u) => downloads[taskKey(u.entry)]);
   const [categories, setCategories] = useState<Category[] | null | undefined>(cachedCategories.get(lang));
   const local = inLanguage(publications, lang);
-  const shownCategories = mergeCategories(categories ?? [], local);
+  // Bibles are downloaded and switched in the Bible tab's language menu.
+  const shownCategories = mergeCategories(categories ?? [], local).filter((c) => c.id !== BIBLE_CATEGORY);
 
   useEffect(() => {
     let live = true;

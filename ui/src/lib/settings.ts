@@ -192,3 +192,18 @@ export function loadUpdateCheck(): boolean {
 export function saveUpdateCheck(on: boolean) {
   write("updateCheck", on ? "1" : "0");
 }
+
+/** The Bible (publication symbol) last picked per language code. */
+export function loadBibles(): Record<string, string> {
+  try {
+    const v: unknown = JSON.parse(read("bibles") ?? "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string"));
+  } catch {
+    return {};
+  }
+}
+
+export function saveBibles(bibles: Record<string, string>) {
+  write("bibles", JSON.stringify(bibles));
+}

@@ -21,6 +21,8 @@ export const de: Record<string, string> = {
   "Search languages": "Sprachen suchen",
   "In your library": "In deiner Bibliothek",
   "All languages": "Alle Sprachen",
+  "Not downloaded": "Nicht heruntergeladen",
+  "Pick a translation to download. More languages are in the language menu.": "Wähle eine Übersetzung zum Herunterladen. Weitere Sprachen findest du im Sprachmenü.",
   "Language list unavailable: {error}": "Sprachliste nicht verfügbar: {error}",
   "Loading…": "Lädt…",
 

@@ -8,6 +8,7 @@ import { isDisplayWindow } from "./lib/display";
 import { DisplayView } from "./views/display";
 import { ChaptersView } from "./views/chapters";
 import { HomeView } from "./views/home";
+import { BibleView } from "./views/bible";
 import { CategoryView, LibraryView } from "./views/library";
 import { MediaCategoryView } from "./views/media";
 import { MeetingsView } from "./views/meetings";
@@ -31,6 +32,8 @@ function CurrentView() {
   switch (view.name) {
     case "home":
       return <HomeView />;
+    case "bible":
+      return <BibleView />;
     case "publication":
       return <PublicationView key={view.dir} dir={view.dir} tab={view.tab} />;
     case "chapters":
