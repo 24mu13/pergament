@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NotebookPen, Trash2, X } from "lucide-react";
+import { NotebookPen, Pencil, Trash2, X } from "lucide-react";
 import type { Note, NoteInput } from "@/lib/api";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { cn } from "@/lib/utils";
@@ -68,9 +68,19 @@ export function MarkToolbar({
 }
 
 /** A note as shown in the study pane and in Personal Study. */
-export function NoteCard({ note, onClick, subtitle }: { note: Note; onClick?: () => void; subtitle?: string }) {
-  return (
-    <button onClick={onClick} className="flex w-full gap-3 rounded-md border border-line p-3 text-left hover:bg-bar">
+export function NoteCard({
+  note,
+  onClick,
+  onEdit,
+  subtitle,
+}: {
+  note: Note;
+  onClick?: () => void;
+  onEdit?: () => void;
+  subtitle?: string;
+}) {
+  const card = (
+    <button onClick={onClick} className={cn("flex w-full gap-3 rounded-md border border-line p-3 text-left hover:bg-bar", onEdit && "pr-9")}>
       <span className={cn("w-1 shrink-0 self-stretch", note.color ? `hl-dot-${note.color}` : "bg-line")} />
       <div className="min-w-0 flex-1">
         {subtitle && <div className="truncate text-xs text-muted">{subtitle}</div>}
@@ -87,6 +97,15 @@ export function NoteCard({ note, onClick, subtitle }: { note: Note; onClick?: ()
         )}
       </div>
     </button>
+  );
+  if (!onEdit) return card;
+  return (
+    <div className="relative">
+      {card}
+      <button title={t("Edit note")} aria-label={t("Edit note")} onClick={onEdit} className="absolute right-2 top-2 p-1 text-muted hover:text-accent">
+        <Pencil size={14} />
+      </button>
+    </div>
   );
 }
 

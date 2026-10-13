@@ -34,9 +34,9 @@ import { t } from "@/lib/i18n";
 /** How a followed link changes the pane: new stack, deeper, or retry in place. */
 type RefMode = "root" | "push" | "replace";
 
-function flash(el: Element | null, block: ScrollLogicalPosition = "center") {
+function flash(el: Element | null, block: ScrollLogicalPosition = "center", behavior: ScrollBehavior = "smooth") {
   if (!el) return;
-  el.scrollIntoView({ block, behavior: "smooth" });
+  el.scrollIntoView({ block, behavior });
   el.classList.add("selected");
   setTimeout(() => el.classList.remove("selected"), 1600);
 }
@@ -60,7 +60,18 @@ function outlineRange(o: ChapterStudy["outline"][number]): string {
     : `${o.begin_chapter}:${o.begin_verse}–${o.end_chapter}:${o.end_verse}`;
 }
 
-export function ReaderView({ target, note, scroll }: { target: Target; note?: boolean; scroll?: number }) {
+export function ReaderView({
+  target,
+  note,
+  noteGuid,
+  scroll,
+}: {
+  target: Target;
+  note?: boolean;
+  /** A note to jump to once the text is shown. */
+  noteGuid?: string;
+  scroll?: number;
+}) {
   const { push, replace, toast, lang, userVersion, publications, playRecording, showImage, layout } = useApp();
   const [refs, setRefs] = useState<PaneRef[]>([]);
   const [page, setPage] = useState<Page | null>(null);
@@ -183,6 +194,7 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
       if (!first) continue;
       const dot = first.querySelector<HTMLElement>(":scope > .note-dot") ?? document.createElement("span");
       dot.className = "note-dot";
+      if (n.color && !dot.dataset.color) dot.dataset.color = String(n.color);
       dot.dataset.notes = [...(dot.dataset.notes?.split(" ") ?? []), n.guid].join(" ");
       dot.setAttribute("role", "button");
       dot.setAttribute("aria-label", t("Show note"));
@@ -190,11 +202,22 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
     }
   }, [split, owners, user, target]);
 
+  // Jump to the note that was opened from Personal Study, once.
+  const jumped = useRef(false);
+  useEffect(() => {
+    const root = articleRef.current;
+    const n = noteGuid ? user.notes.find((x) => x.guid === noteGuid) : undefined;
+    if (!root || !split || !n || n.blockIdentifier == null || jumped.current || scroll) return;
+    const block = blockElements(root, n.blockType, n.blockIdentifier)[0];
+    if (!block) return;
+    jumped.current = true;
+    flash(block, "center", "instant");
+  }, [split, user, noteGuid, scroll]);
+
   // Jump to the requested verse.
   useEffect(() => {
     const root = articleRef.current;
     if (!root || !split) return;
-      if (n.color && !dot.dataset.color) dot.dataset.color = String(n.color);
     if (page?.fragment) flash(root.querySelector(`[id="${CSS.escape(page.fragment)}"]`));
     else {
       const el = root.closest<HTMLElement>(".overflow-y-auto");
@@ -311,7 +334,7 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
       setEditing(
         existing
           ? { note: existing }
-          : { note: { title: titleFromText(marked) }, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
+          : { note: { title: marked }, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
       );
     } catch (e) {
       toast(String(e));
@@ -331,6 +354,14 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
         markGuid: ed.markGuid ?? null,
       }),
     );
+  };
+
+  /** Scroll to where a note sits in the text at once; notes without a place in this text open for editing. */
+  const goToNote = (n: Note) => {
+    const root = articleRef.current;
+    const block = root && n.blockIdentifier != null ? blockElements(root, n.blockType, n.blockIdentifier)[0] : undefined;
+    if (!block) return setEditing({ note: n });
+    flash(block, "center", "instant");
   };
 
   /** Open the study pane on the notes and point at one. */
@@ -529,7 +560,7 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
                 <h3 className="text-sm font-semibold">{t("My notes")}</h3>
                 {user.notes.map((n) => (
                   <div key={n.guid} data-note={n.guid}>
-                    <NoteCard note={n} onClick={() => setEditing({ note: n })} />
+                    <NoteCard note={n} onClick={() => goToNote(n)} onEdit={() => setEditing({ note: n })} />
                   </div>
                 ))}
               </section>
