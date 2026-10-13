@@ -1488,11 +1488,15 @@ fn merge_notes(
                 // note on its local one rather than on none.
                 let keep_mark = note.had_mark && note.mark.is_none();
                 let keep_location = note.had_location && note.location.is_none();
+                // The place in the text belongs to the location, so it stays with it.
                 tx.execute(
                     "UPDATE main.Note
-                     SET (Title, Content, LastModified, BlockType, BlockIdentifier) =
-                         (SELECT Title, Content, LastModified, BlockType, BlockIdentifier
-                          FROM inc.Note WHERE NoteId = ?1),
+                     SET (Title, Content, LastModified) =
+                         (SELECT Title, Content, LastModified FROM inc.Note WHERE NoteId = ?1),
+                         BlockType = CASE WHEN ?6 THEN BlockType
+                                     ELSE (SELECT BlockType FROM inc.Note WHERE NoteId = ?1) END,
+                         BlockIdentifier = CASE WHEN ?6 THEN BlockIdentifier
+                                     ELSE (SELECT BlockIdentifier FROM inc.Note WHERE NoteId = ?1) END,
                          UserMarkId = CASE WHEN ?5 THEN UserMarkId ELSE ?2 END,
                          LocationId = CASE WHEN ?6 THEN LocationId ELSE ?3 END
                      WHERE NoteId = ?4",
@@ -2213,16 +2217,24 @@ mod tests {
         assert!(local.path().with_extension("db.before-restore").is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_safety_copy_keeps_the_older_one() {
+        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let dir = local.path().parent().unwrap().to_owned();
         let safety = local.path().with_extension("db.before-restore");
         fs::write(&safety, b"old copy").unwrap();
-        // A directory where the new copy is written makes the write fail.
-        fs::create_dir(local.path().with_extension("db.before-restore.tmp")).unwrap();
-        assert!(local.write_safety_copy().is_err());
-        assert_eq!(fs::read(&safety).unwrap(), b"old copy");
+        // VACUUM INTO cannot create its file in a read-only directory.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let failed = local.write_safety_copy().is_err();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // Root ignores the permissions, so there is nothing to check then.
+        if failed {
+            assert_eq!(fs::read(&safety).unwrap(), b"old copy");
+            assert!(!local.path().with_extension("db.before-restore.tmp").exists());
+        }
     }
 
     #[test]
@@ -2977,6 +2989,42 @@ mod tests {
         let merged = note(&local, &guid);
         assert_eq!(merged.content, "new");
         assert_eq!(merged.mark_guid, Some(mark));
+    }
+
+    #[test]
+    fn merge_winning_note_keeps_its_place_when_the_backup_location_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let guid = local
+            .save_note(Some(&bible(1)), None, &note_input("T", "old", &[]))
+            .unwrap();
+        local
+            .conn
+            .execute("UPDATE Note SET BlockType = 2, BlockIdentifier = 3", [])
+            .unwrap();
+        let before = note(&local, &guid).location;
+        assert!(before.is_some());
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .restore_backup(&backup_of(&local, tmp.path(), "seed.jwlibrary"))
+            .unwrap();
+        // The backup note points at a location its database does not have.
+        remote
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 UPDATE Note SET Content = 'new', LocationId = 9999, BlockType = 2, BlockIdentifier = 7;",
+            )
+            .unwrap();
+        set_note_time(&remote, &guid, "2030-01-01T00:00:00Z");
+        set_note_time(&local, &guid, "2020-01-01T00:00:00Z");
+        local
+            .merge_backup(&backup_of(&remote, tmp.path(), "r.jwlibrary"))
+            .unwrap();
+        let merged = note(&local, &guid);
+        assert_eq!(merged.content, "new");
+        assert_eq!(merged.location, before);
+        assert_eq!(merged.block_identifier, Some(3));
     }
 
     #[test]
