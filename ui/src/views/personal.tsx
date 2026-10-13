@@ -21,7 +21,7 @@ interface Loaded {
 let cachedLoad: Loaded | undefined;
 
 export function PersonalView() {
-  const { push, toast, userVersion, createBackup, restoreBackup, mergeBackups, openNote } = useApp();
+  const { push, toast, userVersion, notesVersion, createBackup, restoreBackup, mergeBackups, openNote } = useApp();
   const [summary, setSummary] = useState<UserDataSummary | null>(cachedLoad?.summary ?? null);
   const [tags, setTags] = useState<TagInfo[]>(cachedLoad?.tags ?? []);
   const [tag, setTag] = useState<number | null>(null);
@@ -47,7 +47,7 @@ export function PersonalView() {
     return () => {
       live = false;
     };
-  }, [tag, userVersion, toast]);
+  }, [tag, userVersion, notesVersion, toast]);
 
   const open = async (loc: Loc, noteGuid?: string) => {
     try {

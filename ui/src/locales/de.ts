@@ -153,6 +153,7 @@ export const de: Record<string, string> = {
   Discard: "Verwerfen",
   Maximize: "Maximieren",
   "Restore size": "Ursprüngliche Größe",
+  "Move note (arrow keys, Shift to resize)": "Notiz verschieben (Pfeiltasten, mit Umschalt Größe ändern)",
   Write: "Schreiben",
   Preview: "Vorschau",
   "Nothing to preview": "Noch nichts geschrieben",

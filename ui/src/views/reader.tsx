@@ -62,7 +62,7 @@ export function ReaderView({
   noteGuid?: string;
   scroll?: number;
 }) {
-  const { push, replace, toast, lang, userVersion, publications, playRecording, showImage, layout, openNote } = useApp();
+  const { push, replace, toast, lang, userVersion, notesVersion, publications, playRecording, showImage, layout, openNote } = useApp();
   const [refs, setRefs] = useState<PaneRef[]>([]);
   const [page, setPage] = useState<Page | null>(null);
   const [study, setStudy] = useState<ChapterStudy | null>(null);
@@ -137,8 +137,8 @@ export function ReaderView({
       .pageUserData(target)
       .then(setUser)
       .catch(() => setUser({ marks: [], notes: [], answers: {} }));
-    // userVersion: reload after a backup was restored.
-  }, [target, userVersion]);
+    // userVersion: reload after a backup was restored; notesVersion: after the floating editor saved.
+  }, [target, userVersion, notesVersion]);
   useEffect(reloadUser, [reloadUser]);
 
   // Redraw the text with verse markers, highlights and note markers.
@@ -441,6 +441,8 @@ export function ReaderView({
     if (!paged) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Keys pressed in the floating note editor belong to it.
+      if (e.target instanceof Element && e.target.closest("[data-note-editor]")) return;
       if (e.key === "ArrowLeft" && !e.altKey) go(-1);
       if (e.key === "ArrowRight" && !e.altKey) go(1);
     };

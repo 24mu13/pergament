@@ -139,8 +139,10 @@ interface AppContextValue {
   /** Bumped whenever the catalog was (re)loaded or the library changed. */
   catalogVersion: number;
   loadCatalog: () => Promise<void>;
-  /** Bumped when user data was replaced by a restored backup or changed outside the current view. */
+  /** Bumped when user data was replaced by a restored backup. */
   userVersion: number;
+  /** Bumped when the floating editor saved or deleted a note. */
+  notesVersion: number;
   /** Favorite keys (`symbol_meps[_issue]`, the library directory names). */
   favorites: string[];
   toggleFavorite: (key: string) => void;
@@ -156,11 +158,15 @@ interface AppContextValue {
   note: { id: number; draft: NoteDraft } | null;
   /** Open a note in the floating editor, asking first when that would drop unsaved text. */
   openNote: (draft: NoteDraft) => Promise<void>;
-  closeNote: () => void;
+  /**
+   * Close the editor, asking first when that would drop unsaved text (`force`
+   * skips that, after a save). With an `id`, only that note is closed.
+   */
+  closeNote: (id?: number, options?: { force?: boolean }) => Promise<void>;
   /** Told by the editor whether it holds unsaved text. */
   setNoteDirty: (dirty: boolean) => void;
-  /** Tell the views that highlights or notes changed somewhere else. */
-  userChanged: () => void;
+  /** Tell the views that a note was saved or deleted. */
+  notesChanged: () => void;
   /** The second display window and what is sent to it. */
   display: { enabled: boolean; setEnabled: (on: boolean) => Promise<void>; send: (message: DisplayMessage) => void };
   /** The picture in the large view, if one is open. */
@@ -532,26 +538,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const playItem = useCallback((item: PlayerItem) => setPlayer({ id: Date.now(), item }), []);
   const closePlayer = useCallback(() => setPlayer(null), []);
-  const openNote = useCallback(async (draft: NoteDraft) => {
-    if (noteDirty.current) {
-      const ok = await ask(t("The note you are writing has not been saved."), {
+  /** Set while the discard question is open, so a second request does not stack another dialog. */
+  const askingDiscard = useRef(false);
+  /** Whether unsaved text in the editor may be dropped: true when there is none or the user agrees. */
+  const mayDiscard = useCallback(async () => {
+    if (!noteDirty.current) return true;
+    if (askingDiscard.current) return false;
+    askingDiscard.current = true;
+    try {
+      return await ask(t("The note you are writing has not been saved."), {
         title: t("Discard note?"),
         kind: "warning",
         okLabel: t("Discard"),
       });
-      if (!ok) return;
+    } catch {
+      return false;
+    } finally {
+      askingDiscard.current = false;
     }
-    noteDirty.current = false;
-    setNote({ id: Date.now(), draft });
   }, []);
-  const closeNote = useCallback(() => {
-    noteDirty.current = false;
-    setNote(null);
-  }, []);
+  const openNote = useCallback(
+    async (draft: NoteDraft) => {
+      if (!(await mayDiscard())) return;
+      noteDirty.current = false;
+      setNote({ id: Date.now(), draft });
+    },
+    [mayDiscard],
+  );
+  const closeNote = useCallback(
+    async (id?: number, { force = false } = {}) => {
+      if (!force && !(await mayDiscard())) return;
+      noteDirty.current = false;
+      setNote((n) => (id === undefined || n?.id === id ? null : n));
+    },
+    [mayDiscard],
+  );
   const setNoteDirty = useCallback((dirty: boolean) => {
     noteDirty.current = dirty;
   }, []);
-  const userChanged = useCallback(() => setUserVersion((v) => v + 1), []);
+  const [notesVersion, setNotesVersion] = useState(0);
+  const notesChanged = useCallback(() => setNotesVersion((v) => v + 1), []);
   const playRecording = useCallback(
     async (media: MediaRef) => {
       try {
@@ -641,6 +667,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       catalogVersion,
       loadCatalog,
       userVersion,
+      notesVersion,
       favorites,
       toggleFavorite,
       createBackup,
@@ -653,7 +680,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openNote,
       closeNote,
       setNoteDirty,
-      userChanged,
+      notesChanged,
       display: { enabled: displayOn, setEnabled: setSecondDisplay, send: sendDisplay },
       viewer,
       showImage,
@@ -689,6 +716,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       catalogVersion,
       loadCatalog,
       userVersion,
+      notesVersion,
       favorites,
       toggleFavorite,
       createBackup,
@@ -701,7 +729,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openNote,
       closeNote,
       setNoteDirty,
-      userChanged,
+      notesChanged,
       displayOn,
       setSecondDisplay,
       sendDisplay,

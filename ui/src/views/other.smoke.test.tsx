@@ -275,10 +275,11 @@ describe("Floating note", () => {
 
   /** Opens a new note on John 3:16, then lets the test move elsewhere in the app. */
   function Harness() {
-    const { view, openNote, push } = useApp();
+    const { view, openNote, push, userVersion, notesVersion } = useApp();
     return (
       <>
         <span data-testid="view">{view.name}</span>
+        <span data-testid="versions">{`${userVersion}/${notesVersion}`}</span>
         <button onClick={() => void openNote({ note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 })}>
           open
         </button>
@@ -310,6 +311,8 @@ describe("Floating note", () => {
       note: { title: "Loved the world", content: "God gave his Son", tags: [], guid: undefined, blockType: 2, blockIdentifier: 16, markGuid: "m1" },
     });
     expect(screen.queryByRole("dialog")).toBeNull();
+    // Only the notes signal moves; the study panes key on userVersion and would remount.
+    expect(screen.getByTestId("versions").textContent).toBe("0/1");
   });
 
   it("starts a drag without selecting the text behind it", async () => {
@@ -367,6 +370,86 @@ describe("Floating note", () => {
     await waitFor(() => expect(calls.find((c) => c.cmd === "open_external")?.args).toEqual({ url: "https://example.org/" }));
     fireEvent.click(within(editor).getByRole("button", { name: "Write" }));
     expect((within(editor).getByPlaceholderText("Note") as HTMLTextAreaElement).value).toContain("**Love**");
+  });
+
+  const openEditor = async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    return screen.findByRole("dialog", { name: "New note" });
+  };
+
+  it("focuses the title once it is shown", async () => {
+    const editor = await openEditor();
+    await waitFor(() => expect(document.activeElement).toBe(within(editor).getByPlaceholderText("Title")));
+  });
+
+  it("closes right away without changes and asks before Close, Cancel or Escape drop text", async () => {
+    let editor = await openEditor();
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(ask).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("open"));
+    editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.keyDown(within(editor).getByPlaceholderText("Note"), { key: "Escape" });
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await act(async () => undefined);
+    fireEvent.click(within(editor).getByText("Cancel"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+    await act(async () => undefined);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("asks only once when two requests come in while the question is open", async () => {
+    const editor = await openEditor();
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    let answer!: (ok: boolean) => void;
+    vi.mocked(ask).mockReturnValue(new Promise<boolean>((r) => (answer = r)));
+    fireEvent.click(screen.getByText("other"));
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await act(async () => answer(false));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the note open when saving fails, and saves once on a double click", async () => {
+    let fail = true;
+    backend.save_note = () => {
+      if (fail) throw new Error("disk full");
+      return "n1";
+    };
+    const editor = await openEditor();
+    fireEvent.click(within(editor).getByText("Save"));
+    expect(await screen.findByText(/disk full/)).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fail = false;
+    calls.length = 0;
+    fireEvent.click(within(editor).getByText("Save"));
+    fireEvent.click(within(editor).getByText("Save"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((c) => c.cmd === "save_note")).toHaveLength(1);
+  });
+
+  it("moves with the arrow keys on the grip and resizes with Shift", async () => {
+    const editor = await openEditor();
+    const grip = within(editor).getByRole("button", { name: /Move note/ });
+    const before = editor.style.transform;
+    fireEvent.keyDown(grip, { key: "ArrowLeft" });
+    expect(editor.style.transform).not.toBe(before);
+    const height = parseInt(editor.style.height);
+    fireEvent.keyDown(grip, { key: "ArrowUp", shiftKey: true });
+    expect(parseInt(editor.style.height)).toBe(height - 16);
+    expect(JSON.parse(localStorage.getItem("noteSize")!).height).toBe(height - 16);
   });
 
   it("asks before another note replaces unsaved text", async () => {

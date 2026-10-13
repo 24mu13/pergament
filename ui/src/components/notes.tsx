@@ -124,7 +124,26 @@ const EDGE = 16;
 const DEFAULT_SIZE = { width: 440, height: 420 };
 const MIN_SIZE = { width: 320, height: 280 };
 
+/** How far one arrow key press on the grip moves or resizes the editor. */
+const KEY_STEP = 16;
+
 const translate = (p: Point) => `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
+
+/** The content area above the player bar. */
+const contentArea = () => document.querySelector<HTMLElement>("#content > div:first-child");
+
+/** The content area's height, kept up to date as the window and the player bar change. */
+function useContentHeight(): number | null {
+  const [height, setHeight] = useState<number | null>(() => contentArea()?.offsetHeight ?? null);
+  useEffect(() => {
+    const el = contentArea();
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const seen = new ResizeObserver(() => setHeight(el.offsetHeight));
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, []);
+  return height;
+}
 
 /**
  * A floating panel to write or change a note. It does not block the app, so
@@ -161,40 +180,91 @@ export function NoteEditor({
   useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
 
   const ref = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<Point | null>(null);
   const [full, setFull] = useState(false);
-  /** The size outside full mode; the user changes it with the resize handle. */
+  const fullRef = useRef(full);
+  fullRef.current = full;
+  /** The size outside full mode; the user changes it with the resize handle or Shift+arrows. */
   const dims = useRef<Size>(loadNoteSize() ?? DEFAULT_SIZE);
   const area = () => {
     const parent = ref.current?.offsetParent as HTMLElement | null;
     return { width: parent?.clientWidth ?? window.innerWidth, height: parent?.clientHeight ?? window.innerHeight };
   };
   const size = () => ({ width: ref.current?.offsetWidth ?? 0, height: ref.current?.offsetHeight ?? 0 });
+  /** Height of the content area above the player bar, which the maximized editor fills. */
+  const room = useContentHeight();
   // Open at the bottom right, above the player bar when there is one.
   useLayoutEffect(() => {
     const bounds = area();
-    const bar = document.querySelector<HTMLElement>("#content > div:first-child")?.offsetHeight ?? bounds.height;
+    const bar = contentArea()?.offsetHeight ?? bounds.height;
     const s = (dims.current = fitPanelSize(dims.current, MIN_SIZE, { width: bounds.width - 2 * EDGE, height: bar - 2 * EDGE }));
     setPos(clampPanel({ x: bounds.width - s.width - EDGE, y: bar - s.height - EDGE }, s, bounds));
   }, []);
+  // The panel starts hidden until placed, and a hidden field cannot take focus, so focus it once visible.
+  const shown = pos !== null;
   useEffect(() => {
-    const fit = () => setPos((p) => p && clampPanel(p, size(), area()));
+    if (shown) titleRef.current?.focus();
+  }, [shown]);
+  // Give focus back to where the user was, if that is still on the page.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    return () => {
+      if (opener?.isConnected && opener !== document.body) opener.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const fit = () => {
+      // Maximized, the panel's own size is the whole area; keep the place it goes back to.
+      if (!fullRef.current) setPos((p) => p && clampPanel(p, dims.current, area()));
+    };
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
-  // Remember the size the user drags the panel to.
+  // Remember the size the user drags the panel to, but not one forced on it by a small
+  // window: shrunk onto its max-width/height, or grown only to the CSS minimum.
   useEffect(() => {
     const el = ref.current;
     if (!el || full || typeof ResizeObserver === "undefined") return;
+    const forced = (now: number, want: number, max: number, min: number) =>
+      (now < want && now >= max - 1) || (now > want && now <= min + 1);
     const seen = new ResizeObserver(() => {
       const s = size();
-      if (s.width === dims.current.width && s.height === dims.current.height) return;
+      const d = dims.current;
+      if (s.width === d.width && s.height === d.height) return;
+      const style = getComputedStyle(el);
+      if (
+        forced(s.width, d.width, parseFloat(style.maxWidth), parseFloat(style.minWidth)) ||
+        forced(s.height, d.height, parseFloat(style.maxHeight), parseFloat(style.minHeight))
+      )
+        return;
       dims.current = s;
       saveNoteSize(s);
     });
     seen.observe(el, { box: "border-box" });
     return () => seen.disconnect();
   }, [full]);
+
+  /** Arrow keys on the grip move the panel; with Shift they resize it. */
+  const nudge = (e: React.KeyboardEvent) => {
+    const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!step || !pos || full) return;
+    e.preventDefault();
+    const [dx, dy] = step.map((v) => v * KEY_STEP);
+    const bounds = area();
+    if (e.shiftKey) {
+      const s = fitPanelSize({ width: dims.current.width + dx, height: dims.current.height + dy }, MIN_SIZE, {
+        width: bounds.width - pos.x,
+        height: bounds.height - pos.y,
+      });
+      dims.current = s;
+      saveNoteSize(s);
+      setPos({ ...pos });
+    } else {
+      setPos(clampPanel({ x: pos.x + dx, y: pos.y + dy }, dims.current, bounds));
+    }
+  };
 
   const placed = (p: Point): React.CSSProperties => {
     const bounds = area();
@@ -210,7 +280,7 @@ export function NoteEditor({
   };
 
   const drag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button") || !pos || full) return;
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button:not([data-grip])") || !pos || full) return;
     // Without this WebKit starts a text selection that follows the pointer over the page behind.
     e.preventDefault();
     const start = { x: e.clientX - pos.x, y: e.clientY - pos.y };
@@ -241,8 +311,20 @@ export function NoteEditor({
     <div
       ref={ref}
       role="dialog"
+      data-note-editor
       aria-label={note.guid ? t("Edit note") : t("New note")}
-      style={full ? { left: 0, top: 0, width: "100%", height: "100%" } : pos ? placed(pos) : { visibility: "hidden" }}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        e.stopPropagation();
+        onClose();
+      }}
+      style={
+        full
+          ? { left: 0, top: 0, width: "100%", height: room ?? "100%" }
+          : pos
+            ? placed(pos)
+            : { visibility: "hidden" }
+      }
       className={cn(
         "absolute z-35 flex min-h-[280px] min-w-[320px] flex-col gap-3 overflow-hidden border border-line bg-surface p-4 shadow-lg will-change-transform",
         full ? "rounded-none" : "resize rounded-md",
@@ -256,7 +338,18 @@ export function NoteEditor({
         )}
       >
         <h2 className="flex items-center gap-2 font-semibold">
-          {!full && <GripHorizontal size={16} className="text-muted" aria-hidden />}
+          {!full && (
+            <button
+              data-grip
+              type="button"
+              aria-label={t("Move note (arrow keys, Shift to resize)")}
+              title={t("Move note (arrow keys, Shift to resize)")}
+              onKeyDown={nudge}
+              className="cursor-move rounded text-muted hover:text-fg"
+            >
+              <GripHorizontal size={16} aria-hidden />
+            </button>
+          )}
           {note.guid ? t("Edit note") : t("New note")}
         </h2>
         <div className="flex items-center gap-2">
@@ -275,7 +368,7 @@ export function NoteEditor({
       </div>
       <input
         id="note-title"
-        autoFocus
+        ref={titleRef}
         placeholder={t("Title")}
         value={title}
         onChange={(e) => setTitle(e.target.value)}
@@ -357,21 +450,29 @@ export function NoteEditor({
  * note was started on.
  */
 export function NoteHost() {
-  const { note, closeNote, setNoteDirty, userChanged, toast } = useApp();
+  const { note, closeNote, setNoteDirty, notesChanged, toast } = useApp();
+  /** Set while a save or delete runs, so a second click does not save the note twice. */
+  const busy = useRef(false);
   if (!note) return null;
-  const { draft } = note;
+  const { id, draft } = note;
+  // The editor stays open until the backend agreed, so a failure does not lose the text.
   const run = (action: () => Promise<unknown>) => {
-    closeNote();
+    if (busy.current) return;
+    busy.current = true;
     action()
-      .then(userChanged)
-      .catch((e) => toast(String(e)));
+      .then(() => {
+        notesChanged();
+        return closeNote(id, { force: true });
+      })
+      .catch((e) => toast(String(e)))
+      .finally(() => (busy.current = false));
   };
   return (
     <NoteEditor
-      key={note.id}
+      key={id}
       note={draft.note}
       onDirty={setNoteDirty}
-      onClose={closeNote}
+      onClose={() => void closeNote(id)}
       onSave={(input) =>
         run(() =>
           api.saveNote(draft.note.guid ? null : (draft.target ?? null), {
