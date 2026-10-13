@@ -194,6 +194,7 @@ export function ReaderView({ target, note, scroll }: { target: Target; note?: bo
   useEffect(() => {
     const root = articleRef.current;
     if (!root || !split) return;
+      if (n.color && !dot.dataset.color) dot.dataset.color = String(n.color);
     if (page?.fragment) flash(root.querySelector(`[id="${CSS.escape(page.fragment)}"]`));
     else {
       const el = root.closest<HTMLElement>(".overflow-y-auto");

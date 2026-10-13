@@ -304,18 +304,34 @@ body {
 .hl-dot-4 { background: var(--hl-4); }
 .hl-dot-5 { background: var(--hl-5); }
 .hl-dot-6 { background: var(--hl-6); }
-/* Verses and paragraphs with a note start with a dot that opens it. */
+/* Verses and paragraphs with a note carry a dot that opens it. It sits in a column left of the text, in the reader's padding, so adding a note never moves the text. */
+.reader {
+  position: relative;
+}
 .reader .note-dot {
-  content: "";
-  display: inline-block;
-  width: 0.4em;
-  height: 0.4em;
-  margin-right: 0.35em;
-  border-radius: 50%;
-  background: var(--accent);
-  vertical-align: middle;
+  position: absolute;
+  left: -2rem;
+  width: 1.5rem;
+  height: 1.75em;
   cursor: pointer;
 }
+.reader .note-dot::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.4em;
+  height: 0.4em;
+  margin: -0.2em 0 0 -0.2em;
+  border-radius: 50%;
+  background: var(--border);
+}
+.reader .note-dot[data-color="1"]::before { background: var(--hl-1); }
+.reader .note-dot[data-color="2"]::before { background: var(--hl-2); }
+.reader .note-dot[data-color="3"]::before { background: var(--hl-3); }
+.reader .note-dot[data-color="4"]::before { background: var(--hl-4); }
+.reader .note-dot[data-color="5"]::before { background: var(--hl-5); }
+.reader .note-dot[data-color="6"]::before { background: var(--hl-6); }
 
 /* Answer fields of workbooks and study articles. */
 .reader textarea.gen-field-input {
