@@ -848,12 +848,20 @@ impl UserData {
     /// Copy the database to `userData.db.before-restore`, replacing an older copy.
     fn write_safety_copy(&self) -> Result<()> {
         let copy = self.path.with_extension("db.before-restore");
-        match fs::remove_file(&copy) {
+        // Write beside it and rename, so a failed vacuum keeps the older copy.
+        let temp = self.path.with_extension("db.before-restore.tmp");
+        match fs::remove_file(&temp) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
-        self.conn
-            .execute("VACUUM INTO ?1", [copy.to_string_lossy().as_ref()])?;
+        let written = self
+            .conn
+            .execute("VACUUM INTO ?1", [temp.to_string_lossy().as_ref()]);
+        if let Err(e) = written {
+            let _ = fs::remove_file(&temp);
+            return Err(e.into());
+        }
+        fs::rename(&temp, &copy)?;
         Ok(())
     }
 
@@ -1395,6 +1403,8 @@ struct IncomingNote {
     /// local one (skipped as a conflict, or cut away).
     had_mark: bool,
     location: Option<i64>,
+    /// The note has a location in the backup that was not imported.
+    had_location: bool,
 }
 
 /// How a note is shown in a conflict: its title, or the start of its text.
@@ -1426,7 +1436,8 @@ fn merge_notes(
 ) -> Result<()> {
     let incoming: Vec<IncomingNote> = {
         let mut stmt = tx.prepare(
-            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId, n.UserMarkId IS NOT NULL
+            "SELECT n.NoteId, n.Guid, u.UserMarkGuid, n.LocationId, n.UserMarkId IS NOT NULL,
+                    n.LocationId IS NOT NULL
              FROM inc.Note n
              LEFT JOIN inc.UserMark u ON u.UserMarkId = n.UserMarkId
              ORDER BY n.NoteId",
@@ -1441,6 +1452,7 @@ fn merge_notes(
                 mark: mark.and_then(|g| marks.get(&g).copied()),
                 had_mark: r.get(4)?,
                 location: location.and_then(|l| locations.get(&l).copied()),
+                had_location: r.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -1475,15 +1487,23 @@ fn merge_notes(
                 // A backup highlight that did not make it here leaves the
                 // note on its local one rather than on none.
                 let keep_mark = note.had_mark && note.mark.is_none();
+                let keep_location = note.had_location && note.location.is_none();
                 tx.execute(
                     "UPDATE main.Note
                      SET (Title, Content, LastModified, BlockType, BlockIdentifier) =
                          (SELECT Title, Content, LastModified, BlockType, BlockIdentifier
                           FROM inc.Note WHERE NoteId = ?1),
                          UserMarkId = CASE WHEN ?5 THEN UserMarkId ELSE ?2 END,
-                         LocationId = ?3
+                         LocationId = CASE WHEN ?6 THEN LocationId ELSE ?3 END
                      WHERE NoteId = ?4",
-                    params![note.id, note.mark, note.location, id, keep_mark],
+                    params![
+                        note.id,
+                        note.mark,
+                        note.location,
+                        id,
+                        keep_mark,
+                        keep_location
+                    ],
                 )?;
                 put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
                 report.updated += 1;
@@ -2191,6 +2211,18 @@ mod tests {
         assert_eq!(local.marks(&bible(2)).unwrap()[0].color, 2);
         assert_eq!(local.marks(&bible(2)).unwrap()[0].ranges, [verse(5, 0, 3)]);
         assert!(local.path().with_extension("db.before-restore").is_file());
+    }
+
+    #[test]
+    fn a_failed_safety_copy_keeps_the_older_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let safety = local.path().with_extension("db.before-restore");
+        fs::write(&safety, b"old copy").unwrap();
+        // A directory where the new copy is written makes the write fail.
+        fs::create_dir(local.path().with_extension("db.before-restore.tmp")).unwrap();
+        assert!(local.write_safety_copy().is_err());
+        assert_eq!(fs::read(&safety).unwrap(), b"old copy");
     }
 
     #[test]
