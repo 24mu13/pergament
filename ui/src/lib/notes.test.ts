@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "./api";
-import { filterNotes } from "./notes";
+import { clampPanel, filterNotes, fitPanelSize } from "./notes";
 
 const note = (guid: string, over: Partial<Note> = {}): Note => ({
   guid,
@@ -43,5 +43,41 @@ describe("filterNotes", () => {
   it("filters by highlight color", () => {
     expect(ids(filterNotes(notes, { ...any, color: 1 }))).toEqual(["a"]);
     expect(ids(filterNotes(notes, { ...any, color: 6 }))).toEqual([]);
+  });
+});
+
+describe("clampPanel", () => {
+  const bounds = { width: 1000, height: 800 };
+  const size = { width: 400, height: 300 };
+
+  it("keeps a position that fits", () => {
+    expect(clampPanel({ x: 100, y: 50 }, size, bounds)).toEqual({ x: 100, y: 50 });
+  });
+
+  it("pulls a panel dragged past an edge back inside", () => {
+    expect(clampPanel({ x: -40, y: -10 }, size, bounds)).toEqual({ x: 0, y: 0 });
+    expect(clampPanel({ x: 900, y: 700 }, size, bounds)).toEqual({ x: 600, y: 500 });
+  });
+
+  it("pins a panel larger than the area to its top left", () => {
+    expect(clampPanel({ x: 50, y: 50 }, { width: 1200, height: 900 }, bounds)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("fitPanelSize", () => {
+  const bounds = { width: 1000, height: 800 };
+  const min = { width: 320, height: 280 };
+
+  it("keeps a size that fits", () => {
+    expect(fitPanelSize({ width: 500, height: 400 }, min, bounds)).toEqual({ width: 500, height: 400 });
+  });
+
+  it("grows a size below the minimum and shrinks one larger than the area", () => {
+    expect(fitPanelSize({ width: 100, height: 50 }, min, bounds)).toEqual(min);
+    expect(fitPanelSize({ width: 1400, height: 900 }, min, bounds)).toEqual(bounds);
+  });
+
+  it("lets the area win over the minimum", () => {
+    expect(fitPanelSize({ width: 100, height: 100 }, min, { width: 300, height: 200 })).toEqual({ width: 300, height: 200 });
   });
 });

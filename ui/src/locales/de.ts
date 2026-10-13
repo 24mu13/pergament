@@ -148,6 +148,15 @@ export const de: Record<string, string> = {
   "Tags, separated by commas": "Tags, durch Kommas getrennt",
   Delete: "Löschen",
   Save: "Speichern",
+  "Discard note?": "Notiz verwerfen?",
+  "The note you are writing has not been saved.": "Die Notiz, die du gerade schreibst, ist noch nicht gespeichert.",
+  Discard: "Verwerfen",
+  Maximize: "Maximieren",
+  "Restore size": "Ursprüngliche Größe",
+  "Move note (arrow keys, Shift to resize)": "Notiz verschieben (Pfeiltasten, mit Umschalt Größe ändern)",
+  Write: "Schreiben",
+  Preview: "Vorschau",
+  "Nothing to preview": "Noch nichts geschrieben",
 
   // Meetings
   "Previous week": "Vorige Woche",

@@ -175,7 +175,8 @@ function Player({ item }: { item: PlayerItem }) {
     if (!full || viewer) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest("input, select, textarea")) return;
+      // Typing, and keys in the floating note editor, are not for the player.
+      if (target?.closest("input, select, textarea, [data-note-editor]")) return;
       if (e.key === "Escape") {
         if (menu) setMenu(false);
         else if (!document.fullscreenElement) setFull(false);

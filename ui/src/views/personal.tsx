@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Bookmark as BookmarkIcon, DatabaseBackup, FolderOpen, Pencil, Plus, Tag } from "lucide-react";
 import { AppBar, SectionTitle, useApp } from "@/app";
 import { api, type Bookmark, type Loc, type Note, type TagInfo, type UserDataSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { NoteCard, NoteEditor } from "@/components/notes";
+import { NoteCard } from "@/components/notes";
 import { Input } from "@/components/ui/input";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { filterNotes, type NoteSort } from "@/lib/notes";
@@ -21,19 +21,16 @@ interface Loaded {
 let cachedLoad: Loaded | undefined;
 
 export function PersonalView() {
-  const { push, toast, userVersion, createBackup, restoreBackup, mergeBackups } = useApp();
+  const { push, toast, userVersion, notesVersion, createBackup, restoreBackup, mergeBackups, openNote } = useApp();
   const [summary, setSummary] = useState<UserDataSummary | null>(cachedLoad?.summary ?? null);
   const [tags, setTags] = useState<TagInfo[]>(cachedLoad?.tags ?? []);
   const [tag, setTag] = useState<number | null>(null);
   const [notes, setNotes] = useState<Note[]>(cachedLoad?.notes ?? []);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(cachedLoad?.bookmarks ?? []);
-  const [editing, setEditing] = useState<Note | null>(null);
   const [query, setQuery] = useState("");
   const [color, setColor] = useState<number | null>(null);
   const [sort, setSort] = useState<NoteSort>("newest");
   const shown = filterNotes(notes, { query, color, sort });
-  const [version, setVersion] = useState(0);
-  const reload = useCallback(() => setVersion((v) => v + 1), []);
 
   useEffect(() => {
     let live = true;
@@ -50,7 +47,7 @@ export function PersonalView() {
     return () => {
       live = false;
     };
-  }, [tag, version, userVersion, toast]);
+  }, [tag, userVersion, notesVersion, toast]);
 
   const open = async (loc: Loc, noteGuid?: string) => {
     try {
@@ -150,13 +147,13 @@ export function PersonalView() {
                     <NoteCard
                       note={n}
                       subtitle={n.location?.title ?? undefined}
-                      onClick={n.location ? () => void open(n.location!, n.guid) : () => setEditing(n)}
+                      onClick={n.location ? () => void open(n.location!, n.guid) : () => void openNote({ note: n })}
                     />
                   </div>
                   <button
                     title={t("Edit note")}
                     aria-label={t("Edit note")}
-                    onClick={() => setEditing(n)}
+                    onClick={() => void openNote({ note: n })}
                     className="flex w-10 items-center justify-center rounded-md border border-line text-muted hover:bg-bar hover:text-fg"
                   >
                     <Pencil size={16} />
@@ -188,26 +185,6 @@ export function PersonalView() {
           )}
         </div>
       </div>
-      {editing && (
-        <NoteEditor
-          note={editing}
-          onClose={() => setEditing(null)}
-          onSave={(input) => {
-            setEditing(null);
-            api
-              .saveNote(null, { ...input, guid: editing.guid })
-              .then(reload)
-              .catch((e) => toast(String(e)));
-          }}
-          onDelete={() => {
-            setEditing(null);
-            api
-              .deleteNote(editing.guid)
-              .then(reload)
-              .catch((e) => toast(String(e)));
-          }}
-        />
-      )}
     </>
   );
 }

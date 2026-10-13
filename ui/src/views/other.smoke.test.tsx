@@ -30,6 +30,7 @@ import { UpdatesTab } from "@/views/updates";
 import { SettingsView } from "@/views/settings";
 import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
+import { NoteHost } from "@/components/notes";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 
 beforeEach(() => {
@@ -248,6 +249,260 @@ describe("Personal Study", () => {
     expect(titles()).toEqual(["Dusk visits"]);
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "zzz" } });
     expect(screen.getByText("No notes match.")).toBeTruthy();
+  });
+
+  it("shows a note's Markdown formatted, with links only underlined", async () => {
+    backend.user_data_summary = () => ({ marks: 0, notes: 1, tags: 0, bookmarks: 0, device: null });
+    backend.tags = () => [];
+    backend.bookmarks = () => [];
+    backend.all_notes = () => [
+      { ...note("a", "Dusk visits", 1, "2026-10-03T00:00:00Z"), content: "Bring **tea**\n- cups\n- [map](https://example.org)\n<b>raw</b>" },
+    ];
+    renderIn(<PersonalView />);
+    const tea = await screen.findByText("tea");
+    const card = tea.closest(".note-md")!;
+    expect(tea.tagName).toBe("STRONG");
+    expect(card.querySelectorAll("li")).toHaveLength(2);
+    expect(card.querySelector("a")).toBeNull();
+    expect(within(card as HTMLElement).getByText("map").className).toBe("md-link");
+    expect(card.querySelector("b")).toBeNull();
+    expect(card.textContent).toContain("<b>raw</b>");
+  });
+});
+
+describe("Floating note", () => {
+  const verse = { publication: "nwtsty_E", kind: { chapter: { book: 43, chapter: 3, verse: 16 } } };
+
+  /** Opens a new note on John 3:16, then lets the test move elsewhere in the app. */
+  function Harness() {
+    const { view, openNote, push, userVersion, notesVersion } = useApp();
+    return (
+      <>
+        <span data-testid="view">{view.name}</span>
+        <span data-testid="versions">{`${userVersion}/${notesVersion}`}</span>
+        <button onClick={() => void openNote({ note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 })}>
+          open
+        </button>
+        <button onClick={() => void openNote({ note: { title: "Another" } })}>other</button>
+        <button onClick={() => push({ name: "personal" })}>go</button>
+      </>
+    );
+  }
+
+  beforeEach(() => vi.mocked(ask).mockReset());
+
+  it("stays open while navigating and saves to the page it was started on", async () => {
+    backend.save_note = () => "n1";
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "God gave his Son" } });
+    fireEvent.click(screen.getByText("go"));
+    expect(screen.getByTestId("view").textContent).toBe("personal");
+    fireEvent.click(within(screen.getByRole("dialog", { name: "New note" })).getByText("Save"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "save_note")).toBe(true));
+    expect(calls.find((c) => c.cmd === "save_note")!.args).toEqual({
+      target: verse,
+      note: { title: "Loved the world", content: "God gave his Son", tags: [], guid: undefined, blockType: 2, blockIdentifier: 16, markGuid: "m1" },
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Only the notes signal moves; the study panes key on userVersion and would remount.
+    expect(screen.getByTestId("versions").textContent).toBe("0/1");
+  });
+
+  it("starts a drag without selecting the text behind it", async () => {
+    // jsdom has no pointer capture.
+    Element.prototype.setPointerCapture ??= () => undefined;
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    const header = within(editor).getByRole("heading").parentElement!;
+    // fireEvent returns false when the handler cancelled the default action.
+    expect(fireEvent.pointerDown(header, { button: 0, pointerId: 1 })).toBe(false);
+    expect(fireEvent.pointerDown(within(editor).getByRole("button", { name: "Close" }), { button: 0, pointerId: 1 })).toBe(true);
+  });
+
+  it("fills the content area and goes back to its size", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    expect(editor.style.width).toBe("440px");
+    fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
+    expect(editor.style.width).toBe("100%");
+    expect(editor.style.height).toBe("100%");
+    fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
+    expect(editor.style.width).toBe("440px");
+  });
+
+  it("previews Markdown and opens its links in the browser", async () => {
+    backend.open_external = () => undefined;
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), {
+      target: { value: "**Love** for [all](https://example.org/)\n- first\n- second" },
+    });
+    fireEvent.click(within(editor).getByRole("button", { name: "Preview" }));
+    const preview = within(editor).getByTestId("note-preview");
+    expect(preview.querySelector("strong")?.textContent).toBe("Love");
+    expect(preview.querySelectorAll("li")).toHaveLength(2);
+    fireEvent.click(within(preview).getByText("all"));
+    await waitFor(() => expect(calls.find((c) => c.cmd === "open_external")?.args).toEqual({ url: "https://example.org/" }));
+    fireEvent.click(within(editor).getByRole("button", { name: "Write" }));
+    expect((within(editor).getByPlaceholderText("Note") as HTMLTextAreaElement).value).toContain("**Love**");
+  });
+
+  const openEditor = async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    return screen.findByRole("dialog", { name: "New note" });
+  };
+
+  it("focuses the title once it is shown", async () => {
+    const editor = await openEditor();
+    await waitFor(() => expect(document.activeElement).toBe(within(editor).getByPlaceholderText("Title")));
+  });
+
+  it("closes right away without changes and asks before Close, Cancel or Escape drop text", async () => {
+    let editor = await openEditor();
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(ask).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("open"));
+    editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.keyDown(within(editor).getByPlaceholderText("Note"), { key: "Escape" });
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await act(async () => undefined);
+    fireEvent.click(within(editor).getByText("Cancel"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+    await act(async () => undefined);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("asks only once when two requests come in while the question is open", async () => {
+    const editor = await openEditor();
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    let answer!: (ok: boolean) => void;
+    vi.mocked(ask).mockReturnValue(new Promise<boolean>((r) => (answer = r)));
+    fireEvent.click(screen.getByText("other"));
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await act(async () => answer(false));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the note open when saving fails, and saves once on a double click", async () => {
+    let fail = true;
+    backend.save_note = () => {
+      if (fail) throw new Error("disk full");
+      return "n1";
+    };
+    const editor = await openEditor();
+    fireEvent.click(within(editor).getByText("Save"));
+    expect(await screen.findByText(/disk full/)).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fail = false;
+    calls.length = 0;
+    fireEvent.click(within(editor).getByText("Save"));
+    fireEvent.click(within(editor).getByText("Save"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((c) => c.cmd === "save_note")).toHaveLength(1);
+  });
+
+  it("moves with the arrow keys on the grip and resizes with Shift", async () => {
+    const editor = await openEditor();
+    const grip = within(editor).getByRole("button", { name: /Move note/ });
+    const before = editor.style.transform;
+    fireEvent.keyDown(grip, { key: "ArrowLeft" });
+    expect(editor.style.transform).not.toBe(before);
+    const height = parseInt(editor.style.height);
+    fireEvent.keyDown(grip, { key: "ArrowUp", shiftKey: true });
+    expect(parseInt(editor.style.height)).toBe(height - 16);
+    expect(JSON.parse(localStorage.getItem("noteSize")!).height).toBe(height - 16);
+  });
+
+  it("fits back into a window that shrank while maximized", async () => {
+    const width = window.innerWidth;
+    try {
+      const editor = await openEditor();
+      fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      fireEvent(window, new Event("resize"));
+      fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
+      const x = Number(/translate\((-?\d+)px/.exec(editor.style.transform)![1]);
+      expect(x + parseInt(editor.style.width)).toBeLessThanOrEqual(600);
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    }
+  });
+
+  it("does not mark a newer note as saved when an older save finishes late", async () => {
+    let finish!: () => void;
+    backend.save_note = () => new Promise<string>((r) => (finish = () => r("n1")));
+    const editor = await openEditor();
+    fireEvent.click(within(editor).getByText("Save"));
+    // While the save runs, open another note and start typing in it.
+    fireEvent.click(screen.getByText("other"));
+    const other = await screen.findByDisplayValue("Another");
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "unsaved" } });
+    await act(async () => finish());
+    expect(screen.getByDisplayValue("Another")).toBe(other);
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("unsaved")).toBeTruthy();
+  });
+
+  it("asks before another note replaces unsaved text", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("other"));
+    fireEvent.click(screen.getByText("open"));
+    await screen.findByDisplayValue("Loved the world");
+    expect(ask).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("Loved the world")).toBeTruthy();
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(screen.getByText("other"));
+    expect(await screen.findByDisplayValue("Another")).toBeTruthy();
   });
 });
 
