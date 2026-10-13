@@ -4,7 +4,7 @@
 pub mod api;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 use pergament::Library;
@@ -30,6 +30,9 @@ pub struct AppState {
     root: PathBuf,
     cache: PathBuf,
     catalog: Mutex<Option<Arc<Mutex<Catalog>>>>,
+    /// Held shared by everything that opens or uses the cached catalog, and exclusively while the
+    /// cache is cleared, so its files are never deleted from under a live connection.
+    cache_gate: RwLock<()>,
     /// Shared client for catalog images, so their requests are rate limited together.
     image_client: Mutex<Client>,
 }
@@ -45,6 +48,13 @@ impl AppState {
         self.user
             .lock()
             .map_err(|_| "user data lock poisoned".to_owned())
+    }
+
+    /// Use the cached catalog until the guard drops; clearing the cache waits for it.
+    fn cache_use(&self) -> ApiResult<RwLockReadGuard<'_, ()>> {
+        self.cache_gate
+            .read()
+            .map_err(|_| "cache lock poisoned".to_owned())
     }
 }
 
@@ -104,13 +114,14 @@ async fn clear_cache(app: AppHandle) -> ApiResult<()> {
         let state = app.state::<AppState>();
         // PERGAMENT_CACHE may point anywhere; never empty the library with it.
         pergament::cache::check_safe(&state.cache, &state.root).map_err(|e| e.to_string())?;
-        // Release the open catalog and keep the lock while deleting, so nothing
-        // reopens it in between; it reloads on next use.
-        let mut catalog = state.catalog.lock().map_err(|e| e.to_string())?;
-        *catalog = None;
-        let result = pergament::cache::clear(&state.cache).map_err(|e| e.to_string());
-        drop(catalog);
-        result
+        // Wait for every catalog user to finish, then release the open catalog and delete while
+        // none can start; it reloads on next use.
+        let _gate = state
+            .cache_gate
+            .write()
+            .map_err(|_| "cache lock poisoned".to_owned())?;
+        *state.catalog.lock().map_err(|e| e.to_string())? = None;
+        pergament::cache::clear(&state.cache).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -349,6 +360,7 @@ async fn import_files(app: AppHandle, paths: Vec<String>) -> ApiResult<Vec<Impor
 
 fn catalog(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
     let state = app.state::<AppState>();
+    let _gate = state.cache_use()?;
     if let Some(c) = state.catalog.lock().map_err(|e| e.to_string())?.clone() {
         return Ok(c);
     }
@@ -385,6 +397,8 @@ fn with_catalog<T>(
     lang: &str,
     f: impl FnOnce(&Catalog, i64, &Library) -> ApiResult<T>,
 ) -> ApiResult<Option<T>> {
+    let state = app.state::<AppState>();
+    let _gate = state.cache_use()?;
     let Some(catalog) = cached_catalog(app)? else {
         return Ok(None);
     };
@@ -392,7 +406,6 @@ fn with_catalog<T>(
     let meps = catalog
         .meps_language(lang)
         .ok_or_else(|| format!("unknown language code {lang:?}"))?;
-    let state = app.state::<AppState>();
     let lib = state.lib()?;
     f(&catalog, meps, &lib).map(Some)
 }
@@ -440,9 +453,13 @@ fn book_overview(
 /// Whether a catalog is available without downloading.
 #[tauri::command]
 async fn catalog_cached(app: AppHandle) -> ApiResult<bool> {
-    tauri::async_runtime::spawn_blocking(move || Ok(cached_catalog(&app)?.is_some()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard_state = app.state::<AppState>();
+        let _gate = guard_state.cache_use()?;
+        Ok(cached_catalog(&app)?.is_some())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Downloaded publications that have a newer version in the catalog. Looks at
@@ -453,6 +470,7 @@ async fn catalog_cached(app: AppHandle) -> ApiResult<bool> {
 async fn check_updates(app: AppHandle) -> ApiResult<Option<Vec<api::UpdateInfo>>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         if Catalog::open_cached(&state.cache)
             .map_err(|e| e.to_string())?
             .is_none()
@@ -560,6 +578,8 @@ async fn referenced_publications(
     lang: String,
 ) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
+        let guard_state = app.state::<AppState>();
+        let _gate = guard_state.cache_use()?;
         let Some(catalog) = cached_catalog(&app)? else {
             return Ok(None);
         };
@@ -771,6 +791,8 @@ async fn catalog_languages(
     issue_tag: i64,
 ) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
+        let guard_state = app.state::<AppState>();
+        let _gate = guard_state.cache_use()?;
         let Some(catalog) = cached_catalog(&app)? else {
             return Ok(None);
         };
@@ -919,6 +941,7 @@ pub fn run() {
             root,
             cache,
             catalog: Mutex::new(None),
+            cache_gate: RwLock::new(()),
             image_client: Mutex::new(Client::new(HttpConfig {
                 min_interval: Duration::from_millis(100),
                 max_retries: 2,
