@@ -11,7 +11,6 @@ import {
   type Mark,
   type MarkRange,
   type Note,
-  type NoteInput,
   type Page,
   type PageUserData,
   type Target,
@@ -22,7 +21,7 @@ import { applyMarks, blockElements, markText, rangeText, selectionRanges } from 
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
-import { MarkToolbar, NoteCard, NoteEditor } from "@/components/notes";
+import { MarkToolbar, NoteCard } from "@/components/notes";
 import { GoToButton } from "@/components/go-to";
 import { OutlineSection } from "@/components/outline-section";
 import { splitPage, verseKeyFromId } from "@/lib/page";
@@ -63,7 +62,7 @@ export function ReaderView({
   noteGuid?: string;
   scroll?: number;
 }) {
-  const { push, replace, toast, lang, userVersion, publications, playRecording, showImage, layout } = useApp();
+  const { push, replace, toast, lang, userVersion, publications, playRecording, showImage, layout, openNote } = useApp();
   const [refs, setRefs] = useState<PaneRef[]>([]);
   const [page, setPage] = useState<Page | null>(null);
   const [study, setStudy] = useState<ChapterStudy | null>(null);
@@ -278,7 +277,6 @@ export function ReaderView({
 
   // Highlighting: a selection or a click on a highlight shows the toolbar.
   const [toolbar, setToolbar] = useState<Toolbar | null>(null);
-  const [editing, setEditing] = useState<Editing | null>(null);
   const closeToolbar = useCallback(() => setToolbar(null), []);
 
   const onArticleMouseUp = () => {
@@ -322,36 +320,21 @@ export function ReaderView({
       const marked = t.mark && articleRef.current ? markText(articleRef.current, t.mark.guid) : (t.text ?? "");
       window.getSelection()?.removeAllRanges();
       reloadUser();
-      setEditing(
+      await openNote(
         existing
           ? { note: existing }
-          : { note: { title: marked }, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
+          : { note: { title: marked }, target, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
       );
     } catch (e) {
       toast(String(e));
     }
   };
 
-  const saveNote = (input: Omit<NoteInput, "guid" | "blockType" | "blockIdentifier" | "markGuid">) => {
-    const ed = editing;
-    if (!ed) return;
-    setEditing(null);
-    void userAction(() =>
-      api.saveNote(ed.note.guid ? null : target, {
-        ...input,
-        guid: ed.note.guid,
-        blockType: ed.blockType ?? 0,
-        blockIdentifier: ed.blockIdentifier ?? null,
-        markGuid: ed.markGuid ?? null,
-      }),
-    );
-  };
-
   /** Scroll to where a note sits in the text at once; notes without a place in this text open for editing. */
   const goToNote = (n: Note) => {
     const root = articleRef.current;
     const block = root && n.blockIdentifier != null ? blockElements(root, n.blockType, n.blockIdentifier)[0] : undefined;
-    if (!block) return setEditing({ note: n });
+    if (!block) return void openNote({ note: n });
     flash(block, "center", "instant");
   };
 
@@ -458,7 +441,6 @@ export function ReaderView({
     if (!paged) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (editing) return;
       if (e.key === "ArrowLeft" && !e.altKey) go(-1);
       if (e.key === "ArrowRight" && !e.altKey) go(1);
     };
@@ -551,7 +533,7 @@ export function ReaderView({
                 <h3 className="text-sm font-semibold">{t("My notes")}</h3>
                 {user.notes.map((n) => (
                   <div key={n.guid} data-note={n.guid}>
-                    <NoteCard note={n} onClick={() => goToNote(n)} onEdit={() => setEditing({ note: n })} />
+                    <NoteCard note={n} onClick={() => goToNote(n)} onEdit={() => void openNote({ note: n })} />
                   </div>
                 ))}
               </section>
@@ -600,22 +582,6 @@ export function ReaderView({
           onClose={closeToolbar}
         />
       )}
-      {editing && (
-        <NoteEditor
-          note={editing.note}
-          onSave={saveNote}
-          onDelete={
-            editing.note.guid
-              ? () => {
-                  const guid = editing.note.guid!;
-                  setEditing(null);
-                  void userAction(() => api.deleteNote(guid));
-                }
-              : undefined
-          }
-          onClose={() => setEditing(null)}
-        />
-      )}
     </>
   );
 }
@@ -628,14 +594,6 @@ interface Toolbar {
   mark?: Mark;
   /** The selected text, for a new selection. */
   text?: string;
-}
-
-/** The note being written, and where a new one attaches. */
-interface Editing {
-  note: Partial<Note>;
-  markGuid?: string;
-  blockType?: number;
-  blockIdentifier?: number;
 }
 
 function RefLinks({ refs }: { refs: VerseStudy["xrefs"][number]["refs"] }) {

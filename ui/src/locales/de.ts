@@ -148,6 +148,9 @@ export const de: Record<string, string> = {
   "Tags, separated by commas": "Tags, durch Kommas getrennt",
   Delete: "Löschen",
   Save: "Speichern",
+  "Discard note?": "Notiz verwerfen?",
+  "The note you are writing has not been saved.": "Die Notiz, die du gerade schreibst, ist noch nicht gespeichert.",
+  Discard: "Verwerfen",
 
   // Meetings
   "Previous week": "Vorige Woche",

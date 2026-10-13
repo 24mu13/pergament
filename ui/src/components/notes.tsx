@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { NotebookPen, Pencil, Trash2, X } from "lucide-react";
-import type { Note, NoteInput } from "@/lib/api";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { GripHorizontal, NotebookPen, Pencil, Trash2, X } from "lucide-react";
+import { useApp } from "@/app";
+import { api, type Note, type NoteInput } from "@/lib/api";
+import { clampPanel, type Point } from "@/lib/notes";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -109,87 +111,178 @@ export function NoteCard({
   );
 }
 
-/** Dialog to write or change a note. */
+/** Space kept between the editor and the edges of the content area when it first opens. */
+const EDGE = 16;
+
+/**
+ * A floating panel to write or change a note. It does not block the app, so
+ * the user can keep reading, and can be dragged by its header.
+ */
 export function NoteEditor({
   note,
   onSave,
   onDelete,
   onClose,
+  onDirty,
 }: {
   note: Partial<Note>;
   onSave: (input: Omit<NoteInput, "guid" | "blockType" | "blockIdentifier" | "markGuid">) => void;
   onDelete?: () => void;
   onClose: () => void;
+  /** Called with whether the fields differ from the note as opened. */
+  onDirty?: (dirty: boolean) => void;
 }) {
   const [title, setTitle] = useState(note.title ?? "");
   const [content, setContent] = useState(note.content ?? "");
   const [tags, setTags] = useState((note.tags ?? []).join(", "));
+  const dirty = title !== (note.title ?? "") || content !== (note.content ?? "") || tags !== (note.tags ?? []).join(", ");
+  useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
+
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<Point | null>(null);
+  const area = () => {
+    const parent = ref.current?.offsetParent as HTMLElement | null;
+    return { width: parent?.clientWidth ?? window.innerWidth, height: parent?.clientHeight ?? window.innerHeight };
+  };
+  const size = () => ({ width: ref.current?.offsetWidth ?? 0, height: ref.current?.offsetHeight ?? 0 });
+  // Open at the bottom right, above the player bar when there is one.
+  useLayoutEffect(() => {
+    const bounds = area();
+    const bar = document.querySelector<HTMLElement>("#content > div:first-child")?.offsetHeight ?? bounds.height;
+    const s = size();
+    setPos(clampPanel({ x: bounds.width - s.width - EDGE, y: bar - s.height - EDGE }, s, bounds));
+  }, []);
+  useEffect(() => {
+    const fit = () => setPos((p) => p && clampPanel(p, size(), area()));
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+
+  const drag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button") || !pos) return;
+    // Without this WebKit starts a text selection that follows the pointer over the page behind.
+    e.preventDefault();
+    const start = { x: e.clientX - pos.x, y: e.clientY - pos.y };
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => setPos(clampPanel({ x: ev.clientX - start.x, y: ev.clientY - start.y }, size(), area()));
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={onClose}>
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={note.guid ? t("Edit note") : t("New note")}
+      style={pos ? { left: pos.x, top: pos.y } : { visibility: "hidden" }}
+      className="absolute z-35 flex w-[min(calc(100%-2rem),440px)] flex-col gap-3 rounded-md border border-line bg-surface p-4 shadow-lg"
+    >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={note.guid ? t("Edit note") : t("New note")}
-        onMouseDown={(e) => e.stopPropagation()}
-        className="flex w-[min(90vw,560px)] flex-col gap-3 rounded-md border border-line bg-surface p-5 shadow-sm"
+        onPointerDown={drag}
+        className="-mx-4 -mt-4 flex cursor-move touch-none items-center justify-between gap-2 rounded-t-md border-b border-line bg-bar px-4 py-2 select-none"
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{note.guid ? t("Edit note") : t("New note")}</h2>
-          <button aria-label={t("Close")} onClick={onClose}>
-            <X size={20} />
+        <h2 className="flex items-center gap-2 font-semibold">
+          <GripHorizontal size={16} className="text-muted" aria-hidden />
+          {note.guid ? t("Edit note") : t("New note")}
+        </h2>
+        <button aria-label={t("Close")} onClick={onClose}>
+          <X size={20} />
+        </button>
+      </div>
+      <input
+        id="note-title"
+        autoFocus
+        placeholder={t("Title")}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+      />
+      <textarea
+        id="note-content"
+        placeholder={t("Note")}
+        rows={6}
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        className="resize-y rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+      />
+      <input
+        id="note-tags"
+        placeholder={t("Tags, separated by commas")}
+        value={tags}
+        onChange={(e) => setTags(e.target.value)}
+        className="rounded-md border border-line bg-surface px-3 py-2 text-sm focus:border-accent"
+      />
+      <div className="flex items-center gap-2">
+        {onDelete && (
+          <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted hover:text-fg">
+            <Trash2 size={16} /> {t("Delete")}
           </button>
-        </div>
-        <input
-          id="note-title"
-          autoFocus
-          placeholder={t("Title")}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
-        />
-        <textarea
-          id="note-content"
-          placeholder={t("Note")}
-          rows={8}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          className="resize-y rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
-        />
-        <input
-          id="note-tags"
-          placeholder={t("Tags, separated by commas")}
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          className="rounded-md border border-line bg-surface px-3 py-2 text-sm focus:border-accent"
-        />
-        <div className="flex items-center gap-2">
-          {onDelete && (
-            <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted hover:text-fg">
-              <Trash2 size={16} /> {t("Delete")}
-            </button>
-          )}
-          <span className="flex-1" />
-          <button onClick={onClose} className="px-4 py-2 text-sm hover:bg-bar">
-            {t("Cancel")}
-          </button>
-          <button
-            disabled={!title.trim() && !content.trim()}
-            onClick={() =>
-              onSave({
-                title: title.trim(),
-                content,
-                tags: tags
-                  .split(",")
-                  .map((t) => t.trim())
-                  .filter(Boolean),
-              })
-            }
-            className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface disabled:opacity-50"
-          >
-            {t("Save")}
-          </button>
-        </div>
+        )}
+        <span className="flex-1" />
+        <button onClick={onClose} className="px-4 py-2 text-sm hover:bg-bar">
+          {t("Cancel")}
+        </button>
+        <button
+          disabled={!title.trim() && !content.trim()}
+          onClick={() =>
+            onSave({
+              title: title.trim(),
+              content,
+              tags: tags
+                .split(",")
+                .map((t) => t.trim())
+                .filter(Boolean),
+            })
+          }
+          className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface disabled:opacity-50"
+        >
+          {t("Save")}
+        </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The note being written, floating over the content area. It lives next to the
+ * player so it stays open while the user navigates, and saves to the page the
+ * note was started on.
+ */
+export function NoteHost() {
+  const { note, closeNote, setNoteDirty, userChanged, toast } = useApp();
+  if (!note) return null;
+  const { draft } = note;
+  const run = (action: () => Promise<unknown>) => {
+    closeNote();
+    action()
+      .then(userChanged)
+      .catch((e) => toast(String(e)));
+  };
+  return (
+    <NoteEditor
+      key={note.id}
+      note={draft.note}
+      onDirty={setNoteDirty}
+      onClose={closeNote}
+      onSave={(input) =>
+        run(() =>
+          api.saveNote(draft.note.guid ? null : (draft.target ?? null), {
+            ...input,
+            guid: draft.note.guid,
+            blockType: draft.blockType ?? 0,
+            blockIdentifier: draft.blockIdentifier ?? null,
+            markGuid: draft.markGuid ?? null,
+          }),
+        )
+      }
+      onDelete={draft.note.guid ? () => run(() => api.deleteNote(draft.note.guid!)) : undefined}
+    />
   );
 }

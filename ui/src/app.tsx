@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
-import type { MediaRef } from "@/lib/api";
+import type { MediaRef, Note } from "@/lib/api";
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
@@ -65,6 +65,15 @@ interface Toast {
   id: number;
   text: string;
   action?: { label: string; run: () => void };
+}
+
+/** A note being written, and the page and highlight a new one attaches to. */
+export interface NoteDraft {
+  note: Partial<Note>;
+  target?: Target | null;
+  markGuid?: string;
+  blockType?: number;
+  blockIdentifier?: number;
 }
 
 interface AppContextValue {
@@ -130,7 +139,7 @@ interface AppContextValue {
   /** Bumped whenever the catalog was (re)loaded or the library changed. */
   catalogVersion: number;
   loadCatalog: () => Promise<void>;
-  /** Bumped when user data was replaced by a restored backup. */
+  /** Bumped when user data was replaced by a restored backup or changed outside the current view. */
   userVersion: number;
   /** Favorite keys (`symbol_meps[_issue]`, the library directory names). */
   favorites: string[];
@@ -143,6 +152,15 @@ interface AppContextValue {
   /** Look up a recording that a publication links to and play it. */
   playRecording: (media: MediaRef) => Promise<void>;
   closePlayer: () => void;
+  /** The note being written. It floats over the app and stays open while the user navigates. */
+  note: { id: number; draft: NoteDraft } | null;
+  /** Open a note in the floating editor, asking first when that would drop unsaved text. */
+  openNote: (draft: NoteDraft) => Promise<void>;
+  closeNote: () => void;
+  /** Told by the editor whether it holds unsaved text. */
+  setNoteDirty: (dirty: boolean) => void;
+  /** Tell the views that highlights or notes changed somewhere else. */
+  userChanged: () => void;
   /** The second display window and what is sent to it. */
   display: { enabled: boolean; setEnabled: (on: boolean) => Promise<void>; send: (message: DisplayMessage) => void };
   /** The picture in the large view, if one is open. */
@@ -195,6 +213,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [favorites, setFavorites] = useState(loadFavorites);
   const toggleFavorite = useCallback((key: string) => setFavorites(toggleStoredFavorite(key)), []);
   const [player, setPlayer] = useState<AppContextValue["player"]>(null);
+  const [note, setNote] = useState<AppContextValue["note"]>(null);
+  const noteDirty = useRef(false);
   const systemDark = useSystemDark();
   const dark = prefersDark(theme, systemDark);
   // Set while rendering so every `t()` below already uses the new language.
@@ -512,6 +532,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const playItem = useCallback((item: PlayerItem) => setPlayer({ id: Date.now(), item }), []);
   const closePlayer = useCallback(() => setPlayer(null), []);
+  const openNote = useCallback(async (draft: NoteDraft) => {
+    if (noteDirty.current) {
+      const ok = await ask(t("The note you are writing has not been saved."), {
+        title: t("Discard note?"),
+        kind: "warning",
+        okLabel: t("Discard"),
+      });
+      if (!ok) return;
+    }
+    noteDirty.current = false;
+    setNote({ id: Date.now(), draft });
+  }, []);
+  const closeNote = useCallback(() => {
+    noteDirty.current = false;
+    setNote(null);
+  }, []);
+  const setNoteDirty = useCallback((dirty: boolean) => {
+    noteDirty.current = dirty;
+  }, []);
+  const userChanged = useCallback(() => setUserVersion((v) => v + 1), []);
   const playRecording = useCallback(
     async (media: MediaRef) => {
       try {
@@ -609,6 +649,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       playItem,
       playRecording,
       closePlayer,
+      note,
+      openNote,
+      closeNote,
+      setNoteDirty,
+      userChanged,
       display: { enabled: displayOn, setEnabled: setSecondDisplay, send: sendDisplay },
       viewer,
       showImage,
@@ -652,6 +697,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       playItem,
       playRecording,
       closePlayer,
+      note,
+      openNote,
+      closeNote,
+      setNoteDirty,
+      userChanged,
       displayOn,
       setSecondDisplay,
       sendDisplay,

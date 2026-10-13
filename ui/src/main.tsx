@@ -4,6 +4,7 @@ import { AppProvider, Rail, TitleStrip, useApp } from "./app";
 import { GoTo } from "./components/go-to";
 import { ImageViewer } from "./components/image-viewer";
 import { PlayerHost } from "./components/player-host";
+import { NoteHost } from "./components/notes";
 import { isDisplayWindow } from "./lib/display";
 import { DisplayView } from "./views/display";
 import { ChaptersView } from "./views/chapters";
@@ -85,6 +86,7 @@ function Shell() {
             <CurrentView />
           </div>
           <PlayerHost />
+          <NoteHost />
           <ImageViewer />
           <GoTo />
         </main>

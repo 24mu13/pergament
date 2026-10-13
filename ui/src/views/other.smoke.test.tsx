@@ -30,6 +30,7 @@ import { UpdatesTab } from "@/views/updates";
 import { SettingsView } from "@/views/settings";
 import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
+import { NoteHost } from "@/components/notes";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 
 beforeEach(() => {
@@ -248,6 +249,87 @@ describe("Personal Study", () => {
     expect(titles()).toEqual(["Dusk visits"]);
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "zzz" } });
     expect(screen.getByText("No notes match.")).toBeTruthy();
+  });
+});
+
+describe("Floating note", () => {
+  const verse = { publication: "nwtsty_E", kind: { chapter: { book: 43, chapter: 3, verse: 16 } } };
+
+  /** Opens a new note on John 3:16, then lets the test move elsewhere in the app. */
+  function Harness() {
+    const { view, openNote, push } = useApp();
+    return (
+      <>
+        <span data-testid="view">{view.name}</span>
+        <button onClick={() => void openNote({ note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 })}>
+          open
+        </button>
+        <button onClick={() => void openNote({ note: { title: "Another" } })}>other</button>
+        <button onClick={() => push({ name: "personal" })}>go</button>
+      </>
+    );
+  }
+
+  beforeEach(() => vi.mocked(ask).mockReset());
+
+  it("stays open while navigating and saves to the page it was started on", async () => {
+    backend.save_note = () => "n1";
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "God gave his Son" } });
+    fireEvent.click(screen.getByText("go"));
+    expect(screen.getByTestId("view").textContent).toBe("personal");
+    fireEvent.click(within(screen.getByRole("dialog", { name: "New note" })).getByText("Save"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "save_note")).toBe(true));
+    expect(calls.find((c) => c.cmd === "save_note")!.args).toEqual({
+      target: verse,
+      note: { title: "Loved the world", content: "God gave his Son", tags: [], guid: undefined, blockType: 2, blockIdentifier: 16, markGuid: "m1" },
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("starts a drag without selecting the text behind it", async () => {
+    // jsdom has no pointer capture.
+    Element.prototype.setPointerCapture ??= () => undefined;
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    const header = within(editor).getByRole("heading").parentElement!;
+    // fireEvent returns false when the handler cancelled the default action.
+    expect(fireEvent.pointerDown(header, { button: 0, pointerId: 1 })).toBe(false);
+    expect(fireEvent.pointerDown(within(editor).getByRole("button", { name: "Close" }), { button: 0, pointerId: 1 })).toBe(true);
+  });
+
+  it("asks before another note replaces unsaved text", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("other"));
+    fireEvent.click(screen.getByText("open"));
+    await screen.findByDisplayValue("Loved the world");
+    expect(ask).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("Loved the world")).toBeTruthy();
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(screen.getByText("other"));
+    expect(await screen.findByDisplayValue("Another")).toBeTruthy();
   });
 });
 
