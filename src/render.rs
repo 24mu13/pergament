@@ -16,6 +16,7 @@ use std::path::Path;
 use lol_html::html_content::{Element, TextChunk};
 use lol_html::{RewriteStrSettings, element, rewrite_str, text};
 
+use crate::links::{MediaKind, MediaRef};
 use crate::reader::{Chapter, OutlineEntry, Publication, VerseRef};
 use crate::{Error, Result};
 
@@ -33,6 +34,16 @@ pub struct Renderer<'a> {
     options: RenderOptions,
     sanitizer: ammonia::Builder<'static>,
     abbreviations: std::cell::OnceCell<std::collections::HashMap<i64, String>>,
+}
+
+/// The overview of a Bible book, shown with its chapters.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookOverview {
+    /// The document with the overview, to be rendered as a page.
+    pub document: Option<i64>,
+    /// The book's introduction video, if it has one yet.
+    pub video: Option<MediaRef>,
 }
 
 /// Study pane content of a Bible chapter.
@@ -334,6 +345,24 @@ impl<'a> Renderer<'a> {
             outline_title: self.publication.overview_title(book)?,
             outline: self.publication.outline(book, chapter)?,
             verses: verses.into_values().collect(),
+        })
+    }
+
+    /// What the chapter list of a Bible book shows besides the chapters: its overview and introduction video.
+    pub fn book_overview(&self, book: i64, lang_code: Option<&str>) -> Result<BookOverview> {
+        let video = match (self.publication.book_video(book)?, lang_code) {
+            (Some((pub_symbol, track)), Some(lang)) => Some(MediaRef {
+                pub_symbol,
+                issue: None,
+                track,
+                kind: MediaKind::Video,
+                lang_code: lang.to_owned(),
+            }),
+            _ => None,
+        };
+        Ok(BookOverview {
+            video,
+            document: self.publication.overview_document(book)?,
         })
     }
 

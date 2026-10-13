@@ -428,6 +428,15 @@ fn chapter_study(
     api::chapter_study(&*state.lib()?, &dir, book, chapter)
 }
 
+#[tauri::command]
+fn book_overview(
+    state: State<'_, AppState>,
+    dir: String,
+    book: i64,
+) -> ApiResult<pergament::render::BookOverview> {
+    api::book_overview(&*state.lib()?, &dir, book)
+}
+
 /// Whether a catalog is available without downloading.
 #[tauri::command]
 async fn catalog_cached(app: AppHandle) -> ApiResult<bool> {
@@ -975,6 +984,7 @@ pub fn run() {
             favorite_entries,
             languages,
             chapter_study,
+            book_overview,
             research_verses,
             research_guide,
             catalog_cached,

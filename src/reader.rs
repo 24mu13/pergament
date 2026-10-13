@@ -559,6 +559,40 @@ impl Publication {
             .optional()?)
     }
 
+    /// The document that lays out a book's overview (an outline, lettered in the Gospels), if it has one.
+    pub fn overview_document(&self, book: i64) -> Result<Option<i64>> {
+        self.require_bible()?;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT COALESCE(OutlineDocumentId, OverviewDocumentId) FROM BibleBook WHERE BibleBookId = ?1",
+                [book],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The introduction video of a book, as its key symbol and track; not every book has one yet. Other videos of
+    /// the book's documents are clips inside notes and carry no key symbol.
+    pub fn book_video(&self, book: i64) -> Result<Option<(String, u32)>> {
+        self.require_bible()?;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT m.KeySymbol, m.Track FROM BibleBook b
+                 JOIN DocumentMultimedia dm ON dm.DocumentId IN (b.BookDocumentId, b.IntroDocumentId)
+                 JOIN Multimedia m ON m.MultimediaId = dm.MultimediaId
+                 WHERE b.BibleBookId = ?1 AND m.MimeType LIKE 'video/%'
+                   AND m.KeySymbol IS NOT NULL AND m.KeySymbol <> '' AND m.Track IS NOT NULL
+                 ORDER BY m.MultimediaId LIMIT 1",
+                [book],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
+            )
+            .optional()
+            .unwrap_or(None))
+    }
+
     /// Outline entries (below the chapter level) overlapping `chapter`.
     /// Uses the overview outline (class 115) where a book has one.
     pub fn outline(&self, book: i64, chapter: i64) -> Result<Vec<OutlineEntry>> {

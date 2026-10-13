@@ -332,6 +332,14 @@ export interface VerseStudy {
   notes: string[];
 }
 
+/** What a Bible book's chapter list shows besides the chapters. */
+export interface BookOverview {
+  /** The document with the overview, to render as a page. */
+  document: number | null;
+  /** The book's introduction video; not every book has one yet. */
+  video: MediaRef | null;
+}
+
 export interface ChapterStudy {
   outlineTitle: string | null;
   outline: OutlineEntry[];
@@ -396,6 +404,7 @@ export const api = {
     invoke<CatalogEntry[] | null>("favorite_entries", { lang, keys }),
   chapterStudy: (dir: string, book: number, chapter: number) =>
     invoke<ChapterStudy>("chapter_study", { dir, book, chapter }),
+  bookOverview: (dir: string, book: number) => invoke<BookOverview>("book_overview", { dir, book }),
   catalogCached: () => invoke<boolean>("catalog_cached"),
   loadCatalog: () => invoke<void>("load_catalog"),
   homeLists: (lang: string, date: string) => invoke<HomeLists | null>("home_lists", { lang, date }),

@@ -418,9 +418,11 @@ fn chapter_study_genesis_12() {
     assert_eq!(parallel, ["Mar 1:12, 13", "Luk 4:1-4"]);
     assert!(v1.xrefs[0].refs.iter().any(|r| !r.parallel));
 
-    // The overview of a whole book lists every chapter, not just one.
-    let o = r.book_overview(1).unwrap();
-    assert_eq!(o.outline_title.as_deref(), Some("1. Mose: Übersicht"));
-    assert!(o.outline.iter().any(|e| e.begin_chapter == 1));
-    assert!(o.outline.iter().any(|e| e.begin_chapter == 12));
+    // A book's overview is a document of its own, and so is its intro video.
+    let o = r.book_overview(40, Some("X")).unwrap();
+    let video = o.video.as_ref().unwrap();
+    assert_eq!((video.pub_symbol.as_str(), video.track), ("nwtsv", 400));
+    let doc = r.document(o.document.unwrap()).unwrap();
+    assert!(doc.contains("Übersicht über Matthäus"));
+    assert!(doc.contains("<strong>A.</strong>"));
 }

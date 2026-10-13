@@ -129,6 +129,23 @@ pub fn chapter_study(
     .map_err(err)
 }
 
+pub fn book_overview(
+    library: &Library,
+    dir: &str,
+    book: i64,
+) -> ApiResult<pergament::render::BookOverview> {
+    let (entry, publication) = open_entry(library, dir)?;
+    pergament::Renderer::new(
+        &publication,
+        pergament::RenderOptions {
+            media_base: Some(media_base(dir)),
+            standalone: false,
+        },
+    )
+    .book_overview(book, entry.lang_code.as_deref())
+    .map_err(err)
+}
+
 /// The Research Guide (`rsg`) in the language of a Bible of the library.
 fn research_guide_publication(
     library: &Library,

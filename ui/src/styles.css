@@ -202,6 +202,57 @@ body {
   margin-right: 0.35em;
 }
 
+/* ---------- Overview of a Bible book (with .reader) ---------- */
+
+.reader.overview {
+  font-size: calc(1.05rem * var(--font-scale, 1));
+  line-height: 1.5;
+}
+.reader.overview header p {
+  margin: 0;
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.reader.overview ul {
+  margin: 0;
+  list-style: none;
+}
+/* The publication's `ul.outline` is also the name of Tailwind's outline utility, which would draw a box around it. */
+.reader.overview ul.outline {
+  outline: none;
+}
+.reader.overview li > p {
+  margin: 0.45em 0;
+}
+/* Hanging indents: a wrapped line sits under the text, not the letter or the margin. */
+.reader.overview li.L1 > p {
+  margin-top: 1.1em;
+  padding-left: 1.7em;
+  text-indent: -1.7em;
+}
+.reader.overview li.L1 .itemLabel {
+  display: inline-block;
+  width: 1.7em;
+  text-indent: 0;
+}
+.reader.overview li.L2 > p {
+  padding-left: 2.4em;
+  text-indent: -1em;
+}
+.reader.overview li.L3 > p {
+  padding-left: 3.4em;
+  text-indent: -1em;
+  font-size: 0.95em;
+}
+.reader.overview .chapterNo > p {
+  margin-top: 1.2em;
+  font-weight: 700;
+}
+.reader.overview .altsize {
+  font-size: inherit;
+}
+
 /* ---------- Bible text, as in the original reader ---------- */
 
 .reader.bible {

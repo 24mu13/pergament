@@ -25,6 +25,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save:
 
 import { AppProvider } from "@/app";
 import { BibleView } from "@/views/bible";
+import { ChaptersView } from "@/views/chapters";
 import { CategoryView, LibraryView } from "@/views/library";
 import { MediaCategoryView } from "@/views/media";
 
@@ -274,5 +275,50 @@ describe("Bible downloads", () => {
     expect(bar).toBeTruthy();
     expect(screen.getByText("0%")).toBeTruthy();
     expect(screen.queryByRole("progressbar", { name: "Neue-Welt-Übersetzung" })).toBeNull();
+  });
+});
+
+describe("Chapters of a Bible book", () => {
+  it("shows the overview page in the study pane, and opens a chapter from its links", async () => {
+    const bible = card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Studienbibel", isBible: true });
+    backend.publication = () => ({
+      card: bible,
+      toc: [],
+      books: [{ number: 40, title: "Das Evangelium nach Matthäus", chapter_title: "Matthäus", book_document_id: 145, chapters: 28 }],
+    });
+    const video = { pub_symbol: "nwtsv", issue: null, track: 400, kind: "video", lang_code: "X" };
+    backend.book_overview = () => ({ document: 144, video });
+    backend.media_links = () => [];
+    backend.render_page = () => ({
+      title: "Übersicht über Matthäus",
+      fragment: null,
+      name: "x",
+      html: `<header><h1><strong>Übersicht über Matthäus</strong></h1></header><ul class="outline"><li class="L1"><p><span class="itemLabel"><strong>A.</strong> </span><strong>Abstammung (</strong><a href="pergament://verse/X:1/1:1-1:17"><strong>1:1-17</strong></a><strong>)</strong></p></li></ul>`,
+    });
+    backend.link_action = () => ({
+      kind: "open",
+      target: { publication: "nwtsty_2", kind: { chapter: { book: 40, chapter: 1, verse: 1 } } },
+      studyNote: false,
+    });
+    renderIn(<ChaptersView dir="nwtsty_2" book={40} />);
+    const pane = await screen.findByLabelText("Study pane");
+    expect(within(pane).getByText("Übersicht über Matthäus")).toBeTruthy();
+    fireEvent.click(screen.getByText("1:1-17"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "link_action")).toBe(true));
+    expect(screen.getByText("28")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Introduction video/ }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "media_links" && (c.args as { media: { track: number } }).media.track === 400)).toBe(true));
+  });
+
+  it("has no video button for a book without an introduction video", async () => {
+    backend.publication = () => ({
+      card: card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Studienbibel", isBible: true }),
+      toc: [],
+      books: [{ number: 66, title: "Offenbarung", chapter_title: "Offenbarung", book_document_id: 1, chapters: 22 }],
+    });
+    backend.book_overview = () => ({ document: null, video: null });
+    renderIn(<ChaptersView dir="nwtsty_2" book={66} />);
+    expect(await screen.findByText("22")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Introduction video/ })).toBeNull();
   });
 });

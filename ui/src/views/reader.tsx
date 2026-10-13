@@ -24,6 +24,7 @@ import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
 import { MarkToolbar, NoteCard, NoteEditor } from "@/components/notes";
 import { GoToButton } from "@/components/go-to";
+import { OutlineSection } from "@/components/outline-section";
 import { splitPage, verseKeyFromId } from "@/lib/page";
 import { cn } from "@/lib/utils";
 import { addDays, fromDateNumber, isoDate, longDate } from "@/lib/dates";
@@ -48,16 +49,6 @@ const verseKey = (v: { chapter: number; verse: number }) => `${v.chapter}:${v.ve
 function verseKeyOfSpan(id: string): string | null {
   const full = verseKeyFromId(id);
   return full ? full.split(":").slice(1).join(":") : null;
-}
-
-/** Outline range like "1-9" or "7". */
-function outlineRange(o: ChapterStudy["outline"][number]): string {
-  if (o.end_verse == null || (o.begin_chapter === o.end_chapter && o.begin_verse === o.end_verse)) {
-    return `${o.begin_verse}`;
-  }
-  return o.begin_chapter === o.end_chapter
-    ? `${o.begin_verse}-${o.end_verse}`
-    : `${o.begin_chapter}:${o.begin_verse}–${o.end_chapter}:${o.end_verse}`;
 }
 
 export function ReaderView({
@@ -737,19 +728,7 @@ function StudyPane({
   verses.sort((a, b) => a.chapter - b.chapter || a.verse - b.verse);
   return (
     <>
-      {study.outline.length > 0 && (
-        <section className="mb-5">
-          <h3 className="mb-2 text-sm font-semibold">{study.outlineTitle ?? t("Outline")}</h3>
-          {study.outline.map((o, i) => (
-            <div key={i} style={{ paddingLeft: `${Math.max(0, o.level - 2) * 1.3}rem` }}>
-              {o.text}{" "}
-              <a className="text-xs" href={`#v${book}-${o.begin_chapter}-${o.begin_verse}-1`}>
-                ({outlineRange(o)})
-              </a>
-            </div>
-          ))}
-        </section>
-      )}
+      <OutlineSection title={study.outlineTitle} outline={study.outline} book={book} />
       {verses.map((v) => (
         <VerseSection
           key={verseKey(v)}
