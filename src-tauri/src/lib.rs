@@ -114,12 +114,16 @@ async fn clear_cache(app: AppHandle) -> ApiResult<()> {
         let state = app.state::<AppState>();
         // PERGAMENT_CACHE may point anywhere; never empty the library with it.
         pergament::cache::check_safe(&state.cache, &state.root).map_err(|e| e.to_string())?;
-        // Wait for every catalog user to finish, then release the open catalog and delete while
-        // none can start; it reloads on next use.
-        let _gate = state
-            .cache_gate
-            .write()
-            .map_err(|_| "cache lock poisoned".to_owned())?;
+        // Refuse while a download or catalog load is using the cache, instead of waiting: a
+        // waiting writer would hold up every new catalog request behind it.
+        let _gate = match state.cache_gate.try_write() {
+            Ok(gate) => gate,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err("The cache is in use by a download or a catalog load. Try again when it has finished.".to_owned());
+            }
+            Err(_) => return Err("cache lock poisoned".to_owned()),
+        };
+        // Release the open catalog; it reloads on next use.
         *state.catalog.lock().map_err(|e| e.to_string())? = None;
         pergament::cache::clear(&state.cache).map_err(|e| e.to_string())
     })
@@ -199,6 +203,7 @@ async fn download_media(
 ) -> ApiResult<api::MediaDownload> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         let client = Client::new(HttpConfig::default());
         let found = mediator::category(
             &client,
@@ -361,6 +366,12 @@ async fn import_files(app: AppHandle, paths: Vec<String>) -> ApiResult<Vec<Impor
 fn catalog(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
     let state = app.state::<AppState>();
     let _gate = state.cache_use()?;
+    catalog_unguarded(app)
+}
+
+/// [`catalog`] for callers that already hold the cache gate.
+fn catalog_unguarded(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
+    let state = app.state::<AppState>();
     if let Some(c) = state.catalog.lock().map_err(|e| e.to_string())?.clone() {
         return Ok(c);
     }
@@ -399,6 +410,16 @@ fn with_catalog<T>(
 ) -> ApiResult<Option<T>> {
     let state = app.state::<AppState>();
     let _gate = state.cache_use()?;
+    with_catalog_unguarded(app, lang, f)
+}
+
+/// [`with_catalog`] for callers that already hold the cache gate.
+fn with_catalog_unguarded<T>(
+    app: &AppHandle,
+    lang: &str,
+    f: impl FnOnce(&Catalog, i64, &Library) -> ApiResult<T>,
+) -> ApiResult<Option<T>> {
+    let state = app.state::<AppState>();
     let Some(catalog) = cached_catalog(app)? else {
         return Ok(None);
     };
@@ -578,16 +599,16 @@ async fn referenced_publications(
     lang: String,
 ) -> ApiResult<Option<Vec<api::LanguageEntry>>> {
     tauri::async_runtime::spawn_blocking(move || {
-        let guard_state = app.state::<AppState>();
-        let _gate = guard_state.cache_use()?;
-        let Some(catalog) = cached_catalog(&app)? else {
-            return Ok(None);
-        };
         // The scan renders every document. It uses its own library handle so the
         // shared library and the catalog stay free for other commands meanwhile.
         let state = app.state::<AppState>();
         let own = Library::open(&state.root).map_err(|e| e.to_string())?;
         let hrefs = api::publication_hrefs(&own, &dir)?;
+        // The cache is only needed for the lookup after the scan.
+        let _gate = state.cache_use()?;
+        let Some(catalog) = cached_catalog(&app)? else {
+            return Ok(None);
+        };
         let catalog = catalog.lock().map_err(|e| e.to_string())?;
         let meps = catalog
             .meps_language(&lang)
@@ -773,8 +794,10 @@ async fn catalog_search(
     query: String,
 ) -> ApiResult<Vec<api::CatalogEntry>> {
     tauri::async_runtime::spawn_blocking(move || {
-        catalog(&app)?;
-        with_catalog(&app, &lang, |c, meps, lib| {
+        let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
+        catalog_unguarded(&app)?;
+        with_catalog_unguarded(&app, &lang, |c, meps, lib| {
             api::search_entries(c, meps, lib, &query)
         })
         .map(Option::unwrap_or_default)
@@ -829,6 +852,7 @@ async fn download_publication(
 ) -> ApiResult<String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
         let client = Client::new(HttpConfig::default());
         let mut lib = Library::open(&state.root).map_err(|e| e.to_string())?;
         let req = Request {
