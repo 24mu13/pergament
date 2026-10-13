@@ -27,8 +27,6 @@ export interface BibleBook {
   chapter_title: string;
   book_document_id: number | null;
   chapters: number;
-  /** Verses in each chapter, in chapter order. */
-  verses?: number[];
 }
 
 export interface PubCard {
@@ -439,6 +437,8 @@ export const api = {
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),
+  lastVerse: (dir: string, book: number, chapter: number) =>
+    invoke<number>("last_verse", { dir, book, chapter }),
   researchVerses: (dir: string, book: number, chapter: number) =>
     invoke<number[]>("research_verses", { dir, book, chapter }),
   researchGuide: (dir: string, book: number, chapter: number, verse: number) =>

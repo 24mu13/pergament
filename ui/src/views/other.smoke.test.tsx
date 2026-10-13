@@ -651,6 +651,7 @@ describe("Go to", () => {
       toc: [],
       books: [{ number: 58, title: "Hebräer", chapter_title: "", book_document_id: null, chapters: 13 }],
     });
+    backend.last_verse = () => 39;
     renderIn(<GoTo />);
     await waitFor(() => expect(calls.some((c) => c.cmd === "list_publications")).toBe(true));
     await new Promise((r) => setTimeout(r, 50));
@@ -671,6 +672,9 @@ describe("Go to", () => {
     fireEvent.keyDown(window, { key: "g", ctrlKey: true });
     const again = await screen.findByLabelText("Reference, for example Heb 10:24");
     await waitFor(() => expect((screen.getByRole("button", { name: "Go" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(again, { target: { value: "Heb 10:999" } });
+    fireEvent.submit(again.closest("form")!);
+    expect(await screen.findByText("No such place in this Bible.")).toBeTruthy();
     fireEvent.change(again, { target: { value: "Heb 10:24" } });
     fireEvent.submit(again.closest("form")!);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());

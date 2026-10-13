@@ -175,6 +175,12 @@ pub fn research_verses(
     }
 }
 
+/// The highest verse number of a chapter of a Bible.
+pub fn last_verse(library: &Library, bible_dir: &str, book: i64, chapter: i64) -> ApiResult<i64> {
+    let (_, bible) = open_entry(library, bible_dir)?;
+    bible.last_verse(book, chapter).map_err(err)
+}
+
 /// An excerpt of the Research Guide for a verse.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResearchEntry {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LocateFixed } from "lucide-react";
 import { BarButton, useApp } from "@/app";
 import { api, chapterTarget } from "@/lib/api";
-import { bibleChoices, namedBooks, parseReference, pickBible } from "@/lib/bible";
+import { namedBooks, parseReference, pickBible } from "@/lib/bible";
 import { inLanguage } from "@/lib/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,8 +38,9 @@ export function GoTo() {
     // The Bible open in the reader wins, then the one chosen for the language.
     const openDir = view.name === "reader" ? view.target.publication : "dir" in view ? view.dir : null;
     const open = publications.find((p) => p.isBible && p.dir === openDir);
-    const chosen = pickBible(bibleChoices(lang, inLanguage(publications, lang), []), bibles[lang] ?? null);
-    const found = open ?? (chosen?.dir ? publications.find((p) => p.dir === chosen.dir) : undefined);
+    const here = inLanguage(publications, lang).filter((p) => p.isBible);
+    const chosen = pickBible(here, bibles[lang] ?? null);
+    const found = open ?? chosen;
     if (!found) return toast(t("No Bible in this language in your library yet"));
     before.current = document.activeElement;
     setBible(null);
@@ -90,9 +91,16 @@ export function GoTo() {
   }, [open]);
 
   if (!open) return null;
-  const go = () => {
+  const go = async () => {
     const ref = bible && parseReference(text, bible.books);
     if (!bible || !ref) return setMissed(true);
+    try {
+      if (ref.verse != null && (ref.verse < 1 || ref.verse > (await api.lastVerse(bible.dir, ref.book, ref.chapter)))) {
+        return setMissed(true);
+      }
+    } catch (e) {
+      return toast(String(e));
+    }
     setOpen(false);
     openTarget(chapterTarget(bible.dir, ref.book, ref.chapter, ref.verse ?? 1));
   };
@@ -119,7 +127,7 @@ export function GoTo() {
         }}
         onSubmit={(e) => {
           e.preventDefault();
-          go();
+          void go();
         }}
         className="flex w-[min(90vw,420px)] flex-col gap-3 rounded-md border border-line bg-surface p-4 shadow-sm"
       >

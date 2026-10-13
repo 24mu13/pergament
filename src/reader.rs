@@ -35,9 +35,6 @@ pub struct BibleBook {
     pub chapter_title: String,
     pub book_document_id: Option<i64>,
     pub chapters: i64,
-    /// Verses in each chapter, in chapter order. A chapter with a verse 0 counts it, so this
-    /// may exceed the last verse number by one.
-    pub verses: Vec<i64>,
 }
 
 /// A verse position: book, chapter, verse.
@@ -272,35 +269,19 @@ impl Publication {
             .conn
             .prepare(&format!("{BOOK_SELECT} ORDER BY b.BibleBookId"))?;
         let rows = stmt.query_map([], book_from_row)?;
-        let mut books: Vec<BibleBook> = rows.collect::<rusqlite::Result<_>>()?;
-        for book in &mut books {
-            book.verses = self.chapter_verses(book.number)?;
-        }
-        Ok(books)
-    }
-
-    fn chapter_verses(&self, book: i64) -> Result<Vec<i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT LastVerseId - FirstVerseId + 1 FROM BibleChapter
-             WHERE BookNumber = ?1 ORDER BY ChapterNumber",
-        )?;
-        let rows = stmt.query_map([book], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn bible_book(&self, number: i64) -> Result<BibleBook> {
         self.require_bible()?;
-        let mut book = self
-            .conn
+        self.conn
             .query_row(
                 &format!("{BOOK_SELECT} WHERE b.BibleBookId = ?1"),
                 [number],
                 book_from_row,
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("Bible book {number}")))?;
-        book.verses = self.chapter_verses(number)?;
-        Ok(book)
+            .ok_or_else(|| Error::NotFound(format!("Bible book {number}")))
     }
 
     pub fn chapter(&self, book: i64, chapter: i64) -> Result<Chapter> {
@@ -377,23 +358,29 @@ impl Publication {
             )
             .optional()?
             .ok_or_else(|| Error::NotFound(format!("verse id {verse_id}")))?;
-        let verse = if label.trim().is_empty() {
-            0
-        } else if label.contains("class=\"cl\"") {
-            1
-        } else {
-            label
-                .chars()
-                .filter(char::is_ascii_digit)
-                .collect::<String>()
-                .parse()
-                .unwrap_or(1)
-        };
+        let verse = verse_number(&label);
         Ok(VerseRef {
             book,
             chapter,
             verse,
         })
+    }
+
+    /// The highest verse number of a chapter, which the verse rows alone do not
+    /// give: some Bibles leave verses out, and a Psalm heading is a row without a number.
+    pub fn last_verse(&self, book: i64, chapter: i64) -> Result<i64> {
+        self.require_bible()?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT IFNULL(v.Label, '') FROM BibleVerse v JOIN BibleChapter c
+               ON v.BibleVerseId BETWEEN c.FirstVerseId AND c.LastVerseId
+             WHERE c.BookNumber = ?1 AND c.ChapterNumber = ?2",
+        )?;
+        let labels = stmt.query_map([book, chapter], |r| r.get::<_, String>(0))?;
+        let mut last = 0;
+        for label in labels {
+            last = last.max(verse_number(&label?));
+        }
+        Ok(last)
     }
 
     /// The publication's navigation tree. Uses the `jwpub` view when there
@@ -965,6 +952,24 @@ fn abbreviation_of(label: &str) -> Option<String> {
     (valid && tail.starts_with(|c: char| c.is_ascii_digit())).then(|| word.to_owned())
 }
 
+/// The verse number a `BibleVerse.Label` stands for. The first verse of a
+/// chapter is labelled with the chapter number (class `cl`) and a Psalm
+/// superscription (verse 0) has an empty label.
+fn verse_number(label: &str) -> i64 {
+    if label.trim().is_empty() {
+        0
+    } else if label.contains("class=\"cl\"") {
+        1
+    } else {
+        label
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap_or(1)
+    }
+}
+
 const BOOK_SELECT: &str = "SELECT b.BibleBookId, IFNULL(b.BookDisplayTitle, ''),
         IFNULL(b.ChapterDisplayTitle, ''), b.BookDocumentId,
         (SELECT count(*) FROM BibleChapter c WHERE c.BookNumber = b.BibleBookId)
@@ -977,13 +982,20 @@ fn book_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<BibleBook> {
         chapter_title: r.get(2)?,
         book_document_id: r.get(3)?,
         chapters: r.get(4)?,
-        verses: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verse_numbers_from_labels() {
+        assert_eq!(verse_number(""), 0);
+        assert_eq!(verse_number(" "), 0);
+        assert_eq!(verse_number("<span class=\"cl\">3</span>"), 1);
+        assert_eq!(verse_number("<span class=\"vl\">27</span>"), 27);
+    }
 
     #[test]
     fn abbreviations_from_labels() {

@@ -269,19 +269,3 @@ describe("namedBooks", () => {
     expect(parseReference("Heb 10:24", books)).toBeNull();
   });
 });
-
-describe("parseReference verses", () => {
-  const books = [
-    { number: 58, title: "Hebräer", chapters: 13, verses: [14, 18, 19, 16, 14, 20, 28, 13, 28, 39, 40, 29, 25] },
-    { number: 63, title: "2. Johannes", chapters: 1, verses: [13] },
-  ];
-  it("rejects verses that do not exist", () => {
-    expect(parseReference("Heb 10:999", books)).toBeNull();
-    expect(parseReference("Heb 10:0", books)).toBeNull();
-    expect(parseReference("2. Johannes 14", books)).toBeNull();
-  });
-  it("accepts verses that do", () => {
-    expect(parseReference("Heb 10:24", books)).toEqual({ book: 58, chapter: 10, verse: 24 });
-    expect(parseReference("2. Johannes 13", books)).toEqual({ book: 63, chapter: 1, verse: 13 });
-  });
-});
