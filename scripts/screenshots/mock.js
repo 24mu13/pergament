@@ -644,6 +644,7 @@
     catalog_search: () => [],
     catalog_languages: () => [],
     favorite_entries: () => [],
+    book_overview: () => ({ document: null, video: null }),
     chapter_study: ({ dir, book, chapter }) =>
       dir === "lbn_E" && book === 2 && chapter === 10 ? L10_STUDY : { outlineTitle: null, outline: [], verses: [] },
     catalog_cached: () => true,

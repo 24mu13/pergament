@@ -517,22 +517,29 @@ impl Publication {
     }
 
     /// Cross references of a Bible book document attached to verses in
-    /// `first..=last`: `(verse id, block, first verse, last verse)`, in order.
+    /// `first..=last`, in order.
     pub fn citations_for_verses(
         &self,
         document_id: i64,
         first: i64,
         last: i64,
-    ) -> Result<Vec<(i64, i64, i64, i64)>> {
+    ) -> Result<Vec<VerseCitation>> {
         let mut stmt = self.conn.prepare(
             "SELECT BibleVerseId, BlockNumber, FirstBibleVerseId,
-                    IFNULL(LastBibleVerseId, FirstBibleVerseId)
+                    IFNULL(LastBibleVerseId, FirstBibleVerseId),
+                    IFNULL(MarginalClassification, 1) = ?4
              FROM BibleCitation
              WHERE DocumentId = ?1 AND BibleVerseId BETWEEN ?2 AND ?3
              ORDER BY BibleVerseId, BlockNumber, ElementNumber",
         )?;
-        let rows = stmt.query_map(params![document_id, first, last], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        let rows = stmt.query_map(params![document_id, first, last, PARALLEL_ACCOUNT], |r| {
+            Ok(VerseCitation {
+                verse: r.get(0)?,
+                block: r.get(1)?,
+                first: r.get(2)?,
+                last: r.get(3)?,
+                parallel: r.get(4)?,
+            })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -550,6 +557,41 @@ impl Publication {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// The document that lays out a book's overview (an outline, lettered in the Gospels), if it has one.
+    pub fn overview_document(&self, book: i64) -> Result<Option<i64>> {
+        self.require_bible()?;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT COALESCE(OutlineDocumentId, OverviewDocumentId) FROM BibleBook WHERE BibleBookId = ?1",
+                [book],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The introduction video of a book, as its key symbol and track; not every book has one yet. Other videos of
+    /// the book's documents are clips inside notes and carry no key symbol. A query error (older publications may
+    /// lack these tables) counts as "no video"; the overview itself still works without one.
+    pub fn book_video(&self, book: i64) -> Result<Option<(String, u32)>> {
+        self.require_bible()?;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT m.KeySymbol, m.Track FROM BibleBook b
+                 JOIN DocumentMultimedia dm ON dm.DocumentId IN (b.BookDocumentId, b.IntroDocumentId)
+                 JOIN Multimedia m ON m.MultimediaId = dm.MultimediaId
+                 WHERE b.BibleBookId = ?1 AND m.MimeType LIKE 'video/%'
+                   AND m.KeySymbol IS NOT NULL AND m.KeySymbol <> '' AND m.Track IS NOT NULL
+                 ORDER BY m.MultimediaId LIMIT 1",
+                [book],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
+            )
+            .optional()
+            .unwrap_or(None))
     }
 
     /// Outline entries (below the chapter level) overlapping `chapter`.
@@ -797,6 +839,21 @@ fn span_text(caption: &str, class: &str) -> String {
         .and_then(|(_, rest)| rest.split_once("</span>"))
         .map(|(text, _)| strip_tags(text).trim().to_owned())
         .unwrap_or_default()
+}
+
+/// `BibleCitation.MarginalClassification` of a reference to the same event in another Gospel (Mat 4:1 → Mar 1:12).
+const PARALLEL_ACCOUNT: i64 = 2;
+
+/// A cross reference attached to a verse.
+#[derive(Debug, Clone)]
+pub struct VerseCitation {
+    pub verse: i64,
+    pub block: i64,
+    /// Verse ids of the cited range.
+    pub first: i64,
+    pub last: i64,
+    /// Whether it cites a parallel account.
+    pub parallel: bool,
 }
 
 /// An outline line, e.g. "Abram zieht von Haran nach Kanaan" for 12:1-9.

@@ -405,4 +405,24 @@ fn chapter_study_genesis_12() {
             .iter()
             .any(|v| !v.notes.is_empty())
     );
+
+    // The parallel accounts of Matthew 4:1 are marked, the other references are not.
+    let m4 = r.chapter_study(40, 4).unwrap();
+    let v1 = m4.verses.iter().find(|v| v.verse == 1).unwrap();
+    let parallel: Vec<_> = v1.xrefs[0]
+        .refs
+        .iter()
+        .filter(|r| r.parallel)
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(parallel, ["Mar 1:12, 13", "Luk 4:1-4"]);
+    assert!(v1.xrefs[0].refs.iter().any(|r| !r.parallel));
+
+    // A book's overview is a document of its own, and so is its intro video.
+    let o = r.book_overview(40, Some("X")).unwrap();
+    let video = o.video.as_ref().unwrap();
+    assert_eq!((video.pub_symbol.as_str(), video.track), ("nwtsv", 400));
+    let doc = r.document(o.document.unwrap()).unwrap();
+    assert!(doc.contains("Übersicht über Matthäus"));
+    assert!(doc.contains("<strong>A.</strong>"));
 }

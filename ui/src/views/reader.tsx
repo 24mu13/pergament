@@ -24,6 +24,7 @@ import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
 import { MarkToolbar, NoteCard, NoteEditor } from "@/components/notes";
 import { GoToButton } from "@/components/go-to";
+import { OutlineSection } from "@/components/outline-section";
 import { splitPage, verseKeyFromId } from "@/lib/page";
 import { cn } from "@/lib/utils";
 import { addDays, fromDateNumber, isoDate, longDate } from "@/lib/dates";
@@ -48,16 +49,6 @@ const verseKey = (v: { chapter: number; verse: number }) => `${v.chapter}:${v.ve
 function verseKeyOfSpan(id: string): string | null {
   const full = verseKeyFromId(id);
   return full ? full.split(":").slice(1).join(":") : null;
-}
-
-/** Outline range like "1-9" or "7". */
-function outlineRange(o: ChapterStudy["outline"][number]): string {
-  if (o.end_verse == null || (o.begin_chapter === o.end_chapter && o.begin_verse === o.end_verse)) {
-    return `${o.begin_verse}`;
-  }
-  return o.begin_chapter === o.end_chapter
-    ? `${o.begin_verse}-${o.end_verse}`
-    : `${o.begin_chapter}:${o.begin_verse}–${o.end_chapter}:${o.end_verse}`;
 }
 
 export function ReaderView({
@@ -647,6 +638,38 @@ interface Editing {
   blockIdentifier?: number;
 }
 
+function RefLinks({ refs }: { refs: VerseStudy["xrefs"][number]["refs"] }) {
+  return refs.map((r, i) => (
+    <span key={i}>
+      <a href={r.href}>{r.label}</a>
+      {i < refs.length - 1 && "; "}
+    </span>
+  ));
+}
+
+/** A marginal reference block; the parallel accounts of the verse are set apart from the other references. */
+function XrefBlock({ x }: { x: VerseStudy["xrefs"][number] }) {
+  const parallel = x.refs.filter((r) => r.parallel);
+  const others = x.refs.filter((r) => !r.parallel);
+  return (
+    <>
+      {parallel.length > 0 && (
+        <p className="mb-2">
+          <span className="mr-2 italic text-fg/80">{x.marker}</span>
+          <span className="mr-1 font-semibold">{t("Parallel accounts")}:</span>
+          <RefLinks refs={parallel} />
+        </p>
+      )}
+      {others.length > 0 && (
+        <p className="mb-2">
+          {parallel.length === 0 && <span className="mr-2 italic text-fg/80">{x.marker}</span>}
+          <RefLinks refs={others} />
+        </p>
+      )}
+    </>
+  );
+}
+
 function VerseSection({
   v,
   selected,
@@ -668,15 +691,7 @@ function VerseSection({
         </div>
       ))}
       {v.xrefs.map((x) => (
-        <p key={`x${x.block}`} className="mb-2">
-          <span className="mr-2 italic text-fg/80">{x.marker}</span>
-          {x.refs.map((r, i) => (
-            <span key={i}>
-              <a href={r.href}>{r.label}</a>
-              {i < x.refs.length - 1 && "; "}
-            </span>
-          ))}
-        </p>
+        <XrefBlock key={`x${x.block}`} x={x} />
       ))}
       {v.notes.map((n, i) => (
         <div key={`n${i}`} className="pane-content mb-2" dangerouslySetInnerHTML={{ __html: n }} />
@@ -713,19 +728,7 @@ function StudyPane({
   verses.sort((a, b) => a.chapter - b.chapter || a.verse - b.verse);
   return (
     <>
-      {study.outline.length > 0 && (
-        <section className="mb-5">
-          <h3 className="mb-2 text-sm font-semibold">{study.outlineTitle ?? t("Outline")}</h3>
-          {study.outline.map((o, i) => (
-            <div key={i} style={{ paddingLeft: `${Math.max(0, o.level - 2) * 1.3}rem` }}>
-              {o.text}{" "}
-              <a className="text-xs" href={`#v${book}-${o.begin_chapter}-${o.begin_verse}-1`}>
-                ({outlineRange(o)})
-              </a>
-            </div>
-          ))}
-        </section>
-      )}
+      <OutlineSection title={study.outlineTitle} outline={study.outline} book={book} />
       {verses.map((v) => (
         <VerseSection
           key={verseKey(v)}

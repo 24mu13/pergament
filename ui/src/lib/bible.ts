@@ -1,4 +1,4 @@
-import type { TocNode } from "./api";
+import type { CatalogEntry, TocNode } from "./api";
 
 /** "1. Mose (Genesis)" -> "1. Mose" for compact tiles. */
 export function shortBookName(title: string): string {
@@ -78,4 +78,36 @@ export function parseReference(input: string, books: { number: number; title: st
   const chapter = m[3] ? Number(m[3]) : 1;
   if (chapter < 1 || chapter > book.chapters) return null;
   return { book: book.number, chapter, verse: m[4] ? Number(m[4]) : null };
+}
+
+/** One Bible a language can be read in: downloaded (`dir`), in the catalog (`entry`), or both. */
+export interface BibleChoice {
+  lang: string;
+  symbol: string;
+  title: string;
+  dir: string | null;
+  entry: CatalogEntry | null;
+}
+
+/** The Bibles of one language: those in the library, then the catalog ones not downloaded yet. */
+export function bibleChoices(
+  lang: string,
+  library: { dir: string; symbol: string; title: string; shortTitle: string | null; langCode: string | null; isBible: boolean }[],
+  catalog: CatalogEntry[],
+): BibleChoice[] {
+  const out: BibleChoice[] = library
+    .filter((p) => p.isBible && p.langCode === lang)
+    .map((p) => ({ lang, symbol: p.symbol, title: p.shortTitle ?? p.title, dir: p.dir, entry: null }));
+  for (const e of catalog) {
+    const own = out.find((c) => c.symbol === e.item.symbol);
+    if (own) own.entry ??= e;
+    else out.push({ lang, symbol: e.item.symbol, title: e.item.short_title ?? e.item.title, dir: e.local, entry: e });
+  }
+  return out;
+}
+
+/** The Bible a language opens: the one picked last, else the study edition, else the first downloaded one. */
+export function pickBible<T extends { symbol: string; dir: string | null }>(choices: T[], preferred: string | null): T | undefined {
+  const here = choices.filter((c) => c.dir != null);
+  return here.find((c) => c.symbol === preferred) ?? here.find((c) => c.symbol === "nwtsty") ?? here[0];
 }

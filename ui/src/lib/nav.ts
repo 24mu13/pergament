@@ -4,6 +4,7 @@ export type LibraryTab = "publications" | "video" | "audio" | "updates" | "downl
 
 type ViewKind =
   | { name: "home" }
+  | { name: "bible" }
   | { name: "publication"; dir: string; tab?: number }
   | { name: "chapters"; dir: string; book: number }
   | { name: "reader"; target: Target; note?: boolean; noteGuid?: string }

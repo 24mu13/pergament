@@ -16,6 +16,7 @@ use std::path::Path;
 use lol_html::html_content::{Element, TextChunk};
 use lol_html::{RewriteStrSettings, element, rewrite_str, text};
 
+use crate::links::{MediaKind, MediaRef};
 use crate::reader::{Chapter, OutlineEntry, Publication, VerseRef};
 use crate::{Error, Result};
 
@@ -33,6 +34,16 @@ pub struct Renderer<'a> {
     options: RenderOptions,
     sanitizer: ammonia::Builder<'static>,
     abbreviations: std::cell::OnceCell<std::collections::HashMap<i64, String>>,
+}
+
+/// The overview of a Bible book, shown with its chapters.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookOverview {
+    /// The document with the overview, to be rendered as a page.
+    pub document: Option<i64>,
+    /// The book's introduction video, if it has one yet.
+    pub video: Option<MediaRef>,
 }
 
 /// Study pane content of a Bible chapter.
@@ -76,6 +87,8 @@ pub struct StudyXref {
 pub struct StudyRef {
     pub href: String,
     pub label: String,
+    /// A parallel account, such as Mark 1:12 for Matthew 4:1.
+    pub parallel: bool,
 }
 
 /// Markers found while rewriting: `(number, marker text)`.
@@ -292,11 +305,12 @@ impl<'a> Renderer<'a> {
                     });
             }
             let mut last_block = None;
-            for (verse, block, first, last) in
-                self.publication
-                    .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
+            for c in self
+                .publication
+                .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
             {
-                let (href, label) = self.reference(first, last)?;
+                let (verse, block) = (c.verse, c.block);
+                let (href, label) = self.reference(c.first, c.last)?;
                 let v = verse_entry(&mut verses, self.publication, verse)?;
                 if last_block != Some(block) || v.xrefs.is_empty() {
                     v.xrefs.push(StudyXref {
@@ -310,7 +324,11 @@ impl<'a> Renderer<'a> {
                     .last_mut()
                     .expect("pushed above")
                     .refs
-                    .push(StudyRef { href, label });
+                    .push(StudyRef {
+                        href,
+                        label,
+                        parallel: c.parallel,
+                    });
             }
         }
         for note in self
@@ -327,6 +345,24 @@ impl<'a> Renderer<'a> {
             outline_title: self.publication.overview_title(book)?,
             outline: self.publication.outline(book, chapter)?,
             verses: verses.into_values().collect(),
+        })
+    }
+
+    /// What the chapter list of a Bible book shows besides the chapters: its overview and introduction video.
+    pub fn book_overview(&self, book: i64, lang_code: Option<&str>) -> Result<BookOverview> {
+        let video = match (self.publication.book_video(book)?, lang_code) {
+            (Some((pub_symbol, track)), Some(lang)) => Some(MediaRef {
+                pub_symbol,
+                issue: None,
+                track,
+                kind: MediaKind::Video,
+                lang_code: lang.to_owned(),
+            }),
+            _ => None,
+        };
+        Ok(BookOverview {
+            video,
+            document: self.publication.overview_document(book)?,
         })
     }
 
