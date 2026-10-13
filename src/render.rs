@@ -76,6 +76,8 @@ pub struct StudyXref {
 pub struct StudyRef {
     pub href: String,
     pub label: String,
+    /// A parallel account, such as Mark 1:12 for Matthew 4:1.
+    pub parallel: bool,
 }
 
 /// Markers found while rewriting: `(number, marker text)`.
@@ -292,11 +294,12 @@ impl<'a> Renderer<'a> {
                     });
             }
             let mut last_block = None;
-            for (verse, block, first, last) in
-                self.publication
-                    .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
+            for c in self
+                .publication
+                .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
             {
-                let (href, label) = self.reference(first, last)?;
+                let (verse, block) = (c.verse, c.block);
+                let (href, label) = self.reference(c.first, c.last)?;
                 let v = verse_entry(&mut verses, self.publication, verse)?;
                 if last_block != Some(block) || v.xrefs.is_empty() {
                     v.xrefs.push(StudyXref {
@@ -310,7 +313,11 @@ impl<'a> Renderer<'a> {
                     .last_mut()
                     .expect("pushed above")
                     .refs
-                    .push(StudyRef { href, label });
+                    .push(StudyRef {
+                        href,
+                        label,
+                        parallel: c.parallel,
+                    });
             }
         }
         for note in self

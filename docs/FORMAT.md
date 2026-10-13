@@ -144,7 +144,11 @@ HTML fragments (no `<html>`/`<body>`), with elements carrying
   `N` is `BibleCitation.BlockNumber` within the book document; the rows with
   that block (ordered by `ElementNumber`) are the referenced verse ranges.
   Gen 2's first marker `mid=35` matches the chapter's `FirstBibleCitationId`
-  row.
+  row. `MarginalClassification` is per reference: 0 = rows without a
+  `BibleVerseId` (not attached to a verse), 1 = ordinary cross reference,
+  **2 = parallel account** (Mat 4:1 → Mar 1:12, 13 and Luk 4:1-4), 3 = quotation
+  from an earlier book (references in Matthew point into Isaiah, Micah, …). A
+  block can mix classes (555 do in the German Study Bible).
 - **Bible links**: `<a href="jwpub://b/NWTR/{book}:{ch}:{v}-{book}:{ch}:{v}" class="b">`.
 - **Publication links**: `<a href="jwpub://p/X:{MepsDocumentId}/" class="xt" data-xtid="N">`,
   where `X` is the MEPS language code. Some carry a suffix after the slash,
@@ -437,7 +441,7 @@ behavior. [own]
 - Exact semantics of `data-xtid` (likely the per-document extract number;
   not confirmed), `data-bid` (looks like `{block}-{element}`) and
   `data-vlid`.
-- `BibleCitation.MarginalClassification`, `SortPosition`.
+- `BibleCitation.SortPosition`.
 - The suffix in publication links like `jwpub://p/X:1001070144/1-1`.
 - `VerseMultimediaMap` (media attached to verses) and the Bible book intro videos (`DocumentMultimedia`) are not shown yet; only recordings linked from the text and those in the Video and Audio tabs play.
 - Full list of `Document.Class`/`Type` values across other publication types.

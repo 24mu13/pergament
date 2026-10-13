@@ -23,6 +23,7 @@ export const de: Record<string, string> = {
   "All languages": "Alle Sprachen",
   "Not downloaded": "Nicht heruntergeladen",
   "Pick a translation to download. More languages are in the language menu.": "Wähle eine Übersetzung zum Herunterladen. Weitere Sprachen findest du im Sprachmenü.",
+  "Parallel accounts": "Parallelberichte",
   "Language list unavailable: {error}": "Sprachliste nicht verfügbar: {error}",
   "Loading…": "Lädt…",
 

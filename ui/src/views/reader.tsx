@@ -647,6 +647,38 @@ interface Editing {
   blockIdentifier?: number;
 }
 
+function RefLinks({ refs }: { refs: VerseStudy["xrefs"][number]["refs"] }) {
+  return refs.map((r, i) => (
+    <span key={i}>
+      <a href={r.href}>{r.label}</a>
+      {i < refs.length - 1 && "; "}
+    </span>
+  ));
+}
+
+/** A marginal reference block; the parallel accounts of the verse are set apart from the other references. */
+function XrefBlock({ x }: { x: VerseStudy["xrefs"][number] }) {
+  const parallel = x.refs.filter((r) => r.parallel);
+  const others = x.refs.filter((r) => !r.parallel);
+  return (
+    <>
+      {parallel.length > 0 && (
+        <p className="mb-2">
+          <span className="mr-2 italic text-fg/80">{x.marker}</span>
+          <span className="mr-1 font-semibold">{t("Parallel accounts")}:</span>
+          <RefLinks refs={parallel} />
+        </p>
+      )}
+      {others.length > 0 && (
+        <p className="mb-2">
+          {parallel.length === 0 && <span className="mr-2 italic text-fg/80">{x.marker}</span>}
+          <RefLinks refs={others} />
+        </p>
+      )}
+    </>
+  );
+}
+
 function VerseSection({
   v,
   selected,
@@ -668,15 +700,7 @@ function VerseSection({
         </div>
       ))}
       {v.xrefs.map((x) => (
-        <p key={`x${x.block}`} className="mb-2">
-          <span className="mr-2 italic text-fg/80">{x.marker}</span>
-          {x.refs.map((r, i) => (
-            <span key={i}>
-              <a href={r.href}>{r.label}</a>
-              {i < x.refs.length - 1 && "; "}
-            </span>
-          ))}
-        </p>
+        <XrefBlock key={`x${x.block}`} x={x} />
       ))}
       {v.notes.map((n, i) => (
         <div key={`n${i}`} className="pane-content mb-2" dangerouslySetInnerHTML={{ __html: n }} />

@@ -328,7 +328,7 @@ export interface VerseStudy {
   chapter: number;
   verse: number;
   footnotes: { marker: string; index: number; html: string }[];
-  xrefs: { marker: string; block: number; refs: { href: string; label: string }[] }[];
+  xrefs: { marker: string; block: number; refs: { href: string; label: string; parallel: boolean }[] }[];
   notes: string[];
 }
 

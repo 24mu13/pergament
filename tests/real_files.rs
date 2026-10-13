@@ -405,4 +405,22 @@ fn chapter_study_genesis_12() {
             .iter()
             .any(|v| !v.notes.is_empty())
     );
+
+    // The parallel accounts of Matthew 4:1 are marked, the other references are not.
+    let m4 = r.chapter_study(40, 4).unwrap();
+    let v1 = m4.verses.iter().find(|v| v.verse == 1).unwrap();
+    let parallel: Vec<_> = v1.xrefs[0]
+        .refs
+        .iter()
+        .filter(|r| r.parallel)
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(parallel, ["Mar 1:12, 13", "Luk 4:1-4"]);
+    assert!(v1.xrefs[0].refs.iter().any(|r| !r.parallel));
+
+    // The overview of a whole book lists every chapter, not just one.
+    let o = r.book_overview(1).unwrap();
+    assert_eq!(o.outline_title.as_deref(), Some("1. Mose: Übersicht"));
+    assert!(o.outline.iter().any(|e| e.begin_chapter == 1));
+    assert!(o.outline.iter().any(|e| e.begin_chapter == 12));
 }
