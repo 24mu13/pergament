@@ -1,7 +1,7 @@
 //! Updated versions of downloaded publications: the catalog lists a file
 //! with a different signature than the one that was imported.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -67,27 +67,45 @@ pub fn available(library: &Library, catalog: &Catalog) -> Result<Vec<Update>> {
     let mut found = Vec::new();
     let entries: Vec<Entry> = library.list()?.into_iter().filter(checked).collect();
     // One pass per language instead of a catalog scan per publication.
-    let mut by_language: HashMap<i64, HashMap<(String, i64), CatalogItem>> = HashMap::new();
+    let mut wanted: HashMap<i64, HashSet<(&str, i64)>> = HashMap::new();
     for entry in &entries {
-        if by_language.contains_key(&entry.meps_language) {
-            continue;
-        }
-        let all = catalog.in_language(entry.meps_language)?;
+        // Undated publications have issue tag 0 in the catalog.
+        let issue = entry.issue_tag.parse::<i64>().unwrap_or(0);
+        wanted
+            .entry(entry.meps_language)
+            .or_default()
+            .insert((entry.symbol.as_str(), issue));
+    }
+    let mut by_language: HashMap<i64, HashMap<(String, i64), CatalogItem>> = HashMap::new();
+    for (&language, keys) in &wanted {
+        let all = catalog.in_language(language)?;
         // The catalog lists some publications twice; like `find`, the first row
         // counts. The key symbol wins over a dated symbol that happens to be the same.
+        // Only the installed ones are kept.
         let mut items = HashMap::new();
         for item in &all {
-            items.entry((item.key_symbol.clone(), item.issue_tag)).or_insert_with(|| item.clone());
+            if keys.contains(&(item.key_symbol.as_str(), item.issue_tag)) {
+                items
+                    .entry((item.key_symbol.clone(), item.issue_tag))
+                    .or_insert_with(|| item.clone());
+            }
         }
         for item in all {
-            items.entry((item.symbol.clone(), item.issue_tag)).or_insert(item);
+            if keys.contains(&(item.symbol.as_str(), item.issue_tag)) {
+                items
+                    .entry((item.symbol.clone(), item.issue_tag))
+                    .or_insert(item);
+            }
         }
-        by_language.insert(entry.meps_language, items);
+        by_language.insert(language, items);
     }
     for entry in entries {
         // Undated publications have issue tag 0 in the catalog.
         let issue = entry.issue_tag.parse::<i64>().unwrap_or(0);
-        let Some(item) = by_language[&entry.meps_language].get(&(entry.symbol.clone(), issue)).cloned() else {
+        let Some(item) = by_language[&entry.meps_language]
+            .get(&(entry.symbol.clone(), issue))
+            .cloned()
+        else {
             continue;
         };
         let Some(size) = dir_size(&library.publication_dir(&entry)) else {
