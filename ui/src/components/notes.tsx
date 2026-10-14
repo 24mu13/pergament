@@ -122,7 +122,7 @@ export function NoteCard({
 const EDGE = 16;
 /** The editor's size until the user resizes it, and the smallest it can be. */
 const DEFAULT_SIZE = { width: 440, height: 420 };
-const MIN_SIZE = { width: 320, height: 280 };
+const MIN_SIZE = { width: 380, height: 320 };
 
 /** How far one arrow key press on the grip moves or resizes the editor. */
 const KEY_STEP = 16;
@@ -330,7 +330,7 @@ export function NoteEditor({
             : { visibility: "hidden" }
       }
       className={cn(
-        "absolute z-35 flex min-h-[280px] min-w-[320px] flex-col gap-3 overflow-hidden border border-line bg-surface p-4 shadow-lg will-change-transform",
+        "absolute z-35 flex min-h-[320px] min-w-[380px] flex-col gap-3 overflow-hidden border border-line bg-surface p-4 shadow-lg will-change-transform",
         full ? "rounded-none" : "resize rounded-md",
       )}
     >
