@@ -450,7 +450,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (report.conflicts.length > 0) {
           // The merge is done either way; without a dialog the list goes to a toast.
           const text = conflictText(report.conflicts);
-          await messageDialog(text, { title: t("Conflicts"), kind: "warning" }).catch(() => toast(text));
+          try {
+            await messageDialog(text, { title: t("Conflicts"), kind: "warning" });
+          } catch {
+            toast(text);
+          }
         }
         return;
       }
