@@ -452,6 +452,180 @@ describe("Floating note", () => {
     expect(JSON.parse(localStorage.getItem("noteSize")!).height).toBe(height - 16);
   });
 
+  it("reopens where, as large as and maximized or not as it was left", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    let editor = await openEditor();
+    const grip = within(editor).getByRole("button", { name: /Move note/ });
+    fireEvent.keyDown(grip, { key: "ArrowLeft" });
+    const place = editor.style.transform;
+    const handle = within(editor).getByTestId("note-resize-se");
+    expect(fireEvent.contextMenu(handle)).toBe(false);
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 500, clientY: 500 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 450, clientY: 460 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    expect(editor.style.width).toBe("390px");
+    expect(editor.style.height).toBe("380px");
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByText("open"));
+    editor = await screen.findByRole("dialog", { name: "New note" });
+    expect(editor.style.transform).toBe(place);
+    expect(editor.style.width).toBe("390px");
+    expect(editor.style.height).toBe("380px");
+    fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
+    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByText("open"));
+    editor = await screen.findByRole("dialog", { name: "New note" });
+    expect(within(editor).getByRole("button", { name: "Restore size" })).toBeTruthy();
+  });
+
+  it("grows up and to the left from its top left corner", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    const editor = await openEditor();
+    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
+    const handle = within(editor).getByTestId("note-resize-nw");
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 300, clientY: 300 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 240, clientY: 250 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    expect(editor.style.width).toBe("500px");
+    expect(editor.style.height).toBe("470px");
+    expect(editor.style.transform).toBe(`translate(${x - 60}px, ${y - 50}px)`);
+    expect(JSON.parse(localStorage.getItem("notePos")!)).toEqual({ x: x - 60, y: y - 50 });
+  });
+
+  it("stops at its smallest size and at the edges when resized from the top left", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    const editor = await openEditor();
+    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
+    const handle = within(editor).getByTestId("note-resize-nw");
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 300, clientY: 300 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 900, clientY: 900 });
+    expect(editor.style.width).toBe("380px");
+    expect(editor.style.height).toBe("320px");
+    // The right and bottom edges stay where they were.
+    expect(editor.style.transform).toBe(`translate(${x + 60}px, ${y + 100}px)`);
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: -5000, clientY: -5000 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    expect(editor.style.transform).toBe("translate(0px, 0px)");
+    expect(editor.style.width).toBe(`${x + 440}px`);
+    expect(editor.style.height).toBe(`${y + 420}px`);
+  });
+
+  it("keeps the chosen size on an axis a small window only capped", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    const width = window.innerWidth;
+    localStorage.setItem("noteSize", JSON.stringify({ width: 700, height: 400 }));
+    try {
+      const editor = await openEditor();
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      fireEvent(window, new Event("resize"));
+      const handle = within(editor).getByTestId("note-resize-s");
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+      fireEvent.pointerUp(handle, { pointerId: 1 });
+      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 400 });
+      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowRight", shiftKey: true });
+      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 400 });
+      expect(localStorage.getItem("notePos")).toBeNull();
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 100, clientY: 80 });
+      fireEvent.pointerUp(handle, { pointerId: 1 });
+      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 380 });
+      // The capped width is not left behind: back in a wide window the panel shows the chosen one.
+      expect(editor.style.width).toBe("700px");
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    }
+  });
+
+  it("raises a size saved below the minimum, so it cannot be moved past the edges", async () => {
+    localStorage.setItem("noteSize", JSON.stringify({ width: 320, height: 280 }));
+    const editor = await openEditor();
+    expect(editor.style.width).toBe("380px");
+    expect(editor.style.height).toBe("320px");
+    const grip = within(editor).getByRole("button", { name: /Move note/ });
+    for (let i = 0; i < 80; i++) fireEvent.keyDown(grip, { key: i % 2 ? "ArrowRight" : "ArrowDown" });
+    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
+    expect(x + 380).toBeLessThanOrEqual(window.innerWidth);
+    expect(y + 320).toBeLessThanOrEqual(window.innerHeight);
+  });
+
+  it("does not remember a place a small window forced when the header is only clicked", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    localStorage.setItem("notePos", JSON.stringify({ x: 2000, y: 100 }));
+    const editor = await openEditor();
+    const header = within(editor).getByRole("heading").parentElement!;
+    fireEvent.pointerDown(header, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(header, { pointerId: 1 });
+    expect(JSON.parse(localStorage.getItem("notePos")!)).toEqual({ x: 2000, y: 100 });
+  });
+
+  it("opens above the player bar without forgetting a taller chosen size", async () => {
+    // The content area above a player bar, 400px tall.
+    const content = document.body.appendChild(document.createElement("div"));
+    content.id = "content";
+    const above = content.appendChild(document.createElement("div"));
+    Object.defineProperty(above, "offsetHeight", { configurable: true, value: 400 });
+    localStorage.setItem("noteSize", JSON.stringify({ width: 440, height: 800 }));
+    try {
+      const editor = await openEditor();
+      const y = Number(/translate\(-?\d+px, (-?\d+)px/.exec(editor.style.transform)![1]);
+      expect(y + parseInt(editor.style.height)).toBe(400 - 16);
+      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowRight", shiftKey: true });
+      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 456, height: 800 });
+      expect(y + parseInt(editor.style.height)).toBe(400 - 16);
+      // Moved and reopened, it still ends above the bar.
+      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowLeft" });
+      fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      fireEvent.click(screen.getByText("open"));
+      const reopened = await screen.findByRole("dialog", { name: "New note" });
+      expect(Number(/translate\(-?\d+px, (-?\d+)px/.exec(reopened.style.transform)![1]) + parseInt(reopened.style.height)).toBe(400 - 16);
+    } finally {
+      content.remove();
+    }
+  });
+
+  it("moves a place saved in a taller window up above the player bar", async () => {
+    const height = window.innerHeight;
+    const content = document.body.appendChild(document.createElement("div"));
+    content.id = "content";
+    const above = content.appendChild(document.createElement("div"));
+    Object.defineProperty(above, "offsetHeight", { configurable: true, value: 600 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 680 });
+    localStorage.setItem("notePos", JSON.stringify({ x: 100, y: 650 }));
+    try {
+      const editor = await openEditor();
+      const y = Number(/translate\(-?\d+px, (-?\d+)px/.exec(editor.style.transform)![1]);
+      expect(editor.style.height).toBe("420px");
+      expect(y + 420).toBe(600 - 16);
+    } finally {
+      content.remove();
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+    }
+  });
+
+  it("keeps the chosen size when it opens in a window too small for it", async () => {
+    Element.prototype.setPointerCapture ??= () => undefined;
+    const height = window.innerHeight;
+    localStorage.setItem("noteSize", JSON.stringify({ width: 440, height: 600 }));
+    localStorage.setItem("notePos", JSON.stringify({ x: 100, y: 100 }));
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
+    try {
+      const editor = await openEditor();
+      expect(editor.style.maxHeight).toBe("500px");
+      const handle = within(editor).getByTestId("note-resize-e");
+      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 140, clientY: 100 });
+      fireEvent.pointerUp(handle, { pointerId: 1 });
+      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 480, height: 600 });
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+    }
+  });
+
   it("fits back into a window that shrank while maximized", async () => {
     const width = window.innerWidth;
     try {

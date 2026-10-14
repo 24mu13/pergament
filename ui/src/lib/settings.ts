@@ -221,3 +221,26 @@ export function loadNoteSize(): { width: number; height: number } | null {
 export function saveNoteSize(size: { width: number; height: number }) {
   write("noteSize", JSON.stringify(size));
 }
+
+/** Where the user last put the floating note editor, as its top left corner. */
+export function loadNotePos(): { x: number; y: number } | null {
+  try {
+    const p = JSON.parse(read("notePos") ?? "null");
+    return Number.isFinite(p?.x) && Number.isFinite(p?.y) ? { x: p.x, y: p.y } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveNotePos(pos: { x: number; y: number }) {
+  write("notePos", JSON.stringify(pos));
+}
+
+/** Whether the note editor was last left maximized. */
+export function loadNoteFull(): boolean {
+  return read("noteFull") === "1";
+}
+
+export function saveNoteFull(on: boolean) {
+  write("noteFull", on ? "1" : "0");
+}
