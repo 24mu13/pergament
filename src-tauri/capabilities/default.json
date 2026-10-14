@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main and display windows: core events; the main window also opens and saves files",
   "windows": ["main", "display"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "dialog:allow-ask"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "dialog:allow-ask", "dialog:allow-message"]
 }
