@@ -305,9 +305,9 @@ impl<'a> Renderer<'a> {
                     });
             }
             let mut last_block = None;
-            for c in self
-                .publication
-                .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
+            for c in
+                self.publication
+                    .citations_for_verses(doc, ch.first_verse_id, ch.last_verse_id)?
             {
                 let (verse, block) = (c.verse, c.block);
                 let (href, label) = self.reference(c.first, c.last)?;

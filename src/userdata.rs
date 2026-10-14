@@ -2233,7 +2233,12 @@ mod tests {
         // Root ignores the permissions, so there is nothing to check then.
         if failed {
             assert_eq!(fs::read(&safety).unwrap(), b"old copy");
-            assert!(!local.path().with_extension("db.before-restore.tmp").exists());
+            assert!(
+                !local
+                    .path()
+                    .with_extension("db.before-restore.tmp")
+                    .exists()
+            );
         }
     }
 
