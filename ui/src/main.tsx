@@ -6,6 +6,8 @@ import { ImageViewer } from "./components/image-viewer";
 import { PlayerHost } from "./components/player-host";
 import { NoteHost } from "./components/notes";
 import { isDisplayWindow } from "./lib/display";
+import { isNoteWindow } from "./lib/note-window";
+import { NoteWindowView } from "./views/note-window";
 import { DisplayView } from "./views/display";
 import { ChaptersView } from "./views/chapters";
 import { HomeView } from "./views/home";
@@ -97,11 +99,13 @@ function Shell() {
 
 installFocusModality();
 
-// The second display is the same page in another window; it shows only what the app sends.
+// The second display and the note window are the same page in other windows; each shows only what the app sends.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     {isDisplayWindow() ? (
       <DisplayView />
+    ) : isNoteWindow() ? (
+      <NoteWindowView />
     ) : (
       <AppProvider>
         <Shell />

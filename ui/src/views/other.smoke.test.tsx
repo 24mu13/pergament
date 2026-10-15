@@ -18,7 +18,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (p: string) => p,
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn() }));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "main" }) }));
+let closeRequested: ((e: { preventDefault: () => void }) => Promise<void>) | null = null;
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    label: "main",
+    onCloseRequested: async (h: typeof closeRequested) => {
+      closeRequested = h;
+      return () => undefined;
+    },
+  }),
+}));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), message: vi.fn(), open: vi.fn(), save: vi.fn() }));
 
@@ -32,6 +41,7 @@ import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
 import { NoteHost } from "@/components/notes";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { emitTo } from "@tauri-apps/api/event";
 
 beforeEach(() => {
   calls.length = 0;
@@ -280,16 +290,59 @@ describe("Floating note", () => {
       <>
         <span data-testid="view">{view.name}</span>
         <span data-testid="versions">{`${userVersion}/${notesVersion}`}</span>
-        <button onClick={() => void openNote({ note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 })}>
+        <button onClick={() => void openNote({ note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 }, { in: "pane" })}>
           open
         </button>
-        <button onClick={() => void openNote({ note: { title: "Another" } })}>other</button>
+        <button onClick={() => void openNote({ note: { title: "Another" } }, { in: "pane" })}>other</button>
         <button onClick={() => push({ name: "personal" })}>go</button>
       </>
     );
   }
 
   beforeEach(() => vi.mocked(ask).mockReset());
+
+  it("opens a note in the note window unless asked for the study pane", async () => {
+    backend.open_note_window = () => undefined;
+    function Opener() {
+      const { openNote } = useApp();
+      return <button onClick={() => void openNote({ note: { title: "Elsewhere" } })}>window</button>;
+    }
+    renderIn(
+      <>
+        <Opener />
+        <NoteHost />
+      </>,
+    );
+    fireEvent.click(screen.getByText("window"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_note_window")).toBe(true));
+    await waitFor(() =>
+      expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ draft: { note: { title: "Elsewhere" } } })),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before closing the main window with unsaved text", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <NoteHost />
+      </>,
+    );
+    await waitFor(() => expect(closeRequested).toBeTruthy());
+    const clean = { preventDefault: vi.fn() };
+    await act(() => closeRequested!(clean));
+    expect(ask).not.toHaveBeenCalled();
+    expect(clean.preventDefault).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("dialog", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    vi.mocked(ask).mockResolvedValue(false);
+    const dirty = { preventDefault: vi.fn() };
+    await act(() => closeRequested!(dirty));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(dirty.preventDefault).toHaveBeenCalled();
+  });
 
   it("stays open while navigating and saves to the page it was started on", async () => {
     backend.save_note = () => "n1";

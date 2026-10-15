@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { ReactNode } from "react";
 import { ask, message as messageDialog, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ArrowLeft,
   BookOpen,
@@ -26,6 +27,7 @@ export type { NoteDraft } from "@/lib/notes";
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
+import { NOTE_CLOSED, NOTE_DIRTY, NOTE_READY, NOTES_CHANGED, sendToNoteWindow, type NoteWindowMessage } from "@/lib/note-window";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
 import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
@@ -34,6 +36,7 @@ import {
   loadLayout,
   loadReadingFont,
   loadMergeBackups,
+  loadNoteWindowSize,
   loadSecondDisplay,
   loadUpdateCheck,
   saveSecondDisplay,
@@ -56,6 +59,7 @@ import {
   saveTheme,
   type Theme,
 } from "@/lib/settings";
+import { useSystemDark } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
 import { scroller } from "@/lib/scroll";
@@ -148,10 +152,10 @@ interface AppContextValue {
   /** Look up a recording that a publication links to and play it. */
   playRecording: (media: MediaRef) => Promise<void>;
   closePlayer: () => void;
-  /** The note being written. It floats over the app and stays open while the user navigates. */
+  /** The note written in the reader's study pane. It stays open while the user navigates. */
   note: { id: number; draft: NoteDraft } | null;
-  /** Open a note in the floating editor, asking first when that would drop unsaved text. */
-  openNote: (draft: NoteDraft) => Promise<void>;
+  /** Open a note to write: in the reader's study pane, or in the note window (the default). */
+  openNote: (draft: NoteDraft, options?: { in?: "pane" | "window" }) => Promise<void>;
   /**
    * Close the editor, asking first when that would drop unsaved text (`force`
    * skips that, after a save). With an `id`, only that note is closed.
@@ -179,19 +183,6 @@ export function useApp(): AppContextValue {
 }
 
 export const taskKey = (e: CatalogEntry) => `download:${e.item.symbol}:${e.item.issue_tag}`;
-
-function useSystemDark(): boolean {
-  const query = "(prefers-color-scheme: dark)";
-  const [dark, setDark] = useState(() => window.matchMedia?.(query).matches ?? false);
-  useEffect(() => {
-    const mq = window.matchMedia?.(query);
-    if (!mq) return;
-    const on = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return dark;
-}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [nav, dispatch] = useReducer(navReducer, initialNav);
@@ -557,13 +548,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
       askingDiscard.current = false;
     }
   }, []);
+  const [notesVersion, setNotesVersion] = useState(0);
+  const notesChanged = useCallback(() => setNotesVersion((v) => v + 1), []);
+  // The note window: the app sends it a note; one that opens later asks for it when ready.
+  const lastNoteMessage = useRef<NoteWindowMessage | null>(null);
+  const noteWindowDirty = useRef(false);
+  const showInWindow = useCallback(
+    async (message: NoteWindowMessage) => {
+      lastNoteMessage.current = message;
+      try {
+        const size = loadNoteWindowSize();
+        await api.openNoteWindow(size?.width, size?.height);
+        void sendToNoteWindow(message);
+      } catch (e) {
+        toast(t("Cannot open the note window: {error}", { error: String(e) }));
+      }
+    },
+    [toast],
+  );
+  useEffect(() => {
+    const subscriptions = [
+      listen(NOTE_READY, () => {
+        if (lastNoteMessage.current) void sendToNoteWindow(lastNoteMessage.current);
+      }),
+      listen<boolean>(NOTE_DIRTY, (e) => {
+        noteWindowDirty.current = e.payload;
+      }),
+      listen(NOTES_CHANGED, notesChanged),
+      listen(NOTE_CLOSED, () => {
+        lastNoteMessage.current = null;
+        noteWindowDirty.current = false;
+      }),
+    ];
+    return () => subscriptions.forEach((s) => void s.then((f) => f()));
+  }, [notesChanged]);
+  // Closing the app closes the note window too, so ask first when either editor holds unsaved text.
+  useEffect(() => {
+    const closing = getCurrentWebviewWindow().onCloseRequested(async (e) => {
+      if (!noteDirty.current && !noteWindowDirty.current) return;
+      const drop = await ask(t("The note you are writing has not been saved."), {
+        title: t("Discard note?"),
+        kind: "warning",
+        okLabel: t("Discard"),
+      }).catch(() => false);
+      if (!drop) e.preventDefault();
+    });
+    return () => void closing.then((f) => f());
+  }, []);
+
   const openNote = useCallback(
-    async (draft: NoteDraft) => {
+    async (draft: NoteDraft, { in: where = "window" }: { in?: "pane" | "window" } = {}) => {
+      if (where === "window") return showInWindow({ id: Date.now(), draft });
       if (!(await mayDiscard())) return;
       noteDirty.current = false;
       setNote({ id: Date.now(), draft });
     },
-    [mayDiscard],
+    [mayDiscard, showInWindow],
   );
   const closeNote = useCallback(
     async (id?: number, { force = false } = {}) => {
@@ -578,8 +618,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setNoteDirty = useCallback((dirty: boolean) => {
     noteDirty.current = dirty;
   }, []);
-  const [notesVersion, setNotesVersion] = useState(0);
-  const notesChanged = useCallback(() => setNotesVersion((v) => v + 1), []);
   const playRecording = useCallback(
     async (media: MediaRef) => {
       try {

@@ -149,6 +149,7 @@ export const de: Record<string, string> = {
   Delete: "Löschen",
   Save: "Speichern",
   "Discard note?": "Notiz verwerfen?",
+  "Cannot open the note window: {error}": "Das Notizfenster kann nicht geöffnet werden: {error}",
   "The note you are writing has not been saved.": "Die Notiz, die du gerade schreibst, ist noch nicht gespeichert.",
   Discard: "Verwerfen",
   Maximize: "Maximieren",
