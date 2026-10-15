@@ -130,10 +130,14 @@ jobs:
   # A single-file flatpak bundle from packaging/flatpak/, which only stages the
   # built files into the GNOME runtime sandbox. Added to the release the
   # release job made (or kept as a build artifact when started by hand).
+  # Ubuntu 24.04, not 22.04: noble's flatpak-builder 1.4 calls appstreamcli
+  # compose on the host, while jammy's 1.2 runs appstream-compose inside the
+  # SDK, which the GNOME runtime no longer ships (Debian bug #1082763). The
+  # flatpak runs against the runtime's own glibc, so the newer host is safe.
   flatpak:
     needs: release
     if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
