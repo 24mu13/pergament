@@ -181,6 +181,16 @@ pub fn last_verse(library: &Library, bible_dir: &str, book: i64, chapter: i64) -
     bible.last_verse(book, chapter).map_err(err)
 }
 
+/// The abbreviations a Bible uses for its books in its own references ("1Ko", "Phil"), by book number.
+/// Other publications have none.
+pub fn book_abbreviations(library: &Library, bible_dir: &str) -> ApiResult<HashMap<i64, String>> {
+    let (_, bible) = open_entry(library, bible_dir)?;
+    if !bible.is_bible() {
+        return Ok(HashMap::new());
+    }
+    bible.book_abbreviations().map_err(err)
+}
+
 /// An excerpt of the Research Guide for a verse.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResearchEntry {
@@ -402,6 +412,18 @@ pub struct HomeLists {
     pub daily_text: Option<CatalogEntry>,
 }
 
+/// The curated Teaching Toolbox of one language, newest first.
+pub fn teaching_toolbox(
+    catalog: &Catalog,
+    meps: i64,
+    library: &Library,
+) -> ApiResult<Vec<CatalogEntry>> {
+    entries(
+        catalog.curated(meps, LIST_TEACHING_TOOLBOX).map_err(err)?,
+        library,
+    )
+}
+
 pub fn home_lists(
     catalog: &Catalog,
     meps: i64,
@@ -415,10 +437,7 @@ pub fn home_lists(
         .map(|(item, _, _)| item)
         .next();
     Ok(HomeLists {
-        teaching_toolbox: entries(
-            catalog.curated(meps, LIST_TEACHING_TOOLBOX).map_err(err)?,
-            library,
-        )?,
+        teaching_toolbox: teaching_toolbox(catalog, meps, library)?,
         daily_text: entries(daily.into_iter().collect(), library)?
             .into_iter()
             .next(),
@@ -1201,6 +1220,11 @@ mod tests {
             [],
         )
         .unwrap();
+        c.execute(
+            "INSERT INTO CuratedAsset VALUES (?1, ?2, ?3), (?1, ?3, ?2)",
+            rusqlite::params![LIST_TEACHING_TOOLBOX, 1, 3],
+        )
+        .unwrap();
         drop(c);
         Catalog::open(&path, "test".into()).unwrap()
     }
@@ -1278,6 +1302,34 @@ mod tests {
                 rusqlite::params![symbol, issue.to_string(), dir],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn book_abbreviations_only_for_bibles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("lib");
+        let lib = Library::open(&root).unwrap();
+        install(&root, "nwt", 0, &[]);
+        install(&root, "w26", 20260800, &[]);
+        let nwt = root.join("publications/nwt_2_0");
+        rusqlite::Connection::open(nwt.join("c.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE BibleChapter (BookNumber INTEGER);")
+            .unwrap();
+        std::fs::write(
+            nwt.join(".pergament-abbreviations.json"),
+            r#"{"46":"1Ko","50":"Phil"}"#,
+        )
+        .unwrap();
+        let abbr = book_abbreviations(&lib, "nwt_2_0").unwrap();
+        assert_eq!(abbr.get(&46).map(String::as_str), Some("1Ko"));
+        assert_eq!(abbr.get(&50).map(String::as_str), Some("Phil"));
+        assert!(
+            book_abbreviations(&lib, "w26_2_20260800")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(book_abbreviations(&lib, "nope").is_err());
     }
 
     #[test]
@@ -1496,6 +1548,19 @@ mod tests {
             ["lff_2_0"]
         );
         assert!(favorite_entries(&cat, 2, &lib, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn teaching_toolbox_lists_only_the_curated_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        // German (meps 2) has lff and the German w26 in sort order; English (meps 0) has none listed.
+        assert_eq!(
+            keys(&teaching_toolbox(&cat, 2, &lib).unwrap()),
+            vec!["lff_2_0", "w26_2_20260800"]
+        );
+        assert!(teaching_toolbox(&cat, 0, &lib).unwrap().is_empty());
     }
 
     #[test]

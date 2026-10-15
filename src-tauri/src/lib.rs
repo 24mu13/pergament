@@ -306,6 +306,30 @@ fn close_display(app: AppHandle) -> ApiResult<()> {
     }
 }
 
+/// Label of the window notes are written in.
+const NOTE: &str = "note";
+
+/// Open the note window, or bring it to the front when it is open. `width` and
+/// `height` are the size the user last gave it, in logical pixels.
+#[tauri::command]
+fn open_note_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> ApiResult<()> {
+    if let Some(existing) = app.get_webview_window(NOTE) {
+        existing.unminimize().map_err(|e| e.to_string())?;
+        existing.show().map_err(|e| e.to_string())?;
+        return existing.set_focus().map_err(|e| e.to_string());
+    }
+    WebviewWindowBuilder::new(&app, NOTE, WebviewUrl::App("index.html".into()))
+        .title("Pergament")
+        .inner_size(
+            width.unwrap_or(520.0).max(380.0),
+            height.unwrap_or(560.0).max(320.0),
+        )
+        .min_inner_size(380.0, 320.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Open an http(s) link in the browser. Anything else is refused.
 #[tauri::command]
 fn open_external(app: AppHandle, url: String) -> ApiResult<()> {
@@ -429,6 +453,14 @@ fn with_catalog_unguarded<T>(
         .ok_or_else(|| format!("unknown language code {lang:?}"))?;
     let lib = state.lib()?;
     f(&catalog, meps, &lib).map(Some)
+}
+
+#[tauri::command]
+fn book_abbreviations(
+    state: State<'_, AppState>,
+    dir: String,
+) -> ApiResult<std::collections::HashMap<i64, String>> {
+    api::book_abbreviations(&*state.lib()?, &dir)
 }
 
 #[tauri::command]
@@ -563,6 +595,20 @@ async fn whats_new(app: AppHandle, langs: Vec<String>) -> ApiResult<Option<Vec<a
         let catalog = catalog.lock().map_err(|e| e.to_string())?;
         let lib = state.lib()?;
         Ok(Some(api::whats_new(&catalog, &langs, &lib)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn teaching_toolbox(
+    app: AppHandle,
+    lang: String,
+) -> ApiResult<Option<Vec<api::CatalogEntry>>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_catalog(&app, &lang, |c, meps, lib| {
+            api::teaching_toolbox(c, meps, lib)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1005,10 +1051,18 @@ pub fn run() {
                 DISPLAY => {
                     let _ = app.emit_to("main", "display-closed", ());
                 }
-                // The display does not outlive the app window.
+                // The app forgets the note it sent there.
+                NOTE => {
+                    let _ = app.emit_to("main", "note-closed", ());
+                }
+                // Neither window outlives the app window. The app already asked
+                // about unsaved text, so the note window goes without asking again.
                 "main" => {
                     if let Some(display) = app.get_webview_window(DISPLAY) {
                         let _ = display.close();
+                    }
+                    if let Some(note) = app.get_webview_window(NOTE) {
+                        let _ = note.destroy();
                     }
                 }
                 _ => {}
@@ -1043,6 +1097,7 @@ pub fn run() {
             year_text,
             open_display,
             close_display,
+            open_note_window,
             media_category,
             download_media,
             media_downloads,
@@ -1055,6 +1110,7 @@ pub fn run() {
             languages,
             chapter_study,
             book_overview,
+            book_abbreviations,
             last_verse,
             research_verses,
             research_guide,
@@ -1062,6 +1118,7 @@ pub fn run() {
             load_catalog,
             check_updates,
             home_lists,
+            teaching_toolbox,
             whats_new,
             categories,
             category,
@@ -1088,4 +1145,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Pergament");
+}
+
+#[cfg(test)]
+mod tests {
+    /// The windows close themselves with `destroy`, so that a close request does not ask twice.
+    #[test]
+    fn main_and_note_windows_may_destroy_themselves() {
+        for (name, json) in [
+            ("main", include_str!("../capabilities/main.json")),
+            ("note", include_str!("../capabilities/note.json")),
+        ] {
+            let capability: serde_json::Value = serde_json::from_str(json).unwrap();
+            let allowed = capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p == "core:window:allow-destroy");
+            assert!(allowed, "{name}.json lacks core:window:allow-destroy");
+        }
+    }
 }

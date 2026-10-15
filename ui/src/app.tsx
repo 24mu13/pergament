@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { ReactNode } from "react";
 import { ask, message as messageDialog, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ArrowLeft,
   BookOpen,
@@ -19,10 +20,12 @@ import {
   X,
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
-import type { MediaRef, Note } from "@/lib/api";
+import type { MediaRef } from "@/lib/api";
+import { fieldsOf, sameFields, type NoteDraft, type NoteFields } from "@/lib/notes";
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
+import { askDiscard, NOTE_CLOSED, NOTE_DIRTY, NOTE_LINK, NOTE_READY, NOTES_CHANGED, sendToNoteWindow, type NoteWindowMessage } from "@/lib/note-window";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
 import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
@@ -31,6 +34,7 @@ import {
   loadLayout,
   loadReadingFont,
   loadMergeBackups,
+  loadNoteWindowSize,
   loadSecondDisplay,
   loadUpdateCheck,
   saveSecondDisplay,
@@ -53,27 +57,31 @@ import {
   saveTheme,
   type Theme,
 } from "@/lib/settings";
+import { useSystemDark } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
 import { scroller } from "@/lib/scroll";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu, type Translations } from "@/components/language-menu";
 import { useCatalogBibles } from "@/lib/use-catalog-bibles";
-import { bibleChoices, pickBible } from "@/lib/bible";
+import { bibleChoices, bibleFor, pickBible } from "@/lib/bible";
+
+/** The note written in the reader's study pane. */
+export interface InlineNote {
+  id: number;
+  draft: NoteDraft;
+  /** Unsaved text the editor starts with instead of the note's: kept while a reference covers the pane, or after moving it to the window failed. */
+  fields?: NoteFields;
+  /** Counts restarts of the editor, so it takes up `fields` again. */
+  restart?: number;
+  /** Set while the text moves to the note window; the editor hides meanwhile, so nothing typed gets lost. */
+  moving?: boolean;
+}
 
 interface Toast {
   id: number;
   text: string;
   action?: { label: string; run: () => void };
-}
-
-/** A note being written, and the page and highlight a new one attaches to. */
-export interface NoteDraft {
-  note: Partial<Note>;
-  target?: Target | null;
-  markGuid?: string;
-  blockType?: number;
-  blockIdentifier?: number;
 }
 
 interface AppContextValue {
@@ -153,11 +161,18 @@ interface AppContextValue {
   playItem: (item: PlayerItem) => void;
   /** Look up a recording that a publication links to and play it. */
   playRecording: (media: MediaRef) => Promise<void>;
+  /** Open one of the app's own links, such as a Bible verse in a note, in the Bible chosen for the language. */
+  openLink: (href: string) => Promise<void>;
+  /**
+   * Let a view open the app's links clicked in the note window itself, such as the reader in its reference pane;
+   * null hands them back to `openLink`.
+   */
+  setLinkHandler: (handler: ((href: string) => void) | null) => void;
   closePlayer: () => void;
-  /** The note being written. It floats over the app and stays open while the user navigates. */
-  note: { id: number; draft: NoteDraft } | null;
-  /** Open a note in the floating editor, asking first when that would drop unsaved text. */
-  openNote: (draft: NoteDraft) => Promise<void>;
+  /** The note written in the reader's study pane. It stays open while the user navigates. */
+  note: InlineNote | null;
+  /** Open a note to write: in the reader's study pane, or in the note window (the default). */
+  openNote: (draft: NoteDraft, options?: { in?: "pane" | "window" }) => Promise<void>;
   /**
    * Close the editor, asking first when that would drop unsaved text (`force`
    * skips that, after a save). With an `id`, only that note is closed.
@@ -165,6 +180,14 @@ interface AppContextValue {
   closeNote: (id?: number, options?: { force?: boolean }) => Promise<void>;
   /** Told by the editor whether it holds unsaved text. */
   setNoteDirty: (dirty: boolean) => void;
+  /** The inline editor reports its fields. */
+  setNoteFields: (fields: NoteFields) => void;
+  /** Move the inline draft, unsaved text included, to the note window. */
+  popOutNote: () => Promise<void>;
+  /** The inline editor's place went away: unsaved text goes to the window, an unchanged note is closed. */
+  releaseNote: () => void;
+  /** The inline editor hides for a while, such as behind a followed reference: it comes back with the text it holds. */
+  keepNote: () => void;
   /** Tell the views that a note was saved or deleted. */
   notesChanged: () => void;
   /** The second display window and what is sent to it. */
@@ -185,19 +208,6 @@ export function useApp(): AppContextValue {
 }
 
 export const taskKey = (e: CatalogEntry) => `download:${e.item.symbol}:${e.item.issue_tag}`;
-
-function useSystemDark(): boolean {
-  const query = "(prefers-color-scheme: dark)";
-  const [dark, setDark] = useState(() => window.matchMedia?.(query).matches ?? false);
-  useEffect(() => {
-    const mq = window.matchMedia?.(query);
-    if (!mq) return;
-    const on = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return dark;
-}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [nav, dispatch] = useReducer(navReducer, initialNav);
@@ -544,32 +554,136 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const playItem = useCallback((item: PlayerItem) => setPlayer({ id: Date.now(), item }), []);
   const closePlayer = useCallback(() => setPlayer(null), []);
-  /** Set while the discard question is open, so a second request does not stack another dialog. */
-  const askingDiscard = useRef(false);
   /** Whether unsaved text in the editor may be dropped: true when there is none or the user agrees. */
-  const mayDiscard = useCallback(async () => {
-    if (!noteDirty.current) return true;
-    if (askingDiscard.current) return false;
-    askingDiscard.current = true;
-    try {
-      return await ask(t("The note you are writing has not been saved."), {
-        title: t("Discard note?"),
-        kind: "warning",
-        okLabel: t("Discard"),
-      });
-    } catch {
-      return false;
-    } finally {
-      askingDiscard.current = false;
-    }
+  const mayDiscard = useCallback(async () => !noteDirty.current || (await askDiscard()), []);
+  const [notesVersion, setNotesVersion] = useState(0);
+  const notesChanged = useCallback(() => setNotesVersion((v) => v + 1), []);
+  // The note window: the app sends it a note; one that opens later asks for it when ready.
+  const lastNoteMessage = useRef<NoteWindowMessage | null>(null);
+  const noteWindowDirty = useRef(false);
+  /** Set while moved text is on its way to the window: a note sent after it would take its place unseen. */
+  const movedPending = useRef(false);
+  const showInWindow = useCallback(
+    async (message: NoteWindowMessage): Promise<boolean> => {
+      lastNoteMessage.current = message;
+      try {
+        const size = loadNoteWindowSize();
+        await api.openNoteWindow(size?.width, size?.height);
+        void sendToNoteWindow(message);
+        return true;
+      } catch (e) {
+        lastNoteMessage.current = null;
+        toast(t("Cannot open the note window: {error}", { error: String(e) }));
+        return false;
+      }
+    },
+    [toast],
+  );
+  /** The note window holds unsaved text, or moved text on its way there: say so and bring it forward instead. */
+  const noteWindowBusy = useCallback(() => {
+    toast(t("Save or close the note in the note window first."));
+    const size = loadNoteWindowSize();
+    void api.openNoteWindow(size?.width, size?.height).catch(() => undefined);
+  }, [toast]);
+  useEffect(() => {
+    const subscriptions = [
+      listen(NOTE_READY, () => {
+        if (lastNoteMessage.current) void sendToNoteWindow(lastNoteMessage.current);
+      }),
+      listen<boolean>(NOTE_DIRTY, (e) => {
+        noteWindowDirty.current = e.payload;
+        // The window shows the moved text and asks before anything replaces it.
+        if (e.payload) movedPending.current = false;
+      }),
+      listen(NOTES_CHANGED, notesChanged),
+      listen(NOTE_CLOSED, () => {
+        lastNoteMessage.current = null;
+        noteWindowDirty.current = false;
+        movedPending.current = false;
+      }),
+    ];
+    return () => subscriptions.forEach((s) => void s.then((f) => f()));
+  }, [notesChanged]);
+  // Closing the app closes the note window too, so ask first when either editor holds unsaved text.
+  useEffect(() => {
+    const closing = getCurrentWebviewWindow().onCloseRequested(async (e) => {
+      if (!noteDirty.current && !noteWindowDirty.current) return;
+      if (!(await askDiscard())) e.preventDefault();
+    });
+    return () => void closing.then((f) => f());
+  }, []);
+
+  /** What the study pane's editor holds now, to move it to the note window. */
+  const noteFields = useRef<NoteFields | null>(null);
+  const setNoteFields = useCallback((fields: NoteFields) => {
+    noteFields.current = fields;
+  }, []);
+  /** The id of the note moving to the window, so a second request does not send it twice. */
+  const moving = useRef<number | null>(null);
+  /**
+   * Moves the inline draft to the window. `release`: its place went away, and
+   * the editor that took its new place started over with the note's own text.
+   */
+  const moveToWindow = useCallback(
+    async (release: boolean) => {
+      const current = noteRef.current;
+      if (!current || moving.current === current.id) return;
+      // Taken now, before an editor in a new place reports the note's own fields.
+      const fields = noteFields.current ?? undefined;
+      /** Shows the editor again with the text it held, still unsaved. */
+      const restore = () => {
+        noteDirty.current = true;
+        noteFields.current = fields ?? null;
+        setNote({ id: current.id, draft: current.draft, fields, restart: (current.restart ?? 0) + 1 });
+      };
+      // The window would ask about its own text and could drop this one; the draft stays here.
+      if (noteWindowDirty.current) {
+        noteWindowBusy();
+        if (release) restore();
+        return;
+      }
+      moving.current = current.id;
+      const changed = fields !== undefined && !sameFields(fields, fieldsOf(current.draft.note));
+      // The window holds this text from now on, before it can report so: a second move must not replace it.
+      if (changed) noteDirty.current = noteWindowDirty.current = movedPending.current = true;
+      setNote({ ...current, moving: true });
+      const opened = await showInWindow({ id: Date.now(), draft: current.draft, fields });
+      moving.current = null;
+      if (!opened && changed) noteWindowDirty.current = movedPending.current = false;
+      // If another note replaced it meanwhile, leave that one alone.
+      if (noteRef.current?.id !== current.id) return;
+      if (!opened) return restore();
+      noteDirty.current = false;
+      noteFields.current = null;
+      setNote(null);
+    },
+    [noteWindowBusy, showInWindow],
+  );
+  const popOutNote = useCallback(() => moveToWindow(false), [moveToWindow]);
+  const releaseNote = useCallback(() => {
+    if (!noteRef.current || moving.current !== null) return;
+    if (noteDirty.current) return void moveToWindow(true);
+    noteFields.current = null;
+    setNote(null);
+  }, [moveToWindow]);
+  const keepNote = useCallback(() => {
+    const current = noteRef.current;
+    if (!current || moving.current !== null || !noteFields.current) return;
+    setNote({ ...current, fields: noteFields.current });
   }, []);
   const openNote = useCallback(
-    async (draft: NoteDraft) => {
+    async (draft: NoteDraft, { in: where = "window" }: { in?: "pane" | "window" } = {}) => {
+      if (where === "window") {
+        // Moved text the window has not taken yet would be replaced without a question; its own text it asks about.
+        if (movedPending.current) return noteWindowBusy();
+        return void (await showInWindow({ id: Date.now(), draft }));
+      }
       if (!(await mayDiscard())) return;
       noteDirty.current = false;
+      noteFields.current = null;
       setNote({ id: Date.now(), draft });
     },
-    [mayDiscard],
+    [mayDiscard, noteWindowBusy, showInWindow],
   );
   const closeNote = useCallback(
     async (id?: number, { force = false } = {}) => {
@@ -577,15 +691,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const current = () => id === undefined || noteRef.current?.id === id;
       if (!current() || (!force && !(await mayDiscard())) || !current()) return;
       noteDirty.current = false;
+      noteFields.current = null;
       setNote(null);
     },
     [mayDiscard],
   );
   const setNoteDirty = useCallback((dirty: boolean) => {
-    noteDirty.current = dirty;
+    // An editor that took the moving note's place reports the note's own fields, not the moving text;
+    // a note opened meanwhile reports its own.
+    if (moving.current === null || noteRef.current?.id !== moving.current) noteDirty.current = dirty;
   }, []);
-  const [notesVersion, setNotesVersion] = useState(0);
-  const notesChanged = useCallback(() => setNotesVersion((v) => v + 1), []);
   const playRecording = useCallback(
     async (media: MediaRef) => {
       try {
@@ -596,6 +711,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [playItem, toast],
   );
+  const openLink = useCallback(
+    async (href: string) => {
+      try {
+        const action = await api.linkAction(bibleFor(null, publications, lang, bibles)?.dir ?? null, href);
+        switch (action.kind) {
+          case "open":
+            dispatch({ type: "push", view: { name: "reader", target: action.target } });
+            break;
+          case "external":
+            await api.openExternal(action.url);
+            break;
+          case "media":
+            await playRecording(action.media);
+            break;
+          case "missing":
+            toast(t("Not in your library: {link}", { link: action.url ?? href }));
+            break;
+          case "ignore":
+            break;
+        }
+      } catch (e) {
+        toast(t("Cannot follow link: {error}", { error: String(e) }));
+      }
+    },
+    [publications, lang, bibles, playRecording, toast],
+  );
+  const linkHandler = useRef<((href: string) => void) | null>(null);
+  const setLinkHandler = useCallback((handler: ((href: string) => void) | null) => {
+    linkHandler.current = handler;
+  }, []);
+  // The latest opener, so the note window's links are heard all along, not only between library changes.
+  const latestOpenLink = useRef(openLink);
+  latestOpenLink.current = openLink;
+  // A link clicked in the note window opens here, brought in front of it; the note window stays open.
+  useEffect(() => {
+    const un = listen<unknown>(NOTE_LINK, ({ payload }) => {
+      if (typeof payload !== "string" || !payload.startsWith("pergament://")) return;
+      if (linkHandler.current) linkHandler.current(payload);
+      else void latestOpenLink.current(payload);
+      const win = getCurrentWebviewWindow();
+      void win
+        .unminimize()
+        .then(() => win.setFocus())
+        .catch(() => undefined);
+    });
+    return () => void un.then((f) => f());
+  }, []);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -683,11 +845,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       player,
       playItem,
       playRecording,
+      openLink,
+      setLinkHandler,
       closePlayer,
       note,
       openNote,
       closeNote,
       setNoteDirty,
+      setNoteFields,
+      popOutNote,
+      releaseNote,
+      keepNote,
       notesChanged,
       display: { enabled: displayOn, setEnabled: setSecondDisplay, send: sendDisplay },
       viewer,
@@ -732,11 +900,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       player,
       playItem,
       playRecording,
+      openLink,
+      setLinkHandler,
       closePlayer,
       note,
       openNote,
       closeNote,
       setNoteDirty,
+      setNoteFields,
+      popOutNote,
+      releaseNote,
+      keepNote,
       notesChanged,
       displayOn,
       setSecondDisplay,

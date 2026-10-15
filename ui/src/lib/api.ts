@@ -395,6 +395,8 @@ export const api = {
   yearText: (lang: string, year: number) => invoke<YearText | null>("year_text", { lang, year }),
   openDisplay: () => invoke<void>("open_display"),
   closeDisplay: () => invoke<void>("close_display"),
+  openNoteWindow: (width?: number, height?: number) =>
+    invoke<void>("open_note_window", { width: width ?? null, height: height ?? null }),
   removePublication: (dir: string) => invoke<void>("remove_publication", { dir }),
   importFiles: (paths: string[]) => invoke<ImportResult[]>("import_files", { paths }),
   languages: () => invoke<Language[]>("languages"),
@@ -412,6 +414,8 @@ export const api = {
   catalogCached: () => invoke<boolean>("catalog_cached"),
   loadCatalog: () => invoke<void>("load_catalog"),
   homeLists: (lang: string, date: string) => invoke<HomeLists | null>("home_lists", { lang, date }),
+  /** The Teaching Toolbox entries of one language; `null` without a cached catalog. */
+  teachingToolbox: (lang: string) => invoke<CatalogEntry[] | null>("teaching_toolbox", { lang }),
   /** Latest publications for `langs`; `null` when no catalog is cached yet. */
   whatsNew: (langs: string[]) => invoke<WhatsNewRow[] | null>("whats_new", { langs }),
   categories: (lang: string) => invoke<Category[] | null>("categories", { lang }),
@@ -443,6 +447,8 @@ export const api = {
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),
+  /** The abbreviations a Bible uses for its books ("1Ko"), by book number; none for other publications. */
+  bookAbbreviations: (dir: string) => invoke<Record<number, string>>("book_abbreviations", { dir }),
   lastVerse: (dir: string, book: number, chapter: number) =>
     invoke<number>("last_verse", { dir, book, chapter }),
   researchVerses: (dir: string, book: number, chapter: number) =>

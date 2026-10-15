@@ -55,6 +55,22 @@ describe("renderMarkdown", () => {
     expect(md("[x](javascript:alert(1))")).toBe("<p>[x](javascript:alert(1))</p>");
   });
 
+  it("renders links into the app", () => {
+    expect(md("[Mt 24:14](pergament://bible/40:24:14-40:24:14)")).toBe(
+      '<p><a href="pergament://bible/40:24:14-40:24:14">Mt 24:14</a></p>',
+    );
+    expect(md("[a](pergament://verse/X:1001070143/8:38-8:40)")).toBe('<p><a href="pergament://verse/X:1001070143/8:38-8:40">a</a></p>');
+    expect(md("[a](pergament://pub/X:1102016001/3-4)")).toBe('<p><a href="pergament://pub/X:1102016001/3-4">a</a></p>');
+    expect(renderMarkdown("[a](pergament://bible/19:23)", { links: false })).toBe('<p><span class="md-link">a</span></p>');
+  });
+
+  it("keeps app links of other kinds or shapes as text", () => {
+    expect(md('[a](pergament://bible/1:1"onmouseover=alert(1))')).not.toContain("<a");
+    expect(md("[a](pergament://media/x)")).toBe("<p>[a](pergament://media/x)</p>");
+    expect(md("[a](pergament://bible/x/../y)")).not.toContain("<a");
+    expect(md("[a](pergament://bible/)")).not.toContain("<a");
+  });
+
   it("escapes HTML instead of rendering it", () => {
     expect(md('<img src=x onerror="alert(1)"> & <b>')).toBe("<p>&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; &lt;b&gt;</p>");
     expect(md('[a](https://x.org/"onmouseover="alert(1))')).not.toContain('"onmouseover');

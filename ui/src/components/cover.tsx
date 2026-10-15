@@ -77,15 +77,19 @@ export function EntryCover({
   label,
   meta,
   className,
+  lang,
 }: {
   entry: CatalogEntry;
   label?: string;
   meta?: string | null;
   className?: string;
+  /** Overrides the app language, for a section shown in another language. */
+  lang?: string;
 }) {
-  const { lang } = useApp();
+  const { lang: appLang } = useApp();
   const { activate, progress } = useEntryAction();
-  const target = entryTarget(entry, lang);
+  const effective = lang ?? appLang;
+  const target = entryTarget(entry, effective);
   const p = progress(entry);
   const verb = entry.local ? t("Open {title}", { title: target.title }) : t("Download {title}", { title: target.title });
   return (
@@ -97,14 +101,14 @@ export function EntryCover({
       meta={meta}
       className={className}
       favoriteKey={pubKey(target.symbol, target.mepsLanguage, target.issueTag)}
-      onActivate={() => void activate(entry)}
+      onActivate={() => void activate(entry, lang)}
       progress={p ? (p.total ? (p.done / p.total) * 100 : null) : undefined}
       action={
         <button
           aria-label={verb}
           title={verb}
           disabled={!!p}
-          onClick={() => void activate(entry)}
+          onClick={() => void activate(entry, lang)}
           className={cn(control, "absolute bottom-1.5 right-1.5")}
         >
           {entry.local ? <BookOpen size={14} strokeWidth={1.6} /> : <CloudDownload size={14} strokeWidth={1.6} />}

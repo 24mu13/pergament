@@ -18,6 +18,9 @@ function write(key: string, value: string) {
   }
 }
 
+/** Storage keys of the theme and the interface language, which other windows follow. */
+export const LOOK_KEYS = ["theme", "uiLang"];
+
 export function loadTheme(): Theme {
   const t = read("theme");
   return t === "light" || t === "dark" ? t : "system";
@@ -84,6 +87,22 @@ export function loadLang(): string {
 
 export function saveLang(code: string) {
   write("lang", code);
+}
+
+/** Catalog language code the Teaching Toolbox shows; `null` when no override is stored. */
+export function loadToolboxLang(): string | null {
+  const l = read("toolboxLang");
+  return l && /^[A-Z0-9-]{1,8}$/.test(l) ? l : null;
+}
+
+/** Stores the Teaching Toolbox language code, or clears the override with `null`. */
+export function saveToolboxLang(code: string | null) {
+  try {
+    if (code) localStorage.setItem("toolboxLang", code);
+    else localStorage.removeItem("toolboxLang");
+  } catch {
+    // Storage unavailable: the setting just does not persist.
+  }
 }
 
 /** Languages the What's New list shows; `null` is the default (the app language). */
@@ -224,39 +243,16 @@ export function saveBibles(bibles: Record<string, string>) {
   write("bibles", JSON.stringify(bibles));
 }
 
-/** The size the user last gave the floating note editor. */
-export function loadNoteSize(): { width: number; height: number } | null {
+/** The size the user last gave the note window, in logical pixels. */
+export function loadNoteWindowSize(): { width: number; height: number } | null {
   try {
-    const s = JSON.parse(read("noteSize") ?? "null");
+    const s = JSON.parse(read("noteWindowSize") ?? "null");
     return Number.isFinite(s?.width) && Number.isFinite(s?.height) ? { width: s.width, height: s.height } : null;
   } catch {
     return null;
   }
 }
 
-export function saveNoteSize(size: { width: number; height: number }) {
-  write("noteSize", JSON.stringify(size));
-}
-
-/** Where the user last put the floating note editor, as its top left corner. */
-export function loadNotePos(): { x: number; y: number } | null {
-  try {
-    const p = JSON.parse(read("notePos") ?? "null");
-    return Number.isFinite(p?.x) && Number.isFinite(p?.y) ? { x: p.x, y: p.y } : null;
-  } catch {
-    return null;
-  }
-}
-
-export function saveNotePos(pos: { x: number; y: number }) {
-  write("notePos", JSON.stringify(pos));
-}
-
-/** Whether the note editor was last left maximized. */
-export function loadNoteFull(): boolean {
-  return read("noteFull") === "1";
-}
-
-export function saveNoteFull(on: boolean) {
-  write("noteFull", on ? "1" : "0");
+export function saveNoteWindowSize(size: { width: number; height: number }) {
+  write("noteWindowSize", JSON.stringify(size));
 }

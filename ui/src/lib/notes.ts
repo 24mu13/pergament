@@ -1,4 +1,4 @@
-import type { Note } from "./api";
+import type { Note, Target } from "./api";
 
 export type NoteSort = "newest" | "oldest" | "publication";
 
@@ -26,24 +26,32 @@ export function filterNotes(notes: Note[], { query, color, sort }: NoteFilter): 
   );
 }
 
-export interface Point {
-  x: number;
-  y: number;
+/** A note being written, and the page and highlight a new one attaches to. */
+export interface NoteDraft {
+  note: Partial<Note>;
+  target?: Target | null;
+  markGuid?: string;
+  blockType?: number;
+  blockIdentifier?: number;
 }
 
-export interface Size {
-  width: number;
-  height: number;
+/** What the editor's fields hold; tags as typed, separated by commas. */
+export interface NoteFields {
+  title: string;
+  content: string;
+  tags: string;
 }
 
-/** A floating panel's top left corner, moved so the panel stays inside the area (its top left wins if it cannot fit). */
-export function clampPanel(pos: Point, size: Size, bounds: Size): Point {
-  const fit = (v: number, room: number) => Math.max(0, Math.min(v, room));
-  return { x: fit(pos.x, bounds.width - size.width), y: fit(pos.y, bounds.height - size.height) };
-}
+export const fieldsOf = (note: Partial<Note>): NoteFields => ({
+  title: note.title ?? "",
+  content: note.content ?? "",
+  tags: (note.tags ?? []).join(", "),
+});
 
-/** A floating panel's size, at least `min` but never larger than the area. */
-export function fitPanelSize(size: Size, min: Size, bounds: Size): Size {
-  const fit = (v: number, low: number, high: number) => Math.min(Math.max(v, low), high);
-  return { width: fit(size.width, min.width, bounds.width), height: fit(size.height, min.height, bounds.height) };
-}
+export const sameFields = (a: NoteFields, b: NoteFields) => a.title === b.title && a.content === b.content && a.tags === b.tags;
+
+export const parseTags = (tags: string) =>
+  tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
