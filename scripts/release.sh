@@ -60,10 +60,12 @@ echo "release: setting version $version on $branch"
 git switch -q -c "$branch"
 sed -i "0,/^version = \".*\"$/s//version = \"$version\"/" Cargo.toml src-tauri/Cargo.toml
 sed -i "0,/^  \"version\": \".*\",$/s//  \"version\": \"$version\",/" package.json src-tauri/tauri.conf.json
+sed -i "0,/<releases>/s//<releases>\n    <release version=\"$version\" date=\"$(date +%F)\"\/>/" src-tauri/io.github.v3rm1n.pergament.metainfo.xml
 cargo update --workspace --offline -q
 scripts/versions.sh "$version" >/dev/null
 
-git add Cargo.toml src-tauri/Cargo.toml package.json src-tauri/tauri.conf.json Cargo.lock
+git add Cargo.toml src-tauri/Cargo.toml package.json src-tauri/tauri.conf.json Cargo.lock \
+    src-tauri/io.github.v3rm1n.pergament.metainfo.xml
 git commit -q -m "chore: release $tag"
 git push -q -u origin "$branch"
 # The release pull request itself does not belong in the generated notes (.github/release.yml).
