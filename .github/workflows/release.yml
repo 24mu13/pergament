@@ -98,8 +98,7 @@ jobs:
       - name: Bundle deb, rpm and AppImage
         run: >
           bun run tauri build --bundles deb,rpm,appimage
-          --target x86_64-unknown-linux-gnu
-          --config '{"bundle":{"active":true}}'
+          --config '{"bundle":{"active":true,"externalBin":["../target/release/pergament"]}}'
 
       - name: Check the deb metadata and the metainfo
         run: |

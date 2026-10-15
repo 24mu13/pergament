@@ -6,7 +6,7 @@
 #   cargo build --release -p pergament
 #   cp target/release/pergament target/release/pergament-x86_64-unknown-linux-gnu
 #   bun run tauri build --bundles deb,rpm,appimage \
-#       --target x86_64-unknown-linux-gnu --config '{"bundle":{"active":true}}'
+#       --config '{"bundle":{"active":true,"externalBin":["../target/release/pergament"]}}'
 set -euo pipefail
 die() { echo "package-bundles: $*" >&2; exit 1; }
 
