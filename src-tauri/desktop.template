@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Publication Reader
+Comment=Pergament, an unofficial Linux reader for .jwpub publications
+Exec={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Office;Viewer;
+Keywords=jwpub;Bible;reader;
+StartupWMClass=pergament-app

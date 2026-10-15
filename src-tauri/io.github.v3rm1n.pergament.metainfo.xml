@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.v3rm1n.pergament</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Pergament</name>
+  <summary>A quiet reader for .jwpub publications</summary>
+  <description>
+    <p>Pergament shows today's text, the Bible with a study pane, your library,
+    the weekly meeting material, and your own notes and highlights, in a flat
+    interface that keeps out of the way of the text.</p>
+    <p>It is a desktop app for Linux, a command line tool called pergament, and
+    the Rust library underneath both. It is unofficial and not affiliated with,
+    endorsed by or supported by Jehovah's Witnesses or the Watch Tower Bible and
+    Tract Society.</p>
+  </description>
+  <launchable type="desktop-id">Pergament.desktop</launchable>
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+  </categories>
+  <url type="homepage">https://github.com/v3rm1n0/pergament</url>
+  <url type="bugtracker">https://github.com/v3rm1n0/pergament/issues</url>
+  <releases>
+    <release version="1.6.0" date="2026-10-14"/>
+  </releases>
+</component>
