@@ -1,4 +1,5 @@
 import { de } from "@/locales/de";
+import { ptBR } from "@/locales/pt-BR";
 
 /** An interface language. English is the source language and has no entry here. */
 export interface Locale {
@@ -15,4 +16,5 @@ export interface Locale {
 /** Every translation. `bun run i18n:new` adds a line here; see docs/TRANSLATING.md. */
 export const locales: Locale[] = [
   { code: "de", name: "Deutsch", tag: "de-DE", texts: de },
+  { code: "pt-BR", name: "Português (Brasil)", tag: "pt-BR", texts: ptBR },
 ];
