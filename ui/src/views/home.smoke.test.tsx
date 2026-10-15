@@ -3,7 +3,7 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { CatalogEntry, PubCard } from "@/lib/api";
+import type { CatalogEntry, PubCard, WhatsNewRow } from "@/lib/api";
 import { card, entry } from "@/lib/fixtures";
 
 const calls: { cmd: string; args: unknown }[] = [];
@@ -28,6 +28,7 @@ import { HomeView } from "@/views/home";
 
 let publications: PubCard[];
 let toolbox: CatalogEntry[];
+let whatsNewRows: WhatsNewRow[];
 
 beforeEach(() => {
   calls.length = 0;
@@ -41,12 +42,17 @@ beforeEach(() => {
     entry("T-ftr", "Tracts and Invitations", null, "Zukunft"),
     entry("odd", null, null, "Ohne Kategorie"),
   ];
+  whatsNewRows = [{ ...entry("ll", "Brochures and Booklets", null, "Frisch erschienen"), langCode: "X" }];
   backend = {
     list_publications: () => publications,
-    languages: () => [],
+    languages: () => [
+      { code: "X", name: "German", vernacular: "Deutsch", rtl: false, signLanguage: false },
+      { code: "E", name: "English", vernacular: "English", rtl: false, signLanguage: false },
+    ],
     catalog_cached: () => true,
     check_updates: () => null,
-    home_lists: () => ({ teachingToolbox: toolbox, whatsNew: [], dailyText: null }),
+    home_lists: () => ({ teachingToolbox: toolbox, dailyText: null }),
+    whats_new: ({ langs }: { langs: string[] }) => langs.flatMap((c) => whatsNewRows.filter((r) => r.langCode === c)),
     dated_page: () => null,
     favorite_entries: () => [],
     remove_publication: ({ dir }: { dir: string }) => {
@@ -215,13 +221,35 @@ describe("Home with tile menus", () => {
   });
 
   it("lists What's New as rows with a Get button that downloads", async () => {
-    backend.home_lists = () => ({
-      teachingToolbox: toolbox,
-      whatsNew: [entry("ll", "Brochures and Booklets", null, "Höre auf Gott")],
-      dailyText: null,
-    });
     renderHome();
     fireEvent.click(await screen.findByRole("button", { name: /^Get · / }));
     await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
+  });
+
+  it("follows the app language until a selection is stored", async () => {
+    renderHome();
+    await screen.findByText("Frisch erschienen");
+    expect(calls.find((c) => c.cmd === "whats_new")?.args).toEqual({ langs: ["X"] });
+    // One language only: the row's muted line shows the category without the language.
+    expect(screen.queryByText("Brochures and Booklets · Deutsch")).toBeNull();
+    cleanup();
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["X", "E"]));
+    whatsNewRows.push({ ...entry("lff", "Books", null, "Newly Arrived"), langCode: "E" });
+    renderHome();
+    expect(await screen.findByText("Newly Arrived")).toBeTruthy();
+    expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X", "E"] });
+    expect(screen.getByText("Brochures and Booklets · Deutsch")).toBeTruthy();
+    expect(screen.getByText("Books · English")).toBeTruthy();
+  });
+
+  it("keeps the rows when the lookup fails", async () => {
+    renderHome();
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+    cleanup();
+    backend.whats_new = () => {
+      throw new Error("boom");
+    };
+    renderHome();
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
   });
 });

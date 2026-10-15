@@ -419,6 +419,7 @@
     entryOf("cgp", "Programs", 31, "Circuit Gathering Program 2026", { on: "2026-09-24T08:00:00Z", size: 700_000 }),
     entryOf("tbn", "Tracts and Invitations", 10, "The Bridge Between Neighbours", { on: "2026-09-18T08:00:00Z", size: 600_000 }),
   ];
+  const WHATS_NEW_ROWS = WHATS_NEW.map((e) => ({ ...e, langCode: "E" }));
 
   const MORE_STUDY = [
     entryOf("cvn", "Programs", 31, "Convention Notes 2026", { on: "2026-08-02T08:00:00Z", size: 1_200_000 }),
@@ -650,6 +651,7 @@
     catalog_cached: () => true,
     load_catalog: () => null,
     home_lists: () => ({ teachingToolbox: TOOLBOX, whatsNew: WHATS_NEW, dailyText: LOCAL_ENTRIES.mlc26_E }),
+    whats_new: ({ langs }) => langs.flatMap((c) => WHATS_NEW_ROWS.filter((r) => r.langCode === c)),
     categories: () => CATEGORIES,
     category: ({ id }) => ALL_CATALOG.filter((e) => e.item.publication_type === id),
     meetings: () => ({

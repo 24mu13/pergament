@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { Star } from "lucide-react";
 import { AppBar, SectionTitle, useApp } from "@/app";
-import { api, type CatalogEntry, type DatedPage, type HomeLists } from "@/lib/api";
+import { api, type CatalogEntry, type DatedPage, type HomeLists, type WhatsNewRow } from "@/lib/api";
 import { isoDate, longDate } from "@/lib/dates";
 import { themeScriptureParts } from "@/lib/page";
-import { inLanguage } from "@/lib/settings";
+import { inLanguage, loadWhatsNewLangs, saveWhatsNewLangs } from "@/lib/settings";
 import { t } from "@/lib/i18n";
 import { TileMenu, entryTarget } from "@/components/tile-menu";
 import { CatalogPrompt, EntryImage, useEntryAction } from "@/components/catalog";
+import { WhatsNewLanguages } from "@/components/whats-new-languages";
 import { EntryCover, PubCover } from "@/components/cover";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -29,18 +30,21 @@ function toolboxRows(entries: CatalogEntry[]): CatalogEntry[][][] {
 }
 
 /** One What's New row: thumbnail, title, category and a small button that downloads or opens the entry. */
-function NewRow({ entry }: { entry: CatalogEntry }) {
-  const { lang } = useApp();
+function NewRow({ row, showLang }: { row: WhatsNewRow; showLang: boolean }) {
+  const { languageName } = useApp();
   const { activate, progress } = useEntryAction();
-  const p = progress(entry);
-  const title = entry.item.issue_title || entry.item.title;
-  const action = t(entry.local ? "Open" : "Get");
+  const p = progress(row);
+  const title = row.item.issue_title || row.item.title;
+  const action = t(row.local ? "Open" : "Get");
+  const muted = [row.category && t(row.category), showLang ? languageName(row.langCode) : null]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <li className="group relative flex items-center gap-3 border-b border-line px-1 py-2 hover:bg-bar">
-      <EntryImage entry={entry} className="aspect-[4/5] w-9 shrink-0 rounded-[6px] border border-line" />
+      <EntryImage entry={row} className="aspect-[4/5] w-9 shrink-0 rounded-[6px] border border-line" />
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm leading-normal">{title}</div>
-        {entry.category && <div className="truncate text-[13px] leading-normal text-muted">{t(entry.category)}</div>}
+        {muted && <div className="truncate text-[13px] leading-normal text-muted">{muted}</div>}
         {p && <Progress value={p.total ? (p.done / p.total) * 100 : null} label={title} className="mt-1 h-0.5" />}
       </div>
       <Button
@@ -49,13 +53,13 @@ function NewRow({ entry }: { entry: CatalogEntry }) {
         className="h-7 px-2.5 text-[13px]"
         disabled={!!p}
         aria-label={`${action} · ${title}`}
-        onClick={() => void activate(entry)}
+        onClick={() => void activate(row)}
       >
         {action}
       </Button>
       <span className="relative size-7 shrink-0">
         <TileMenu
-          target={entryTarget(entry, lang)}
+          target={entryTarget(row, row.langCode)}
           className="right-0 top-0 size-7 border-transparent bg-transparent text-muted opacity-100 hover:text-fg"
         />
       </span>
@@ -66,6 +70,8 @@ function NewRow({ entry }: { entry: CatalogEntry }) {
 /** The last loaded lists and daily text. The view remounts on every tab switch, so these keep its sections from vanishing until the reload finishes. */
 let cachedLists: { lang: string; lists: HomeLists | null } | undefined;
 let cachedToday: { lang: string; page: DatedPage | null } | undefined;
+/** The last What's New rows for the selected languages, keyed by the joined codes. */
+let cachedNew: { key: string; rows: WhatsNewRow[] | null } | undefined;
 
 export function HomeView() {
   const { lang, languageName, publications, libraryReady, catalogVersion, favorites, toast, push } = useApp();
@@ -130,6 +136,30 @@ export function HomeView() {
     };
   }, [lang, publications]);
 
+  // Languages of the What's New section; nothing stored means it follows the app language.
+  const [picked, setPicked] = useState<string[] | null>(() => loadWhatsNewLangs());
+  const wnLangs = picked ?? [lang];
+  const wnKey = wnLangs.join(",");
+  const [newRows, setNewRows] = useState<WhatsNewRow[] | null | undefined>(
+    cachedNew?.key === wnKey ? cachedNew.rows : undefined,
+  );
+  useEffect(() => {
+    let live = true;
+    api
+      .whatsNew(wnKey.split(","))
+      .then((r) => {
+        cachedNew = { key: wnKey, rows: r };
+        if (live) setNewRows(r);
+      })
+      .catch((e) => {
+        // Keep the previous rows; the next catalog or language change retries.
+        toast(String(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [wnKey, catalogVersion, toast]);
+
   const daily = lists?.dailyText;
   const scripture = today ? themeScriptureParts(today.html) : null;
   const groups = lists ? toolboxRows(lists.teachingToolbox).flat() : [];
@@ -184,47 +214,60 @@ export function HomeView() {
             )}
           </section>
 
-          {lists === null && (
+          {lists && (
             <section>
-              <SectionTitle variant="quiet">What's New</SectionTitle>
-              <CatalogPrompt />
+              <SectionTitle variant="quiet" aside={languageName(lang)}>
+                Teaching Toolbox
+              </SectionTitle>
+              <Tabs value={active} onValueChange={setTab}>
+                {categories.length > 1 && (
+                  <TabsList className="mb-4">
+                    <TabsTrigger value="all">{t("All")}</TabsTrigger>
+                    {categories.map((g) => (
+                      <TabsTrigger key={g[0].category} value={g[0].category!}>
+                        {t(g[0].category!)}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                )}
+                <TabsContent value={active} className="flex flex-wrap gap-x-3 gap-y-4">
+                  {shownGroups.flat().map((e) => (
+                    <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} />
+                  ))}
+                </TabsContent>
+              </Tabs>
             </section>
           )}
-          {lists && (
-            <>
-              <section>
-                <SectionTitle variant="quiet" aside={languageName(lang)}>
-                  Teaching Toolbox
-                </SectionTitle>
-                <Tabs value={active} onValueChange={setTab}>
-                  {categories.length > 1 && (
-                    <TabsList className="mb-4">
-                      <TabsTrigger value="all">{t("All")}</TabsTrigger>
-                      {categories.map((g) => (
-                        <TabsTrigger key={g[0].category} value={g[0].category!}>
-                          {t(g[0].category!)}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                  )}
-                  <TabsContent value={active} className="flex flex-wrap gap-x-3 gap-y-4">
-                    {shownGroups.flat().map((e) => (
-                      <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} />
-                    ))}
-                  </TabsContent>
-                </Tabs>
-              </section>
-              <section>
-                <SectionTitle variant="quiet" aside={languageName(lang)}>
-                  What's New
-                </SectionTitle>
+          {newRows !== undefined && (
+            <section>
+              <SectionTitle
+                variant="quiet"
+                aside={
+                  <WhatsNewLanguages
+                    value={wnLangs}
+                    onChange={(c) => {
+                      setPicked(c);
+                      saveWhatsNewLangs(c);
+                    }}
+                  />
+                }
+              >
+                What's New
+              </SectionTitle>
+              {newRows === null ? (
+                <CatalogPrompt />
+              ) : (
                 <ul className="border-t border-line">
-                  {lists.whatsNew.map((e) => (
-                    <NewRow key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} />
+                  {newRows.map((row) => (
+                    <NewRow
+                      key={`${row.item.symbol}-${row.item.issue_tag}`}
+                      row={row}
+                      showLang={wnLangs.length > 1}
+                    />
                   ))}
                 </ul>
-              </section>
-            </>
+              )}
+            </section>
           )}
         </div>
       </div>
