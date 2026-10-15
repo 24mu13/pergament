@@ -21,6 +21,8 @@ export const de: Record<string, string> = {
   "Search languages": "Sprachen suchen",
   "In your library": "In deiner Bibliothek",
   "All languages": "Alle Sprachen",
+  "What's New languages": "Sprachen für Neuerscheinungen",
+  "{count} languages": "{count} Sprachen",
   "Not downloaded": "Nicht heruntergeladen",
   "Pick a translation to download. More languages are in the language menu.": "Wähle eine Übersetzung zum Herunterladen. Weitere Sprachen findest du im Sprachmenü.",
   "Parallel accounts": "Parallelberichte",
