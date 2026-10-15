@@ -1,14 +1,16 @@
 # Publishes a GitHub release for every semantic version tag (vX.Y.Z), made by
 # scripts/release.sh. The release holds a zip with the binaries, the icons and
-# an installer (scripts/bundle-install.sh), a .sha256 file for the zip, and the
-# source code archives GitHub adds itself. The notes are the ones GitHub generates
-# from the merged pull requests, with the install instructions in front.
+# an installer (scripts/bundle-install.sh), a .sha256 file for the zip, deb,
+# rpm and AppImage packages and a flatpak bundle for Linux x86_64 with their
+# .sha256 files, and the source code archives GitHub adds itself. The notes are
+# the ones GitHub generates from the merged pull requests, with the install
+# instructions in front.
 name: Release
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
-  # Only the macOS job runs, to get a disk image as a downloadable artifact
+  # Only the jobs after "release" run, to get their artifacts as downloads
   # without tagging a release.
   workflow_dispatch:
 
@@ -65,6 +67,134 @@ jobs:
           --notes-file notes.md
           target/package/*.zip
           target/package/*.zip.sha256
+
+  # The deb, rpm and AppImage packages, built by the Tauri bundler on the same
+  # old runner image as the zip. Added to the release the job above made (or
+  # kept as build artifacts when started by hand).
+  linux-packages:
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config zip libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libsoup-3.0-dev libssl-dev libsqlite3-dev appstream \
+            gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            libegl1 libgl1 rpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the command line tool and give the bundler its suffixed copy
+        run: |
+          bun install --frozen-lockfile
+          cargo build --release --locked -p pergament
+          cp target/release/pergament target/release/pergament-x86_64-unknown-linux-gnu
+
+      - name: Bundle deb, rpm and AppImage
+        run: >
+          bun run tauri build --bundles deb,rpm,appimage
+          --config '{"bundle":{"active":true,"externalBin":["../target/release/pergament"]}}'
+
+      - name: Check the deb metadata and the metainfo
+        run: |
+          dpkg-deb --info target/release/bundle/deb/*.deb | grep -E 'Depends:.*(libwebkit2gtk-4\.1-0|gstreamer1\.0-libav)'
+          appstreamcli validate src-tauri/io.github.v3rm1n.pergament.metainfo.xml
+          dpkg-deb --contents target/release/bundle/deb/*.deb | grep -q '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml$'
+          rpm -qlp target/release/bundle/rpm/*.rpm | grep -qx '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml'
+
+      - name: Work out the version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Work out the version (builds without a tag)
+        if: github.ref_type != 'tag'
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
+
+      - name: Name the artifacts and write their hashes
+        run: scripts/package-bundles.sh "$version"
+
+      - name: Keep them as build artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-packages
+          path: target/package/*
+
+      - name: Add them to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.*
+
+  # A single-file flatpak bundle from packaging/flatpak/, which only stages the
+  # built files into the GNOME runtime sandbox. Added to the release the
+  # release job made (or kept as a build artifact when started by hand).
+  # Ubuntu 24.04, not 22.04: noble's flatpak-builder 1.4 calls appstreamcli
+  # compose on the host, while jammy's 1.2 runs appstream-compose inside the
+  # SDK, which the GNOME runtime no longer ships (Debian bug #1082763). The
+  # flatpak runs against the runtime's own glibc, so the newer host is safe.
+  flatpak:
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libsoup-3.0-dev libssl-dev libsqlite3-dev flatpak flatpak-builder appstream appstream-compose elfutils librsvg2-common dbus-x11
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          cargo build --release --locked -p pergament -p pergament-app --features pergament-app/custom-protocol
+
+      - name: Install the GNOME runtime and SDK
+        run: |
+          flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          runtime=$(python3 -c 'import json; print(json.load(open("packaging/flatpak/io.github.v3rm1n.pergament.json"))["runtime-version"])')
+          flatpak --user install -y flathub "org.gnome.Platform//$runtime" "org.gnome.Sdk//$runtime"
+
+      - name: Work out the version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Work out the version (builds without a tag)
+        if: github.ref_type != 'tag'
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
+
+      - name: Bundle the flatpak
+        run: scripts/package-flatpak.sh "$version"
+
+      - name: Smoke test from the local repo
+        run: |
+          flatpak --user install -y --reinstall "$PWD/target/flatpak-repo" io.github.v3rm1n.pergament
+          dbus-run-session -- flatpak run --command=pergament io.github.v3rm1n.pergament --help
+
+      - name: Keep it as a build artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-flatpak
+          path: target/package/*
+
+      - name: Add it to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.flatpak*
 
   # An unsigned disk image for Apple Silicon, added to the release the job above
   # made. It is ad-hoc signed only (no Apple Developer ID, no notarization), so

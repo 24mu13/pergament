@@ -1,0 +1,31 @@
+{
+  "app-id": "io.github.v3rm1n.pergament",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "command": "pergament-app",
+  "appstream-compose": false,
+  "finish-args": [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--share=ipc",
+    "--device=dri",
+    "--share=network",
+    "--socket=pulseaudio"
+  ],
+  "modules": [
+    {
+      "name": "pergament",
+      "buildsystem": "simple",
+      "sources": [{ "type": "dir", "path": "../../target/flatpak" }],
+      "build-commands": [
+        "install -Dm755 bin/pergament-app /app/bin/pergament-app",
+        "install -Dm755 bin/pergament /app/bin/pergament",
+        "install -Dm644 share/applications/io.github.v3rm1n.pergament.desktop /app/share/applications/io.github.v3rm1n.pergament.desktop",
+        "install -Dm644 share/metainfo/io.github.v3rm1n.pergament.metainfo.xml /app/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml",
+        "for size in 32x32 64x64 128x128 256x256 512x512; do install -Dm644 share/icons/hicolor/$size/apps/io.github.v3rm1n.pergament.png /app/share/icons/hicolor/$size/apps/io.github.v3rm1n.pergament.png; done",
+        "install -Dm644 share/icons/hicolor/scalable/apps/io.github.v3rm1n.pergament.svg /app/share/icons/hicolor/scalable/apps/io.github.v3rm1n.pergament.svg"
+      ]
+    }
+  ]
+}

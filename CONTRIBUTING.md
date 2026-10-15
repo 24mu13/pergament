@@ -67,11 +67,19 @@ Versions follow [semantic versioning](https://semver.org). A release is made
 through a pull request as well. On a clean, up-to-date `main` inside
 `nix develop`, run `scripts/release.sh X.Y.Z`. It runs the checks, sets the
 version in `Cargo.toml`, `src-tauri/Cargo.toml`, `package.json` and
-`tauri.conf.json` on a branch `release/vX.Y.Z` and opens a pull request. Once
-that is merged, run `scripts/release.sh --tag X.Y.Z` on `main`: it tags
-`vX.Y.Z` and pushes the tag.
+`tauri.conf.json` and adds the release to the AppStream metainfo, on a branch
+`release/vX.Y.Z`, and opens a pull request. Once that is merged, run
+`scripts/release.sh --tag X.Y.Z` on `main`: it tags `vX.Y.Z` and pushes the
+tag.
 
-The tag starts a GitHub workflow that publishes the release with the Linux zip
-and its checksum. The release notes are the ones GitHub generates from the
-merged pull requests since the last release, with the install instructions in
-front.
+The tag starts a GitHub workflow that publishes the release with the Linux
+zip, the .deb, .rpm and AppImage packages and the flatpak bundle, each with
+its checksum, and later adds a disk image for Apple Silicon Macs. The release
+notes are the ones GitHub generates from the merged pull requests since the
+last release, with the install instructions in front. Before tagging, test
+the formats from a `workflow_dispatch` run of the workflow, and check them by
+hand: install the .deb on Ubuntu and the .rpm on Fedora, run the AppImage,
+install the flatpak, and in each start the app from the menu, run `pergament`
+and `pergament-app`, and play a public video with sound (the H.264 check).
+In the flatpak, also check the library location and
+`flatpak run --command=pergament io.github.v3rm1n.pergament`.
