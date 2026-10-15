@@ -2,7 +2,7 @@
 // Renders the reader in StrictMode with a mocked backend: the study pane's note editor and the page changes that move it.
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { card } from "@/lib/fixtures";
 import type { Note, Target } from "@/lib/api";
 
@@ -18,9 +18,22 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
   convertFileSrc: (p: string) => p,
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn(async () => undefined) }));
+/** The latest handler per event, so a test can play the note window's messages. */
+const listeners: Record<string, (e: { payload: unknown }) => void> = {};
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (event: string, h: (e: { payload: unknown }) => void) => {
+    listeners[event] = h;
+    return () => undefined;
+  }),
+  emitTo: vi.fn(async () => undefined),
+}));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({ label: "main", onCloseRequested: async () => () => undefined }),
+  getCurrentWebviewWindow: () => ({
+    label: "main",
+    onCloseRequested: async () => () => undefined,
+    unminimize: async () => undefined,
+    setFocus: async () => undefined,
+  }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), message: vi.fn(), open: vi.fn(), save: vi.fn() }));
@@ -121,5 +134,64 @@ describe("Reader", () => {
       ),
     );
     await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+  });
+
+  it("follows a Bible link in a note like a cross-reference", async () => {
+    backend.link_action = () => ({ kind: "open", target: chapterTarget("nwtsty_E", 43, 3), studyNote: false });
+    render(reader(chapterTarget("nwtsty_E", 43, 3)));
+    fireEvent.click(await screen.findByText("Loved the world"));
+    const editor = await screen.findByRole("form", { name: "Edit note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "[Joh 3:16](pergament://bible/43:3:16-43:3:16)" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Preview" }));
+    fireEvent.click(within(editor).getByText("Joh 3:16"));
+    await waitFor(() =>
+      expect(calls.find((c) => c.cmd === "link_action")?.args).toEqual({ current: "nwtsty_E", href: "pergament://bible/43:3:16-43:3:16" }),
+    );
+    expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(1);
+    expect(vi.mocked(emitTo)).not.toHaveBeenCalledWith("main", "note-link", expect.anything());
+    expect(calls.some((c) => c.cmd === "open_external")).toBe(false);
+  });
+
+  /** Opens the note of John 3 in the study pane and changes its text without saving. */
+  async function editNote(value: string) {
+    render(reader(chapterTarget("nwtsty_E", 43, 3)));
+    fireEvent.click(await screen.findByText("Loved the world"));
+    const editor = await screen.findByRole("form", { name: "Edit note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value } });
+    return editor;
+  }
+  /** Closes the reference and finds the note's text back in its editor. */
+  async function backToNote(value: string) {
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+    const editor = await screen.findByRole("form", { name: "Edit note" });
+    expect((within(editor).getByPlaceholderText("Note") as HTMLTextAreaElement).value).toBe(value);
+    expect(calls.some((c) => c.cmd === "open_note_window")).toBe(false);
+  }
+  const elsewhere = () => ({ kind: "open", target: chapterTarget("nwtsty_E", 43, 4), studyNote: false });
+
+  it("keeps the unsaved note behind a reference followed from its own preview", async () => {
+    backend.link_action = elsewhere;
+    const text = "Read [Joh 4:1](pergament://bible/43:4:1-43:4:1)";
+    const editor = await editNote(text);
+    fireEvent.click(within(editor).getByRole("button", { name: "Preview" }));
+    fireEvent.click(within(editor).getByText("Joh 4:1"));
+    expect(await screen.findByText("John 4")).toBeTruthy();
+    expect(screen.queryByRole("form")).toBeNull();
+    expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(1);
+    await backToNote(text);
+  });
+
+  it("opens a link from the note window in the reference pane, keeping the page and the unsaved note", async () => {
+    backend.link_action = elsewhere;
+    await editNote("Unsaved thoughts");
+    const where = screen.getByTestId("where").textContent;
+    await waitFor(() => expect(listeners["note-link"]).toBeTruthy());
+    await act(async () => listeners["note-link"]({ payload: "pergament://bible/43:4:1-43:4:1" }));
+    expect(await screen.findByText("John 4")).toBeTruthy();
+    expect(screen.getByTestId("where").textContent).toBe(where);
+    expect(calls.filter((c) => c.cmd === "link_action")).toEqual([
+      { cmd: "link_action", args: { current: "nwtsty_E", href: "pergament://bible/43:4:1-43:4:1" } },
+    ]);
+    await backToNote("Unsaved thoughts");
   });
 });

@@ -7,6 +7,7 @@ import { renderMarkdown } from "@/lib/markdown";
 import { linkEdit, useLinkBible } from "@/lib/note-links";
 import type { Book } from "@/lib/bible";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
+import { sendNoteLink } from "@/lib/note-window";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 
@@ -73,6 +74,16 @@ export function MarkToolbar({
 }
 
 /**
+ * Opens a link clicked in a note: the app's own links, such as a Bible verse, with `onAppLink`, else in the main
+ * window; others in the browser.
+ */
+function openNoteLink(a: HTMLAnchorElement, onAppLink: ((href: string) => void) | undefined, onError: (message: string) => void) {
+  const href = a.getAttribute("href") ?? "";
+  if (href.startsWith("pergament:")) (onAppLink ?? sendNoteLink)(href);
+  else api.openExternal(a.href).catch((e) => onError(String(e)));
+}
+
+/**
  * A note as shown in the study pane and in Personal Study. With `onToggle`, a
  * note cut off at four lines can be opened to its whole text, links and all.
  */
@@ -82,12 +93,15 @@ export function NoteCard({
   subtitle,
   expanded = false,
   onToggle,
+  onAppLink,
 }: {
   note: Note;
   onClick?: () => void;
   subtitle?: string;
   expanded?: boolean;
   onToggle?: () => void;
+  /** Opens the app's own links, such as a Bible verse; without it the main window opens them. */
+  onAppLink?: (href: string) => void;
 }) {
   const body = useRef<HTMLDivElement>(null);
   const [clipped, setClipped] = useState(false);
@@ -97,7 +111,7 @@ export function NoteCard({
     if (el && !expanded) setClipped(el.scrollHeight > el.clientHeight + 1);
   }, [note.content, expanded]);
   const toggle = onToggle && (clipped || expanded);
-  /** Links in the whole note open in the browser; a click elsewhere on it edits the note. */
+  /** Links in the whole note open in the app or the browser; a click elsewhere on it edits the note. */
   const onBodyClick = (e: React.MouseEvent) => {
     const a = (e.target as HTMLElement).closest("a");
     if (!a) {
@@ -108,7 +122,7 @@ export function NoteCard({
     e.preventDefault();
     // The study pane would otherwise follow the link itself.
     e.stopPropagation();
-    api.openExternal(a.href).catch(() => undefined);
+    openNoteLink(a, onAppLink, () => undefined);
   };
   const bar = <span className={cn("w-1 shrink-0 self-stretch", note.color ? `hl-dot-${note.color}` : "bg-line")} />;
   const tags = note.tags.length > 0 && (
@@ -204,6 +218,7 @@ export function NoteForm({
   onDirty,
   onChange,
   onError,
+  onAppLink,
   books = null,
 }: {
   note: Partial<Note>;
@@ -218,6 +233,8 @@ export function NoteForm({
   onDirty?: (dirty: boolean) => void;
   onChange?: (fields: NoteFields) => void;
   onError?: (message: string) => void;
+  /** Opens the app's own links in the preview, such as a Bible verse; without it the main window opens them. */
+  onAppLink?: (href: string) => void;
   /** The books of the Bible that Ctrl+L links references to; without them it links no reference. */
   books?: Book[] | null;
 }) {
@@ -256,14 +273,14 @@ export function NoteForm({
       setContent(area.value.slice(0, edit.start) + edit.text + area.value.slice(edit.end));
     }
   };
-  /** Links in the preview open in the browser, not in the app's window. */
+  /** Links in the preview open in the app or the browser, not in the editor's window. */
   const openLink = (e: React.MouseEvent) => {
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
     e.preventDefault();
     // A host around the form, such as the study pane, must not handle the same click.
     e.stopPropagation();
-    api.openExternal(a.href).catch((err) => onError?.(String(err)));
+    openNoteLink(a, onAppLink, (message) => onError?.(message));
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -345,9 +362,11 @@ const isPopOut = (e: React.KeyboardEvent) => (e.ctrlKey || e.metaKey) && e.shift
 /**
  * The note being written in the reader's study pane, in place of its card. It
  * saves to the page the note was started on and can move to the note window.
+ * The app's own links in its preview open with `onAppLink`, else in the app.
  */
-export function InlineNoteEditor() {
-  const { note, closeNote, setNoteDirty, setNoteFields, popOutNote, notesChanged, toast, view, publications, lang, bibles } = useApp();
+export function InlineNoteEditor({ onAppLink }: { onAppLink?: (href: string) => void }) {
+  const { note, closeNote, setNoteDirty, setNoteFields, popOutNote, notesChanged, toast, view, publications, lang, bibles, openLink } =
+    useApp();
   /** Set while a save or delete runs, so a second click does not save the note twice. */
   const busy = useRef(false);
   const bible = useLinkBible(view.name === "reader" ? view.target.publication : null, publications, lang, bibles);
@@ -402,6 +421,7 @@ export function InlineNoteEditor() {
         onDirty={setNoteDirty}
         onChange={setNoteFields}
         onError={toast}
+        onAppLink={onAppLink ?? ((href) => void openLink(href))}
         books={bible?.books}
         onCancel={() => void closeNote(id)}
         onSave={(input) => run(() => saveDraft(draft, input))}

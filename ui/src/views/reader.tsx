@@ -61,7 +61,23 @@ export function ReaderView({
   noteGuid?: string;
   scroll?: number;
 }) {
-  const { push, replace, toast, lang, userVersion, notesVersion, publications, playRecording, showImage, layout, note: written, releaseNote, openNote } = useApp();
+  const {
+    push,
+    replace,
+    toast,
+    lang,
+    userVersion,
+    notesVersion,
+    publications,
+    playRecording,
+    showImage,
+    layout,
+    note: written,
+    releaseNote,
+    keepNote,
+    openNote,
+    setLinkHandler,
+  } = useApp();
   /** The note being written in the pane; one moving to the note window is gone from here already. */
   const inlineNote = written?.moving ? null : written;
   const [refs, setRefs] = useState<PaneRef[]>([]);
@@ -392,6 +408,15 @@ export function ReaderView({
     if (key && study?.verses.some((v) => verseKey(v) === key)) selectVerse(key);
   };
 
+  /** A note's links to the app's own pages open like a cross-reference, also those clicked in the note window. */
+  const followNoteLink = (href: string) => void follow(href);
+  const latestFollow = useRef(follow);
+  latestFollow.current = follow;
+  useEffect(() => {
+    setLinkHandler((href) => void latestFollow.current(href));
+    return () => setLinkHandler(null);
+  }, [setLinkHandler]);
+
   const onPaneClick = (e: ReactMouseEvent) => {
     const a = (e.target as HTMLElement).closest("a");
     if (!a) return;
@@ -459,12 +484,14 @@ export function ReaderView({
   const detached = inlineNote !== null && (!inlineNote.draft.note.guid || !user.notes.some((n) => n.guid === inlineNote.draft.note.guid));
   const hasPane =
     (chapter ? study !== null : docFootnotes.length > 0) || refs.length > 0 || user.notes.length > 0 || inlineNote !== null;
-  // The note being written lives in the pane: when the page changes or the notes leave
-  // the pane, unsaved text moves to the note window and an unchanged note closes.
+  // The note being written lives in the pane: when the page changes or the pane closes,
+  // unsaved text moves to the note window and an unchanged note closes. Behind a followed
+  // reference it waits, and comes back with its text when the reference closes.
   useEffect(() => releaseNote, [target, releaseNote]);
   useEffect(() => {
-    if (!paneOpen || refs.length > 0) releaseNote();
-  }, [paneOpen, refs.length, releaseNote]);
+    if (!paneOpen) releaseNote();
+    else if (refs.length > 0) keepNote();
+  }, [paneOpen, refs.length, releaseNote, keepNote]);
   const subtitle = detail?.card.title ?? "";
   const edge =
     "absolute top-1/2 z-10 flex h-10 w-7 -translate-y-1/2 items-center justify-center rounded-md border border-line bg-surface text-muted hover:bg-bar hover:text-fg";
@@ -545,17 +572,18 @@ export function ReaderView({
             {(user.notes.length > 0 || detached) && (
               <section className="mb-6 flex flex-col gap-2">
                 <h3 className="text-sm font-semibold">{t("My notes")}</h3>
-                {detached && <InlineNoteEditor />}
+                {detached && <InlineNoteEditor onAppLink={followNoteLink} />}
                 {user.notes.map((n) => (
                   <div key={n.guid} data-note={n.guid}>
                     {inlineNote?.draft.note.guid === n.guid ? (
-                      <InlineNoteEditor />
+                      <InlineNoteEditor onAppLink={followNoteLink} />
                     ) : (
                       <NoteCard
                         note={n}
                         expanded={expanded.has(n.guid)}
                         onToggle={() => toggleNote(n.guid)}
                         onClick={() => void openNote({ note: n }, { in: "pane" })}
+                        onAppLink={followNoteLink}
                       />
                     )}
                   </div>

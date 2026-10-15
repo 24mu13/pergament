@@ -84,6 +84,17 @@ describe("Note window", () => {
     expect(ask).not.toHaveBeenCalled();
   });
 
+  it("asks the app to open a Bible link in the preview and stays open", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1, { title: "Loved the world", content: "See [Joh 3:16](pergament://bible/43:3:16-43:3:16)", tags: "" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByText("Joh 3:16"));
+    await waitFor(() =>
+      expect(emitted).toContainEqual({ to: "main", event: "note-link", payload: "pergament://bible/43:3:16-43:3:16" }),
+    );
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
   it("asks once while notes keep coming in, then takes the newest", async () => {
     await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
     await open(1);

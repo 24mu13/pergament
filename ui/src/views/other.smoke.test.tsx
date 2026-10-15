@@ -27,9 +27,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   emitTo: vi.fn(async () => undefined),
 }));
 let closeRequested: ((e: { preventDefault: () => void }) => Promise<void>) | null = null;
+const setFocus = vi.fn(async () => undefined);
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({
     label: "main",
+    unminimize: async () => undefined,
+    setFocus,
     onCloseRequested: async (h: typeof closeRequested) => {
       closeRequested = h;
       return () => undefined;
@@ -978,6 +981,36 @@ describe("Go to", () => {
     fireEvent.change(again, { target: { value: "Heb 10:24" } });
     fireEvent.submit(again.closest("form")!);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+});
+
+describe("Links from the note window", () => {
+  it("opens them in the Bible chosen for the language, in front, and says when one is not in the library", async () => {
+    backend.list_publications = () => [card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Bible", isBible: true, langCode: "X" })];
+    backend.link_action = ({ href }: { href: string }) =>
+      href.includes("bible")
+        ? { kind: "open", target: { publication: "nwtsty_2", kind: { chapter: { book: 40, chapter: 24, verse: 14 } } }, studyNote: false }
+        : { kind: "missing", url: null };
+    function View() {
+      return <span data-testid="view">{useApp().view.name}</span>;
+    }
+    renderIn(<View />);
+    await waitFor(() => expect(calls.some((c) => c.cmd === "list_publications")).toBe(true));
+    await waitFor(() => expect(listeners["note-link"]).toBeTruthy());
+    setFocus.mockClear();
+    await act(async () => listeners["note-link"]({ payload: "pergament://bible/40:24:14-40:24:14" }));
+    await waitFor(() => expect(screen.getByTestId("view").textContent).toBe("reader"));
+    expect(calls.filter((c) => c.cmd === "link_action").map((c) => c.args)).toEqual([
+      { current: "nwtsty_2", href: "pergament://bible/40:24:14-40:24:14" },
+    ]);
+    expect(setFocus).toHaveBeenCalled();
+    await act(async () => listeners["note-link"]({ payload: "pergament://pub/X:1/1" }));
+    expect(await screen.findByText("Not in your library: pergament://pub/X:1/1")).toBeTruthy();
+    expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(2);
+    // Only the app's own links come this way.
+    await act(async () => listeners["note-link"]({ payload: "https://example.org/" }));
+    await act(async () => listeners["note-link"]({ payload: 42 }));
+    expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(2);
   });
 });
 

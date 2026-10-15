@@ -25,7 +25,7 @@ import { fieldsOf, sameFields, type NoteDraft, type NoteFields } from "@/lib/not
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
-import { askDiscard, NOTE_CLOSED, NOTE_DIRTY, NOTE_READY, NOTES_CHANGED, sendToNoteWindow, type NoteWindowMessage } from "@/lib/note-window";
+import { askDiscard, NOTE_CLOSED, NOTE_DIRTY, NOTE_LINK, NOTE_READY, NOTES_CHANGED, sendToNoteWindow, type NoteWindowMessage } from "@/lib/note-window";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
 import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
@@ -64,13 +64,13 @@ import { scroller } from "@/lib/scroll";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu, type Translations } from "@/components/language-menu";
 import { useCatalogBibles } from "@/lib/use-catalog-bibles";
-import { bibleChoices, pickBible } from "@/lib/bible";
+import { bibleChoices, bibleFor, pickBible } from "@/lib/bible";
 
 /** The note written in the reader's study pane. */
 export interface InlineNote {
   id: number;
   draft: NoteDraft;
-  /** Unsaved text the editor starts with instead of the note's, after moving it to the window failed. */
+  /** Unsaved text the editor starts with instead of the note's: kept while a reference covers the pane, or after moving it to the window failed. */
   fields?: NoteFields;
   /** Counts restarts of the editor, so it takes up `fields` again. */
   restart?: number;
@@ -161,6 +161,13 @@ interface AppContextValue {
   playItem: (item: PlayerItem) => void;
   /** Look up a recording that a publication links to and play it. */
   playRecording: (media: MediaRef) => Promise<void>;
+  /** Open one of the app's own links, such as a Bible verse in a note, in the Bible chosen for the language. */
+  openLink: (href: string) => Promise<void>;
+  /**
+   * Let a view open the app's links clicked in the note window itself, such as the reader in its reference pane;
+   * null hands them back to `openLink`.
+   */
+  setLinkHandler: (handler: ((href: string) => void) | null) => void;
   closePlayer: () => void;
   /** The note written in the reader's study pane. It stays open while the user navigates. */
   note: InlineNote | null;
@@ -179,6 +186,8 @@ interface AppContextValue {
   popOutNote: () => Promise<void>;
   /** The inline editor's place went away: unsaved text goes to the window, an unchanged note is closed. */
   releaseNote: () => void;
+  /** The inline editor hides for a while, such as behind a followed reference: it comes back with the text it holds. */
+  keepNote: () => void;
   /** Tell the views that a note was saved or deleted. */
   notesChanged: () => void;
   /** The second display window and what is sent to it. */
@@ -657,6 +666,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     noteFields.current = null;
     setNote(null);
   }, [moveToWindow]);
+  const keepNote = useCallback(() => {
+    const current = noteRef.current;
+    if (!current || moving.current !== null || !noteFields.current) return;
+    setNote({ ...current, fields: noteFields.current });
+  }, []);
   const openNote = useCallback(
     async (draft: NoteDraft, { in: where = "window" }: { in?: "pane" | "window" } = {}) => {
       if (where === "window") {
@@ -697,6 +711,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [playItem, toast],
   );
+  const openLink = useCallback(
+    async (href: string) => {
+      try {
+        const action = await api.linkAction(bibleFor(null, publications, lang, bibles)?.dir ?? null, href);
+        switch (action.kind) {
+          case "open":
+            dispatch({ type: "push", view: { name: "reader", target: action.target } });
+            break;
+          case "external":
+            await api.openExternal(action.url);
+            break;
+          case "media":
+            await playRecording(action.media);
+            break;
+          case "missing":
+            toast(t("Not in your library: {link}", { link: action.url ?? href }));
+            break;
+          case "ignore":
+            break;
+        }
+      } catch (e) {
+        toast(t("Cannot follow link: {error}", { error: String(e) }));
+      }
+    },
+    [publications, lang, bibles, playRecording, toast],
+  );
+  const linkHandler = useRef<((href: string) => void) | null>(null);
+  const setLinkHandler = useCallback((handler: ((href: string) => void) | null) => {
+    linkHandler.current = handler;
+  }, []);
+  // The latest opener, so the note window's links are heard all along, not only between library changes.
+  const latestOpenLink = useRef(openLink);
+  latestOpenLink.current = openLink;
+  // A link clicked in the note window opens here, brought in front of it; the note window stays open.
+  useEffect(() => {
+    const un = listen<unknown>(NOTE_LINK, ({ payload }) => {
+      if (typeof payload !== "string" || !payload.startsWith("pergament://")) return;
+      if (linkHandler.current) linkHandler.current(payload);
+      else void latestOpenLink.current(payload);
+      const win = getCurrentWebviewWindow();
+      void win
+        .unminimize()
+        .then(() => win.setFocus())
+        .catch(() => undefined);
+    });
+    return () => void un.then((f) => f());
+  }, []);
 
   const value = useMemo<AppContextValue>(
     () => ({
@@ -784,6 +845,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       player,
       playItem,
       playRecording,
+      openLink,
+      setLinkHandler,
       closePlayer,
       note,
       openNote,
@@ -792,6 +855,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setNoteFields,
       popOutNote,
       releaseNote,
+      keepNote,
       notesChanged,
       display: { enabled: displayOn, setEnabled: setSecondDisplay, send: sendDisplay },
       viewer,
@@ -836,6 +900,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       player,
       playItem,
       playRecording,
+      openLink,
+      setLinkHandler,
       closePlayer,
       note,
       openNote,
@@ -844,6 +910,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setNoteFields,
       popOutNote,
       releaseNote,
+      keepNote,
       notesChanged,
       displayOn,
       setSecondDisplay,

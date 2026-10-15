@@ -3,13 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), convertFileSrc: (p: string) => p }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ label: "main", onCloseRequested: async () => () => undefined }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo } from "@tauri-apps/api/event";
 import { NoteCard, NoteForm } from "./notes";
 import type { Note } from "@/lib/api";
 
@@ -77,6 +78,29 @@ describe("NoteCard", () => {
     fireEvent.click(screen.getByText("one"));
     expect(onClick).not.toHaveBeenCalled();
     selection.mockRestore();
+  });
+
+  const linked: Note = { ...note, content: "Read [Mt 24:14](pergament://bible/40:24:14-40:24:14) and [map](https://example.org/)" };
+
+  it("opens the app's own links in the app and others in the browser, without editing", () => {
+    vi.mocked(invoke).mockClear();
+    const onClick = vi.fn();
+    const onAppLink = vi.fn();
+    render(<NoteCard note={linked} expanded onClick={onClick} onAppLink={onAppLink} />);
+    fireEvent.click(screen.getByText("Mt 24:14"));
+    expect(onAppLink).toHaveBeenCalledWith("pergament://bible/40:24:14-40:24:14");
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("open_external", expect.anything());
+    fireEvent.click(screen.getByText("map"));
+    expect(onAppLink).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_external", { url: "https://example.org/" });
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("asks the main window to open the app's own links when no one else does", () => {
+    vi.mocked(emitTo).mockClear();
+    render(<NoteCard note={linked} expanded />);
+    fireEvent.click(screen.getByText("Mt 24:14"));
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("main", "note-link", "pergament://bible/40:24:14-40:24:14");
   });
 
   it("names the title button of an untitled whole note so it can be edited from the keyboard", () => {
@@ -187,6 +211,19 @@ describe("NoteForm", () => {
     const area = link("ab", 1, 1);
     expect(area.value).toBe("a[]()b");
     expect([area.selectionStart, area.selectionEnd]).toEqual([2, 2]);
+  });
+
+  it("opens the app's own links in the preview in the app and others in the browser", () => {
+    vi.mocked(invoke).mockClear();
+    const onAppLink = vi.fn();
+    const content = "[Mt 24:14](pergament://bible/40:24:14-40:24:14) [map](https://example.org/)";
+    render(<NoteForm note={{ content }} focus={false} onSave={() => undefined} onCancel={() => undefined} onAppLink={onAppLink} />);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByText("Mt 24:14"));
+    expect(onAppLink).toHaveBeenCalledWith("pergament://bible/40:24:14-40:24:14");
+    fireEvent.click(screen.getByText("map"));
+    expect(onAppLink).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_external", { url: "https://example.org/" });
   });
 
   it("leaves Ctrl+Shift+L alone", () => {
