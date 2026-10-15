@@ -5,8 +5,8 @@
 # inside the sandbox. Build first:
 #   bun run build
 #   cargo build --release -p pergament -p pergament-app --features pergament-app/custom-protocol
-# The GNOME runtime and SDK from the manifest must be installed:
-#   flatpak --user install flathub org.gnome.Platform//50 org.gnome.Sdk//50
+# The GNOME runtime and SDK versions pinned in the manifest must be installed:
+#   flatpak --user install flathub org.gnome.Platform//<pin> org.gnome.Sdk//<pin>
 set -euo pipefail
 die() { echo "package-flatpak: $*" >&2; exit 1; }
 

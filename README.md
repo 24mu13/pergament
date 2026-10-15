@@ -158,7 +158,8 @@ SQLite) are installed. The zip is built on Ubuntu 22.04, so it needs a
 distribution at least that recent.
 
 The packages include the H.264 decoder, so video playback works out of the box:
-the .deb and .rpm depend on `gst-libav` (`gstreamer1-libav` on Fedora), the
+the .deb depends on and the .rpm recommends `gst-libav` (`gstreamer1-libav`
+on Fedora), the
 AppImage bundles GStreamer, and the flatpak runtime has it. Only from the zip,
 or after building from source, do you need to install it yourself
 (`gst-libav` on Debian and Ubuntu, `gstreamer1-libav` on Fedora, `gst-libav`
