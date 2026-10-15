@@ -83,7 +83,7 @@ export const ptBR: Record<string, string> = {
   "Programs": "Programas",
   "Index": "Índice",
   "Guidelines": "Orientações",
-  "Curriculum": "Currículo",
+  "Curriculum": "Conteúdo das Escolas",
   "Outlines": "Esboços",
   "Other": "Outros",
   "Yearbooks": "Anuários",
@@ -93,7 +93,7 @@ export const ptBR: Record<string, string> = {
   "Kingdom News": "Notícias do Reino",
   "Circuit Assembly": "Assembleia de Circuito",
   "Convention Program": "Programa do Congresso",
-  "Public Edition": "Edição Pública",
+  "Public Edition": "Edição para o Público",
   "Study Edition": "Edição de Estudo",
 
   // Publications and reader
