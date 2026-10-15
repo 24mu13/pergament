@@ -408,6 +408,7 @@ export const api = {
   catalogCached: () => invoke<boolean>("catalog_cached"),
   loadCatalog: () => invoke<void>("load_catalog"),
   homeLists: (lang: string, date: string) => invoke<HomeLists | null>("home_lists", { lang, date }),
+  teachingToolbox: (lang: string) => invoke<CatalogEntry[] | null>("teaching_toolbox", { lang }),
   categories: (lang: string) => invoke<Category[] | null>("categories", { lang }),
   category: (lang: string, id: number) => invoke<CatalogEntry[] | null>("category", { lang, id }),
   meetings: (lang: string, date: string) => invoke<Meetings | null>("meetings", { lang, date }),

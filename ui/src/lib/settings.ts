@@ -86,6 +86,22 @@ export function saveLang(code: string) {
   write("lang", code);
 }
 
+/** Catalog language code the Teaching Toolbox shows; `null` when no override is stored. */
+export function loadToolboxLang(): string | null {
+  const l = read("toolboxLang");
+  return l && /^[A-Z0-9-]{1,8}$/.test(l) ? l : null;
+}
+
+/** Stores the Teaching Toolbox language code, or clears the override with `null`. */
+export function saveToolboxLang(code: string | null) {
+  try {
+    if (code) localStorage.setItem("toolboxLang", code);
+    else localStorage.removeItem("toolboxLang");
+  } catch {
+    // Storage unavailable: the setting just does not persist.
+  }
+}
+
 export function loadUiLang(): UiLangSetting {
   const l = read("uiLang");
   return l && isUiLang(l) ? l : "system";
