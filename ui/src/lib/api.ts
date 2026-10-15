@@ -183,7 +183,6 @@ export interface WhatsNewRow extends CatalogEntry {
 
 export interface HomeLists {
   teachingToolbox: CatalogEntry[];
-  whatsNew: CatalogEntry[];
   dailyText: CatalogEntry | null;
 }
 

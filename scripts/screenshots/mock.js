@@ -650,7 +650,7 @@
       dir === "lbn_E" && book === 2 && chapter === 10 ? L10_STUDY : { outlineTitle: null, outline: [], verses: [] },
     catalog_cached: () => true,
     load_catalog: () => null,
-    home_lists: () => ({ teachingToolbox: TOOLBOX, whatsNew: WHATS_NEW, dailyText: LOCAL_ENTRIES.mlc26_E }),
+    home_lists: () => ({ teachingToolbox: TOOLBOX, dailyText: LOCAL_ENTRIES.mlc26_E }),
     whats_new: ({ langs }) => langs.flatMap((c) => WHATS_NEW_ROWS.filter((r) => r.langCode === c)),
     categories: () => CATEGORIES,
     category: ({ id }) => ALL_CATALOG.filter((e) => e.item.publication_type === id),

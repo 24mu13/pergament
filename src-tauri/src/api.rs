@@ -398,7 +398,6 @@ pub fn favorite_entries(
 #[serde(rename_all = "camelCase")]
 pub struct HomeLists {
     pub teaching_toolbox: Vec<CatalogEntry>,
-    pub whats_new: Vec<CatalogEntry>,
     /// This year's daily text booklet.
     pub daily_text: Option<CatalogEntry>,
 }
@@ -420,7 +419,6 @@ pub fn home_lists(
             catalog.curated(meps, LIST_TEACHING_TOOLBOX).map_err(err)?,
             library,
         )?,
-        whats_new: entries(catalog.whats_new(meps, 12).map_err(err)?, library)?,
         daily_text: entries(daily.into_iter().collect(), library)?
             .into_iter()
             .next(),
