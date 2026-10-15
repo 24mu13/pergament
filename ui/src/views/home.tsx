@@ -153,8 +153,11 @@ export function HomeView() {
         if (live) setNewRows(r);
       })
       .catch((e) => {
-        // Keep the previous rows; the next catalog or language change retries.
+        // Keep the previous rows; the next catalog or language change retries. With nothing to
+        // keep (the first load failed), an empty section still renders: the picker must stay
+        // reachable so a dead stored language can be pruned. The failure is not cached.
         toast(String(e));
+        if (live) setNewRows((prev) => (prev === undefined ? [] : prev));
       });
     return () => {
       live = false;

@@ -260,6 +260,22 @@ describe("Home with tile menus", () => {
     expect(JSON.parse(localStorage.getItem("whatsNewLangs")!)).toEqual([]);
   });
 
+  it("recovers on a cold start when the backend rejects the dead code", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["ZZ"]));
+    backend.whats_new = ({ langs }: { langs: string[] }) => {
+      if (langs.includes("ZZ")) throw new Error('unknown language code "ZZ"');
+      return langs.flatMap((c) => whatsNewRows.filter((r) => r.langCode === c));
+    };
+    renderHome();
+    // With no rows to keep, the section still renders its heading and picker instead of vanishing.
+    expect(await screen.findByLabelText("What's New languages")).toBeTruthy();
+    // The picker prunes the dead code, the app language takes over and its rows show up.
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X"] }),
+    );
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+  });
+
   it("keeps the rows when the lookup fails", async () => {
     renderHome();
     expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
