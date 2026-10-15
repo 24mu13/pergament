@@ -3,7 +3,7 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { CatalogEntry, PubCard } from "@/lib/api";
+import type { CatalogEntry, PubCard, WhatsNewRow } from "@/lib/api";
 import { card, entry } from "@/lib/fixtures";
 
 const calls: { cmd: string; args: unknown }[] = [];
@@ -28,6 +28,7 @@ import { HomeView } from "@/views/home";
 
 let publications: PubCard[];
 let toolbox: CatalogEntry[];
+let whatsNewRows: WhatsNewRow[];
 
 beforeEach(() => {
   calls.length = 0;
@@ -41,13 +42,18 @@ beforeEach(() => {
     entry("T-ftr", "Tracts and Invitations", null, "Zukunft"),
     entry("odd", null, null, "Ohne Kategorie"),
   ];
+  whatsNewRows = [{ ...entry("ll", "Brochures and Booklets", null, "Frisch erschienen"), langCode: "X" }];
   backend = {
     list_publications: () => publications,
-    languages: () => [],
+    languages: () => [
+      { code: "X", name: "German", vernacular: "Deutsch", rtl: false, signLanguage: false },
+      { code: "E", name: "English", vernacular: "English", rtl: false, signLanguage: false },
+    ],
     catalog_cached: () => true,
     check_updates: () => null,
-    home_lists: () => ({ teachingToolbox: toolbox, whatsNew: [], dailyText: null }),
+    home_lists: () => ({ teachingToolbox: toolbox, dailyText: null }),
     teaching_toolbox: () => toolbox,
+    whats_new: ({ langs }: { langs: string[] }) => langs.flatMap((c) => whatsNewRows.filter((r) => r.langCode === c)),
     dated_page: () => null,
     favorite_entries: () => [],
     remove_publication: ({ dir }: { dir: string }) => {
@@ -216,20 +222,85 @@ describe("Home with tile menus", () => {
   });
 
   it("lists What's New as rows with a Get button that downloads", async () => {
-    backend.home_lists = () => ({
-      teachingToolbox: toolbox,
-      whatsNew: [entry("ll", "Brochures and Booklets", null, "Höre auf Gott")],
-      dailyText: null,
-    });
     renderHome();
     fireEvent.click(await screen.findByRole("button", { name: /^Get · / }));
     await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
   });
 
+  it("downloads a What's New row in the row's language", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["E"]));
+    whatsNewRows = [{ ...entry("lff", "Books", null, "Newly Arrived"), langCode: "E" }];
+    renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: "Get · Newly Arrived" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
+    expect(calls.find((c) => c.cmd === "download_publication")?.args).toMatchObject({ lang: "E" });
+  });
+
+  it("follows the app language until a selection is stored", async () => {
+    renderHome();
+    await screen.findByText("Frisch erschienen");
+    expect(calls.find((c) => c.cmd === "whats_new")?.args).toEqual({ langs: ["X"] });
+    // One language only: the row's muted line shows the category without the language.
+    expect(screen.queryByText("Brochures and Booklets · Deutsch")).toBeNull();
+    cleanup();
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["X", "E"]));
+    // Same symbol and issue in both languages: only the row key tells them apart.
+    whatsNewRows.push({ ...entry("ll", "Books", null, "Newly Arrived"), langCode: "E" });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.join(" ")));
+    renderHome();
+    expect(await screen.findByText("Newly Arrived")).toBeTruthy();
+    spy.mockRestore();
+    // The backend does not dedupe across languages, so React must not see duplicate keys.
+    expect(errors.join("\n")).not.toContain("same key");
+    expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X", "E"] });
+    expect(screen.getByText("Brochures and Booklets · Deutsch")).toBeTruthy();
+    expect(screen.getByText("Books · English")).toBeTruthy();
+    expect(screen.getByText("Frisch erschienen")).toBeTruthy();
+  });
+
+  it("recovers when a stored language no longer exists", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["ZZ"]));
+    renderHome();
+    // The dead code is pruned to an empty selection, which falls back to the app language.
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X"] }),
+    );
+    expect(JSON.parse(localStorage.getItem("whatsNewLangs")!)).toEqual([]);
+  });
+
+  it("recovers on a cold start when the backend rejects the dead code", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["ZZ"]));
+    backend.whats_new = ({ langs }: { langs: string[] }) => {
+      if (langs.includes("ZZ")) throw new Error('unknown language code "ZZ"');
+      return langs.flatMap((c) => whatsNewRows.filter((r) => r.langCode === c));
+    };
+    renderHome();
+    // With no rows to keep, the section still renders its heading and picker instead of vanishing.
+    expect(await screen.findByLabelText("What's New languages")).toBeTruthy();
+    // The picker prunes the dead code, the app language takes over and its rows show up.
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X"] }),
+    );
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+  });
+
+  it("keeps the rows when the lookup fails", async () => {
+    renderHome();
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+    cleanup();
+    backend.whats_new = () => {
+      throw new Error("boom");
+    };
+    renderHome();
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+  });
+
   it("shows the toolbox in the picked language while What's New keeps the app language", async () => {
     localStorage.setItem("toolboxLang", "T");
     backend.teaching_toolbox = () => [entry("lff", "Books", null, "Felizes para Sempre")];
-    backend.home_lists = () => ({ teachingToolbox: toolbox, whatsNew: [entry("ll", "Brochures and Booklets", null, "Neue Ausgabe")], dailyText: null });
+    whatsNewRows = [{ ...entry("ll", "Brochures and Booklets", null, "Neue Ausgabe"), langCode: "X" }];
     renderHome();
     expect(await screen.findByText("Felizes para Sempre")).toBeTruthy();
     expect(screen.queryByText("Glücklich")).toBeNull(); // the app-language toolbox is not used
@@ -284,7 +355,7 @@ describe("Home with tile menus", () => {
   it("toasts and empties the toolbox when its fetch fails", async () => {
     localStorage.setItem("toolboxLang", "T");
     backend.teaching_toolbox = () => { throw new Error("boom"); };
-    backend.home_lists = () => ({ teachingToolbox: toolbox, whatsNew: [entry("ll", "Brochures and Booklets", null, "Neue Ausgabe")], dailyText: null });
+    whatsNewRows = [{ ...entry("ll", "Brochures and Booklets", null, "Neue Ausgabe"), langCode: "X" }];
     renderHome();
     expect(await screen.findByText("Neue Ausgabe")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Glücklich")).toBeNull());
