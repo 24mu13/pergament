@@ -64,7 +64,7 @@ Key tables:
 | `Multimedia` / `DocumentMultimedia` | images: `FilePath` (file in `contents`), `MimeType`, `Width`, `Height`, `Label` (alt text), encrypted `CaptionContent`, `CreditLineContent` |
 | `Footnote` | `DocumentId`, `FootnoteIndex`, encrypted `Content`, `BibleVerseId` |
 | `BibleCitation` | cross references: `DocumentId`, `BlockNumber`, `ElementNumber`, `FirstBibleVerseId`/`LastBibleVerseId`, `BibleVerseId` (the verse the reference is attached to) |
-| `Extract` / `DocumentExtract` | quoted excerpts from other publications; `Link` like `p/X:502016128/`, `Caption` (plain HTML), encrypted `Content` |
+| `Extract` / `DocumentExtract` | quoted excerpts from other publications; `Link` like `p/X:502016128/`, `Caption` (plain HTML), encrypted `Content`. A citation anchor (see "Publication links") is taken to carry the same link as `Link` with `p/` in place of the scheme (`jwpub://p/X:502016128/3-5` ↔ `p/X:502016128/3-5`); Pergament matches it exactly, with either trailing slash, or by the head before the range when that head is unique. Inferred from the two shapes, not yet probed in a file; the opt-in test `extracts_resolve_on_real_files` checks it against a user-supplied publication |
 | `InternalLink`, `Hyperlink` (+`Document…` maps) | link targets, `Link` like `p/X:1001070005/` |
 | `BibleBook` | 66 rows; `BookDocumentId`, `IntroDocumentId`, `OverviewDocumentId`, `FirstVerseId`/`LastVerseId`, encrypted `Profile`, `BookDisplayTitle` |
 | `BibleChapter` | 1189 rows; `BookNumber`, `ChapterNumber`, encrypted `Content` (+ optional `PreContent`, `PostContent`), verse/footnote/citation ID ranges |
