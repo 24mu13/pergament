@@ -420,6 +420,21 @@
     entryOf("tbn", "Tracts and Invitations", 10, "The Bridge Between Neighbours", { on: "2026-09-18T08:00:00Z", size: 600_000 }),
   ];
 
+  // The Teaching Toolbox in German, for the language picker; the same invented publications as TOOLBOX.
+  const TOOLBOX_X = [
+    entryOf("nlk", BROCHURES, 4, "Notizen des Leuchtturmwärters", { shortTitle: "Leuchtturmwärter" }),
+    entryOf("pgl", BROCHURES, 4, "Ein kleiner Führer für geduldiges Zuhören", { shortTitle: "Geduldiges Zuhören" }),
+    entryOf("gss", BROCHURES, 4, "Gärtnern auf kleinem Raum"),
+    entryOf("lys", BROCHURES, 4, "Briefe an ein jüngeres Ich"),
+    entryOf("toy", "Books", 2, "Das Obstgartenjahr"),
+    entryOf("mwh", "Books", 2, "Karten für den Weg nach Hause"),
+    entryOf("rtm", "Books", 2, "Was der Fluss der Mühle lehrte", { shortTitle: "Fluss und Mühle" }),
+    entryOf("ial", "Tracts and Invitations", 10, "Hört jemand zu?", { size: 600_000 }),
+    entryOf("fqh", "Tracts and Invitations", 10, "Fünf stille Gewohnheiten", { size: 600_000 }),
+    entryOf("mrt", "Tracts and Invitations", 10, "Platz machen am Tisch", { size: 600_000 }),
+    entryOf("skn", "Tracts and Invitations", 10, "Eine kleine Notiz über Freundlichkeit", { size: 600_000 }),
+  ];
+
   const MORE_STUDY = [
     entryOf("cvn", "Programs", 31, "Convention Notes 2026", { on: "2026-08-02T08:00:00Z", size: 1_200_000 }),
     entryOf("wbo", "Meeting Workbooks", 30, "Gathering Workbook, November-December 2026", { issue: 202611, on: "2026-10-04T08:00:00Z" }),
@@ -650,6 +665,7 @@
     catalog_cached: () => true,
     load_catalog: () => null,
     home_lists: () => ({ teachingToolbox: TOOLBOX, whatsNew: WHATS_NEW, dailyText: LOCAL_ENTRIES.mlc26_E }),
+    teaching_toolbox: ({ lang }) => (lang === "X" ? TOOLBOX_X : TOOLBOX),
     categories: () => CATEGORIES,
     category: ({ id }) => ALL_CATALOG.filter((e) => e.item.publication_type === id),
     meetings: () => ({

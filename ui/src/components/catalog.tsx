@@ -36,13 +36,13 @@ export function useEntryAction() {
   const { push, download, downloads } = useApp();
   return {
     progress: (e: CatalogEntry) => downloads[taskKey(e)],
-    activate: async (e: CatalogEntry) => {
+    activate: async (e: CatalogEntry, lang?: string) => {
       if (e.local) {
         push({ name: "publication", dir: e.local });
         return;
       }
       if (downloads[taskKey(e)]) return;
-      await download(e);
+      await download(e, lang);
     },
   };
 }

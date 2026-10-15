@@ -583,6 +583,20 @@ async fn home_lists(
 }
 
 #[tauri::command]
+async fn teaching_toolbox(
+    app: AppHandle,
+    lang: String,
+) -> ApiResult<Option<Vec<api::CatalogEntry>>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        with_catalog(&app, &lang, |c, meps, lib| {
+            api::teaching_toolbox(c, meps, lib)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn categories(app: AppHandle, lang: String) -> ApiResult<Option<Vec<api::Category>>> {
     tauri::async_runtime::spawn_blocking(move || {
         with_catalog(&app, &lang, |c, meps, _| api::categories(c, meps))
@@ -1086,6 +1100,7 @@ pub fn run() {
             load_catalog,
             check_updates,
             home_lists,
+            teaching_toolbox,
             categories,
             category,
             meetings,

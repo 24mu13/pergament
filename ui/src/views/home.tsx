@@ -4,9 +4,10 @@ import { AppBar, SectionTitle, useApp } from "@/app";
 import { api, type CatalogEntry, type DatedPage, type HomeLists } from "@/lib/api";
 import { isoDate, longDate } from "@/lib/dates";
 import { themeScriptureParts } from "@/lib/page";
-import { inLanguage } from "@/lib/settings";
+import { inLanguage, loadToolboxLang, saveToolboxLang } from "@/lib/settings";
 import { t } from "@/lib/i18n";
 import { TileMenu, entryTarget } from "@/components/tile-menu";
+import { SectionLanguagePicker } from "@/components/language-menu";
 import { CatalogPrompt, EntryImage, useEntryAction } from "@/components/catalog";
 import { EntryCover, PubCover } from "@/components/cover";
 import { Button } from "@/components/ui/button";
@@ -66,11 +67,18 @@ function NewRow({ entry }: { entry: CatalogEntry }) {
 /** The last loaded lists and daily text. The view remounts on every tab switch, so these keep its sections from vanishing until the reload finishes. */
 let cachedLists: { lang: string; lists: HomeLists | null } | undefined;
 let cachedToday: { lang: string; page: DatedPage | null } | undefined;
+let cachedToolbox: { lang: string; entries: CatalogEntry[] | null } | undefined;
 
 export function HomeView() {
   const { lang, languageName, publications, libraryReady, catalogVersion, favorites, toast, push } = useApp();
   const [lists, setLists] = useState<HomeLists | null | undefined>(
     cachedLists?.lang === lang ? cachedLists.lists : undefined,
+  );
+  // The Teaching Toolbox language: the picked override, or the app language when `null`.
+  const [toolboxLang, setToolboxLang] = useState<string | null>(loadToolboxLang);
+  const toolboxEff = toolboxLang ?? lang;
+  const [toolboxState, setToolboxState] = useState<CatalogEntry[] | null | undefined>(
+    cachedToolbox?.lang === toolboxEff ? cachedToolbox.entries : undefined,
   );
   const { activate } = useEntryAction();
   const favoritePubs = inLanguage(publications, lang).filter((p) => favorites.includes(p.dir));
@@ -111,6 +119,26 @@ export function HomeView() {
     };
   }, [lang, catalogVersion, toast]);
 
+  // An override fetches its toolbox on its own; the app-language toolbox comes with home_lists.
+  useEffect(() => {
+    if (toolboxLang == null) return;
+    let live = true;
+    api
+      .teachingToolbox(toolboxEff)
+      .then((entries) => {
+        cachedToolbox = { lang: toolboxEff, entries };
+        if (live) setToolboxState(entries);
+      })
+      .catch((e) => {
+        toast(String(e));
+        cachedToolbox = undefined;
+        if (live) setToolboxState(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [toolboxEff, catalogVersion, toast]);
+
   // Today's text from a downloaded daily text booklet, if there is one.
   const [today, setToday] = useState<DatedPage | null>(cachedToday?.lang === lang ? cachedToday.page : null);
   useEffect(() => {
@@ -132,7 +160,8 @@ export function HomeView() {
 
   const daily = lists?.dailyText;
   const scripture = today ? themeScriptureParts(today.html) : null;
-  const groups = lists ? toolboxRows(lists.teachingToolbox).flat() : [];
+  const toolboxEntries = toolboxLang == null ? lists?.teachingToolbox : toolboxState;
+  const groups = toolboxEntries ? toolboxRows(toolboxEntries).flat() : [];
   const categories = groups.filter((g) => g[0].category != null);
   const [tab, setTab] = useState("all");
   // A category that the new language does not have falls back to All.
@@ -193,7 +222,20 @@ export function HomeView() {
           {lists && (
             <>
               <section>
-                <SectionTitle variant="quiet" aside={languageName(lang)}>
+                <SectionTitle
+                  variant="quiet"
+                  aside={
+                    <SectionLanguagePicker
+                      value={toolboxLang}
+                      fallback={lang}
+                      onChange={(c) => {
+                        const next = c === lang ? null : c;
+                        setToolboxLang(next);
+                        saveToolboxLang(next);
+                      }}
+                    />
+                  }
+                >
                   Teaching Toolbox
                 </SectionTitle>
                 <Tabs value={active} onValueChange={setTab}>
@@ -209,7 +251,7 @@ export function HomeView() {
                   )}
                   <TabsContent value={active} className="flex flex-wrap gap-x-3 gap-y-4">
                     {shownGroups.flat().map((e) => (
-                      <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} />
+                      <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} lang={toolboxEff} />
                     ))}
                   </TabsContent>
                 </Tabs>
