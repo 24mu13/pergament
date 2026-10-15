@@ -257,7 +257,10 @@ describe("Home with tile menus", () => {
   });
 
   it("picks a language with the picker and resets to the app language", async () => {
-    backend.languages = () => [{ code: "T", name: "Portuguese", vernacular: "Português", rtl: false, signLanguage: false }];
+    backend.languages = () => [
+      { code: "T", name: "Portuguese", vernacular: "Português", rtl: false, signLanguage: false },
+      { code: "X", name: "German", vernacular: "Deutsch", rtl: false, signLanguage: false },
+    ];
     renderHome();
     await screen.findByText("Glücklich");
     fireEvent.click(screen.getByTitle(/Toolbox language: /));
@@ -265,6 +268,13 @@ describe("Home with tile menus", () => {
     expect(localStorage.getItem("toolboxLang")).toBe("T");
     await waitFor(() => expect(calls.some((c) => c.cmd === "teaching_toolbox")).toBe(true));
     // Picking the app's own language clears the override instead of storing it.
+    fireEvent.click(screen.getByTitle(/Toolbox language: /));
+    fireEvent.click(screen.getByText("German")); // the name label of the app-language row
+    expect(localStorage.getItem("toolboxLang")).toBeNull();
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "teaching_toolbox" && (c.args as { lang?: string }).lang === "X").length).toBe(0),
+    );
+    expect(await screen.findByText("Glücklich")).toBeTruthy(); // still the home_lists toolbox
     fireEvent.click(screen.getByTitle(/Toolbox language: /));
     fireEvent.click(screen.getByText("Same as app language"));
     expect(localStorage.getItem("toolboxLang")).toBeNull();
@@ -278,5 +288,6 @@ describe("Home with tile menus", () => {
     renderHome();
     expect(await screen.findByText("Neue Ausgabe")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Glücklich")).toBeNull());
+    expect((await screen.findAllByText(/boom/)).length).toBeGreaterThan(0); // the error is toasted
   });
 });
