@@ -1032,7 +1032,66 @@ pub enum LinkAction {
     Missing {
         url: Option<String>,
     },
+    /// Not in the library, but the cited document quotes an installed
+    /// publication: show that embedded excerpt.
+    Extract {
+        /// jw.org URL of the cited document, built exactly like `Missing`'s.
+        url: Option<String>,
+        publication: String,
+        subject: String,
+        location: String,
+        /// Rewritten and sanitized excerpt HTML.
+        html: String,
+    },
     Ignore,
+}
+
+/// The `Extract.Link` form of a publication link href:
+/// `pergament://pub/{lang}:{docid}[/{from}-{to}]` → `p/{lang}:{docid}[/{from}-{to}]`.
+fn pub_link(href: &str) -> Option<String> {
+    href.strip_prefix("pergament://pub/")
+        .map(|r| format!("p/{r}"))
+}
+
+/// The excerpt an unresolvable citation link points at. `None` unless `link`
+/// is a `Link::Document` inside an open publication and the publication quotes
+/// the cited document; the html is rewritten and sanitized.
+fn extract_fallback(
+    library: &Library,
+    current: Option<&Entry>,
+    link: &Link,
+    href: &str,
+    url: Option<String>,
+) -> ApiResult<Option<LinkAction>> {
+    let Some(entry) = current else {
+        return Ok(None);
+    };
+    if !matches!(link, Link::Document { .. }) {
+        return Ok(None);
+    }
+    let Some(link) = pub_link(href) else {
+        return Ok(None);
+    };
+    let publication = Publication::open(library, entry).map_err(err)?;
+    let Some(x) = publication.citation_extract(&link).map_err(err)? else {
+        return Ok(None);
+    };
+    let html = Renderer::new(
+        &publication,
+        RenderOptions {
+            media_base: Some(media_base(&entry.dir_name)),
+            standalone: false,
+        },
+    )
+    .fragment(&x.html)
+    .map_err(err)?;
+    Ok(Some(LinkAction::Extract {
+        url,
+        publication: x.publication,
+        subject: x.subject,
+        location: x.location,
+        html,
+    }))
 }
 
 pub fn link_action(library: &Library, current: Option<&str>, href: &str) -> ApiResult<LinkAction> {
@@ -1060,8 +1119,8 @@ pub fn link_action(library: &Library, current: Option<&str>, href: &str) -> ApiR
                     }
                 ),
             },
-            None => LinkAction::Missing {
-                url: match &link {
+            None => {
+                let url = match &link {
                     Link::Document {
                         lang_code,
                         meps_document_id,
@@ -1069,8 +1128,12 @@ pub fn link_action(library: &Library, current: Option<&str>, href: &str) -> ApiR
                         "https://www.jw.org/finder?wtlocale={lang_code}&docid={meps_document_id}"
                     )),
                     _ => None,
-                },
-            },
+                };
+                // Only a citation of another publication reaches this: an
+                // installed publication always wins via `navigate::resolve`.
+                extract_fallback(library, current.as_ref(), &link, href, url.clone())?
+                    .unwrap_or(LinkAction::Missing { url })
+            }
         },
     })
 }
@@ -1520,6 +1583,31 @@ mod tests {
             .unwrap(),
             LinkAction::Media { .. }
         ));
+    }
+
+    #[test]
+    fn extract_fallback_ignores_unknown_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        assert_eq!(
+            link_action(&lib, Some("tst_0"), "pergament://pub/X:2026003/").unwrap(),
+            LinkAction::Missing {
+                url: Some("https://www.jw.org/finder?wtlocale=X&docid=2026003".into())
+            }
+        );
+    }
+
+    #[test]
+    fn pub_links_convert_to_extract_link_form() {
+        assert_eq!(
+            pub_link("pergament://pub/X:123/4-5").as_deref(),
+            Some("p/X:123/4-5")
+        );
+        assert_eq!(
+            pub_link("pergament://pub/X:123/").as_deref(),
+            Some("p/X:123/")
+        );
+        assert_eq!(pub_link("pergament://bible/1:1:1"), None);
     }
 
     #[test]
