@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { booksTabIndex, namedBooks, parseReference, shortBookName } from "./bible";
+import { bibleHref, booksTabIndex, namedBooks, parseReference, shortBookName } from "./bible";
 import { currentView, initialNav, navReducer } from "./nav";
 import { citedBy, extractParagraphs, markCited, splitPage, themeScripture, themeScriptureParts, verseKeyFromHref, verseKeyFromId } from "./page";
 import { defaultLangCode, prefersDark } from "./settings";
@@ -215,6 +215,7 @@ describe("parseReference", () => {
   const books = [
     { number: 1, title: "1. Mose (Genesis)", chapters: 50 },
     { number: 19, title: "Psalmen", chapters: 150 },
+    { number: 40, title: "Matthäus", chapters: 28 },
     { number: 43, title: "Johannes", chapters: 21 },
     { number: 58, title: "Hebräer", chapters: 13 },
     { number: 62, title: "1. Johannes", chapters: 5 },
@@ -251,6 +252,32 @@ describe("parseReference", () => {
     expect(parseReference("2 Joh 2:1", books)).toBeNull();
     expect(parseReference("", books)).toBeNull();
     expect(parseReference("12:3", books)).toBeNull();
+  });
+
+  it("reads abbreviations that leave out letters", () => {
+    expect(parseReference("Mt 24:14", books)).toEqual({ book: 40, chapter: 24, verse: 14 });
+    expect(parseReference("Hbr 10", books)).toEqual({ book: 58, chapter: 10, verse: null });
+    expect(parseReference("Tm 1", books)).toBeNull();
+  });
+
+  it("reads a range of verses, with a hyphen or a dash", () => {
+    expect(parseReference("Heb 10:24-25", books)).toEqual({ book: 58, chapter: 10, verse: 24, verseEnd: 25 });
+    expect(parseReference("Heb 10:24 – 25", books)).toEqual({ book: 58, chapter: 10, verse: 24, verseEnd: 25 });
+    expect(parseReference("2 Joh 5-7", books)).toEqual({ book: 63, chapter: 1, verse: 5, verseEnd: 7 });
+  });
+
+  it("gives nothing for a range across chapters, of chapters or backwards", () => {
+    expect(parseReference("Heb 10:24-11:2", books)).toBeNull();
+    expect(parseReference("Heb 10-11", books)).toBeNull();
+    expect(parseReference("Heb 10:25-24", books)).toBeNull();
+  });
+});
+
+describe("bibleHref", () => {
+  it("links a verse, a range of verses or a whole chapter", () => {
+    expect(bibleHref({ book: 40, chapter: 24, verse: 14 })).toBe("pergament://bible/40:24:14-40:24:14");
+    expect(bibleHref({ book: 40, chapter: 24, verse: 14, verseEnd: 16 })).toBe("pergament://bible/40:24:14-40:24:16");
+    expect(bibleHref({ book: 19, chapter: 23, verse: null })).toBe("pergament://bible/19:23");
   });
 });
 

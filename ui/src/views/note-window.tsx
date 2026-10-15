@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { NoteForm, saveDraft, type NoteSaveInput } from "@/components/notes";
-import { api } from "@/lib/api";
+import { api, type PubCard } from "@/lib/api";
 import { fieldsOf, sameFields } from "@/lib/notes";
 import { askDiscard, isNewMessage, NOTE_DIRTY, NOTE_OPEN, NOTE_READY, NOTES_CHANGED, type NoteWindowMessage } from "@/lib/note-window";
-import { LOOK_KEYS, loadTheme, loadUiLang, prefersDark, saveNoteWindowSize } from "@/lib/settings";
+import { useLinkBible } from "@/lib/note-links";
+import { LOOK_KEYS, loadBibles, loadLang, loadTheme, loadUiLang, prefersDark, saveNoteWindowSize } from "@/lib/settings";
 import { resolveUiLang, setUiLang, t } from "@/lib/i18n";
 import { useSystemDark } from "@/lib/theme";
 
@@ -38,6 +39,10 @@ export function NoteWindowView() {
   const dirty = useRef(false);
   /** Set while a save or delete runs, so a second click does not save the note twice. */
   const busy = useRef(false);
+  // References link to the Bible the note was started in, else the one the app chose for its language.
+  const [publications, setPublications] = useState<PubCard[]>([]);
+  useEffect(() => void api.listPublications().then(setPublications, () => undefined), []);
+  const bible = useLinkBible(message?.draft.target?.publication ?? null, publications, loadLang(), loadBibles());
 
   const setDirty = useCallback((d: boolean) => {
     dirty.current = d;
@@ -172,6 +177,7 @@ export function NoteWindowView() {
         initial={message.fields}
         onDirty={setDirty}
         onError={setError}
+        books={bible?.books}
         onCancel={() => void cancel()}
         onSave={(input: NoteSaveInput) => run(() => saveDraft(draft, input))}
         onDelete={draft.note.guid ? () => run(() => api.deleteNote(draft.note.guid!)) : undefined}

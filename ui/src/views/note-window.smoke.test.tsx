@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     calls.push({ cmd, args });
     if (cmd === "save_note") return "n1";
+    if (cmd === "list_publications") return [];
     return undefined;
   }),
   convertFileSrc: (p: string) => p,

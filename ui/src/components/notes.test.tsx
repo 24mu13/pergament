@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { NoteCard } from "./notes";
+import { NoteCard, NoteForm } from "./notes";
 import type { Note } from "@/lib/api";
 
 const note: Note = {
@@ -84,5 +84,116 @@ describe("NoteCard", () => {
     render(<NoteCard note={{ ...note, title: "" }} expanded onClick={onClick} onToggle={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit note" }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("NoteForm", () => {
+  const books = [{ number: 40, title: "Matthäus", chapters: 28 }];
+  /** Writes the text, selects `start`..`end` and presses Ctrl+L. */
+  function link(text: string, start: number, end: number, props: { books?: typeof books | null } = { books }) {
+    render(<NoteForm note={{ content: text }} focus={false} onSave={() => undefined} onCancel={() => undefined} {...props} />);
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    area.focus();
+    area.setSelectionRange(start, end);
+    fireEvent.keyDown(area, { key: "l", ctrlKey: true });
+    return area;
+  }
+
+  it("links a selected Bible reference with Ctrl+L", () => {
+    const area = link("See Mt 24:14 now", 4, 12);
+    expect(area.value).toBe("See [Mt 24:14](pergament://bible/40:24:14-40:24:14) now");
+    expect(area.selectionStart).toBe(area.value.indexOf(" now"));
+  });
+
+  it("links a range of verses, leaving spaces around the selection outside", () => {
+    expect(link(" Mt 24:14-16 ", 0, 13).value).toBe(" [Mt 24:14-16](pergament://bible/40:24:14-40:24:16) ");
+  });
+
+  it("leaves the address empty for other text, with the caret in it", () => {
+    const area = link("a word", 2, 6);
+    expect(area.value).toBe("a [word]()");
+    expect([area.selectionStart, area.selectionEnd]).toEqual([9, 9]);
+  });
+
+  it("links no book name without a chapter", () => {
+    expect(link("Ruth", 0, 4, { books: [...books, { number: 8, title: "Ruth", chapters: 4 }] }).value).toBe("[Ruth]()");
+  });
+
+  it("keeps a link on one line", () => {
+    expect(link("Mt\n24:14", 0, 8).value).toBe("[Mt 24:14](pergament://bible/40:24:14-40:24:14)");
+  });
+
+  it("takes Cmd+L on a Mac, and leaves the title alone", () => {
+    render(<NoteForm note={{ title: "Mt 24:14", content: "Mt 24:14" }} focus={false} onSave={() => undefined} onCancel={() => undefined} books={books} />);
+    const title = screen.getByPlaceholderText<HTMLInputElement>("Title");
+    title.setSelectionRange(0, 8);
+    expect(fireEvent.keyDown(title, { key: "l", ctrlKey: true })).toBe(true);
+    expect(title.value).toBe("Mt 24:14");
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    area.setSelectionRange(0, 8);
+    expect(fireEvent.keyDown(area, { key: "l", metaKey: true })).toBe(false);
+    expect(area.value).toBe("[Mt 24:14](pergament://bible/40:24:14-40:24:14)");
+  });
+
+  it("types the link through the browser where it can, so it can be undone", () => {
+    const exec = vi.fn((_: string, __: boolean, text: string) => {
+      const area = document.activeElement as HTMLTextAreaElement;
+      area.setRangeText(text, area.selectionStart, area.selectionEnd, "end");
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+    try {
+      const area = link("a word", 2, 6);
+      expect(exec).toHaveBeenCalledWith("insertText", false, "[word]()");
+      expect(area.value).toBe("a [word]()");
+      expect([area.selectionStart, area.selectionEnd]).toEqual([9, 9]);
+    } finally {
+      delete (document as unknown as Record<string, unknown>).execCommand;
+    }
+  });
+
+  it("links each part of a list of verses, keeping the text between them", () => {
+    const joh = [...books, { number: 43, title: "Johannes", chapters: 21 }];
+    const href = (a: number, b = a) => `pergament://bible/43:15:${a}-43:15:${b}`;
+    expect(link("Joh 15:13,15", 0, 12, { books: joh }).value).toBe(`[Joh 15:13](${href(13)}),[15](${href(15)})`);
+    cleanup();
+    const area = link("See Joh 15:13, 15-17.", 4, 20, { books: joh });
+    expect(area.value).toBe(`See [Joh 15:13](${href(13)}), [15-17](${href(15, 17)}).`);
+    expect(area.selectionStart).toBe(area.value.length - 1);
+    cleanup();
+    expect(link("Joh 15:13-14,16", 0, 15, { books: joh }).value).toBe(`[Joh 15:13-14](${href(13, 14)}),[16](${href(16)})`);
+  });
+
+  it("links each chapter of a list after semicolons", () => {
+    const joh = [...books, { number: 43, title: "Johannes", chapters: 21 }];
+    const href = (c: number, a: number, b = a) => `pergament://bible/43:${c}:${a}-43:${c}:${b}`;
+    expect(link("Joh 15:13, 15; 16:2-4", 0, 21, { books: joh }).value).toBe(
+      `[Joh 15:13](${href(15, 13)}), [15](${href(15, 15)}); [16:2-4](${href(16, 2, 4)})`,
+    );
+    cleanup();
+    expect(link("Joh 15; 16:2", 0, 12, { books: joh }).value).toBe("[Joh 15; 16:2]()");
+  });
+
+  it("links nothing of a list when one of its verses does not fit", () => {
+    const joh = [...books, { number: 43, title: "Johannes", chapters: 21 }];
+    expect(link("Joh 15:13,0", 0, 11, { books: joh }).value).toBe("[Joh 15:13,0]()");
+  });
+
+  it("reads no reference without a Bible", () => {
+    expect(link("Mt 24:14", 0, 8, { books: null }).value).toBe("[Mt 24:14]()");
+  });
+
+  it("inserts an empty link with the caret in its text when nothing is selected", () => {
+    const area = link("ab", 1, 1);
+    expect(area.value).toBe("a[]()b");
+    expect([area.selectionStart, area.selectionEnd]).toEqual([2, 2]);
+  });
+
+  it("leaves Ctrl+Shift+L alone", () => {
+    render(<NoteForm note={{ content: "x" }} focus={false} onSave={() => undefined} onCancel={() => undefined} books={books} />);
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    area.setSelectionRange(0, 1);
+    fireEvent.keyDown(area, { key: "L", ctrlKey: true, shiftKey: true });
+    expect(area.value).toBe("x");
   });
 });

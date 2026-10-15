@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { LocateFixed } from "lucide-react";
 import { BarButton, useApp } from "@/app";
 import { api, chapterTarget } from "@/lib/api";
-import { namedBooks, parseReference, pickBible } from "@/lib/bible";
-import { inLanguage } from "@/lib/settings";
+import { bibleFor, parseReferences, type Book } from "@/lib/bible";
+import { loadBooks } from "@/lib/note-links";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t } from "@/lib/i18n";
@@ -25,7 +25,7 @@ export function GoTo() {
   const { publications, lang, bibles, view, openTarget, toast } = useApp();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
-  const [bible, setBible] = useState<{ dir: string; books: ReturnType<typeof namedBooks> } | null>(null);
+  const [bible, setBible] = useState<{ dir: string; books: Book[] } | null>(null);
   const [missed, setMissed] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const before = useRef<Element | null>(null);
@@ -37,19 +37,15 @@ export function GoTo() {
     if (isOpen.current) return;
     // The Bible open in the reader wins, then the one chosen for the language.
     const openDir = view.name === "reader" ? view.target.publication : "dir" in view ? view.dir : null;
-    const open = publications.find((p) => p.isBible && p.dir === openDir);
-    const here = inLanguage(publications, lang).filter((p) => p.isBible);
-    const chosen = pickBible(here, bibles[lang] ?? null);
-    const found = open ?? chosen;
+    const found = bibleFor(openDir, publications, lang, bibles);
     if (!found) return toast(t("No Bible in this language in your library yet"));
     before.current = document.activeElement;
     setBible(null);
     setText("");
     setMissed(false);
     setOpen(true);
-    api
-      .publication(found.dir)
-      .then((d) => setBible({ dir: found.dir, books: namedBooks(d.toc, d.books) }))
+    loadBooks(found.dir)
+      .then((books) => setBible({ dir: found.dir, books }))
       .catch((e) => toast(String(e)));
   };
   const close = () => {
@@ -92,7 +88,8 @@ export function GoTo() {
 
   if (!open) return null;
   const go = async () => {
-    const ref = bible && parseReference(text, bible.books);
+    // A list of verses goes to its first one.
+    const ref = bible && parseReferences(text, bible.books)?.[0].ref;
     if (!bible || !ref) return setMissed(true);
     try {
       if (ref.verse != null && (ref.verse < 1 || ref.verse > (await api.lastVerse(bible.dir, ref.book, ref.chapter)))) {

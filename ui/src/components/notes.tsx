@@ -4,6 +4,8 @@ import { useApp } from "@/app";
 import { api, type Note } from "@/lib/api";
 import { fieldsOf, parseTags, sameFields, type NoteDraft, type NoteFields } from "@/lib/notes";
 import { renderMarkdown } from "@/lib/markdown";
+import { linkEdit, useLinkBible } from "@/lib/note-links";
+import type { Book } from "@/lib/bible";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -202,6 +204,7 @@ export function NoteForm({
   onDirty,
   onChange,
   onError,
+  books = null,
 }: {
   note: Partial<Note>;
   /** Fields to start with instead of the note's, such as unsaved text moved from another editor. */
@@ -215,6 +218,8 @@ export function NoteForm({
   onDirty?: (dirty: boolean) => void;
   onChange?: (fields: NoteFields) => void;
   onError?: (message: string) => void;
+  /** The books of the Bible that Ctrl+L links references to; without them it links no reference. */
+  books?: Book[] | null;
 }) {
   const start = initial ?? fieldsOf(note);
   const [title, setTitle] = useState(start.title);
@@ -222,12 +227,35 @@ export function NoteForm({
   const [tags, setTags] = useState(start.tags);
   const [preview, setPreview] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+  /** Where the caret goes once a link set without the browser's editing is shown. */
+  const caret = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (caret.current == null) return;
+    contentRef.current?.setSelectionRange(caret.current, caret.current);
+    caret.current = null;
+  }, [content]);
   const dirty = !sameFields({ title, content, tags }, fieldsOf(note));
   useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
   useEffect(() => onChange?.({ title, content, tags }), [title, content, tags, onChange]);
   useEffect(() => {
     if (focus) titleRef.current?.focus();
   }, [focus]);
+  /** Ctrl+L, or Cmd+L on a Mac, makes the selection a link; a Bible reference links to its verses. */
+  const onContentKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.nativeEvent.isComposing || e.key.toLowerCase() !== "l") return;
+    e.preventDefault();
+    const area = e.currentTarget;
+    const edit = linkEdit(area.value, area.selectionStart, area.selectionEnd, books);
+    area.setSelectionRange(edit.start, edit.end);
+    // Typed through the browser, the link can be undone; where that is missing, the text is set directly.
+    if (document.execCommand?.("insertText", false, edit.text)) {
+      area.setSelectionRange(edit.caret, edit.caret);
+    } else {
+      caret.current = edit.caret;
+      setContent(area.value.slice(0, edit.start) + edit.text + area.value.slice(edit.end));
+    }
+  };
   /** Links in the preview open in the browser, not in the app's window. */
   const openLink = (e: React.MouseEvent) => {
     const a = (e.target as HTMLElement).closest("a");
@@ -247,7 +275,8 @@ export function NoteForm({
         onChange={(e) => setTitle(e.target.value)}
         className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
       />
-      <div role="group" aria-label={t("Note")} className="-mb-1.5 flex justify-end gap-1 text-xs">
+      <div role="group" aria-label={t("Note")} className="-mb-1.5 flex items-center justify-end gap-1 text-xs">
+        {!preview && <span className="mr-auto text-muted">{t("Ctrl+L: link a Bible reference")}</span>}
         {[false, true].map((on) => (
           <button
             key={String(on)}
@@ -272,10 +301,12 @@ export function NoteForm({
       ) : (
         <textarea
           id="note-content"
+          ref={contentRef}
           placeholder={t("Note")}
           rows={6}
           value={content}
           onChange={(e) => setContent(e.target.value)}
+          onKeyDown={onContentKey}
           className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
         />
       )}
@@ -316,9 +347,10 @@ const isPopOut = (e: React.KeyboardEvent) => (e.ctrlKey || e.metaKey) && e.shift
  * saves to the page the note was started on and can move to the note window.
  */
 export function InlineNoteEditor() {
-  const { note, closeNote, setNoteDirty, setNoteFields, popOutNote, notesChanged, toast } = useApp();
+  const { note, closeNote, setNoteDirty, setNoteFields, popOutNote, notesChanged, toast, view, publications, lang, bibles } = useApp();
   /** Set while a save or delete runs, so a second click does not save the note twice. */
   const busy = useRef(false);
+  const bible = useLinkBible(view.name === "reader" ? view.target.publication : null, publications, lang, bibles);
   if (!note || note.moving) return null;
   const { id, draft } = note;
   // The editor stays open until the backend agreed, so a failure does not lose the text.
@@ -370,6 +402,7 @@ export function InlineNoteEditor() {
         onDirty={setNoteDirty}
         onChange={setNoteFields}
         onError={toast}
+        books={bible?.books}
         onCancel={() => void closeNote(id)}
         onSave={(input) => run(() => saveDraft(draft, input))}
         onDelete={draft.note.guid ? () => run(() => api.deleteNote(draft.note.guid!)) : undefined}

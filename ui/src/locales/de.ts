@@ -156,6 +156,7 @@ export const de: Record<string, string> = {
   "The note you are writing has not been saved.": "Die Notiz, die du gerade schreibst, ist noch nicht gespeichert.",
   Discard: "Verwerfen",
   "Open in window (Ctrl+Shift+O)": "In eigenem Fenster öffnen (Strg+Umschalt+O)",
+  "Ctrl+L: link a Bible reference": "Strg+L: Bibelstelle verlinken",
   Write: "Schreiben",
   Preview: "Vorschau",
   "Nothing to preview": "Noch nichts geschrieben",
