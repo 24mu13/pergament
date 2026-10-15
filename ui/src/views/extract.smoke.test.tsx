@@ -61,6 +61,7 @@ beforeEach(() => {
       name: "doc",
     }),
     page_user_data: () => ({ marks: [], notes: [], answers: {} }),
+    // Re-inject excerptHtml: action is a beforeEach snapshot, but tests reassign excerptHtml afterwards.
     link_action: () => (action.kind === "extract" ? { ...action, html: excerptHtml } : action),
     missing_entry: () => missing(),
     download_publication: () => new Promise((resolve) => setTimeout(() => resolve("w_2016_3"), 5)),

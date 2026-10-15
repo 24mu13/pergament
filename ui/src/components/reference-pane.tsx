@@ -187,6 +187,13 @@ function ExtractReference({
   onOpenSource: (href: string, url: string | null) => void;
 }) {
   const { showImage } = useApp();
+  const ref = useRef<HTMLDivElement>(null);
+
+  // The excerpt's pictures load only after hydration, like in ReferencePage.
+  useEffect(() => {
+    if (ref.current) hydrateMedia(ref.current);
+    // pref.html: a new excerpt replaces the markup.
+  }, [pref.html]);
 
   const onClick = (e: ReactMouseEvent) => {
     const picture = clickedImage(e.target);
@@ -220,7 +227,7 @@ function ExtractReference({
         <ChevronRight size={20} className="shrink-0" />
       </button>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        <div onClick={onClick} className="reader pane-reader" dangerouslySetInnerHTML={{ __html: pref.html }} />
+        <div ref={ref} onClick={onClick} className="reader pane-reader" dangerouslySetInnerHTML={{ __html: pref.html }} />
       </div>
     </>
   );

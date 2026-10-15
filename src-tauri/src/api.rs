@@ -1032,8 +1032,8 @@ pub enum LinkAction {
     Missing {
         url: Option<String>,
     },
-    /// Not in the library, but the cited document quotes an installed
-    /// publication: show that embedded excerpt.
+    /// Not in the library, but the current publication quotes it: show that
+    /// embedded excerpt of the cited document.
     Extract {
         /// jw.org URL of the cited document, built exactly like `Missing`'s.
         url: Option<String>,
