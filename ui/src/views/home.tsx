@@ -136,9 +136,10 @@ export function HomeView() {
     };
   }, [lang, publications]);
 
-  // Languages of the What's New section; nothing stored means it follows the app language.
+  // Languages of the What's New section; nothing stored, or every code pruned away as retired,
+  // means it follows the app language.
   const [picked, setPicked] = useState<string[] | null>(() => loadWhatsNewLangs());
-  const wnLangs = picked ?? [lang];
+  const wnLangs = picked?.length ? picked : [lang];
   const wnKey = wnLangs.join(",");
   const [newRows, setNewRows] = useState<WhatsNewRow[] | null | undefined>(
     cachedNew?.key === wnKey ? cachedNew.rows : undefined,

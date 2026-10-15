@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
@@ -62,5 +62,35 @@ describe("whats new languages picker", () => {
     expect(await screen.findByText("Deutsch")).not.toBeNull();
     rerender(picker(["X", "E"]));
     expect(screen.getByText("2 languages")).not.toBeNull();
+  });
+
+  it("prunes codes the loaded language list does not have", async () => {
+    const onChange = vi.fn();
+    render(picker(["X", "ZZ"], onChange));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["X"]));
+  });
+
+  it("prunes down to an empty selection when no code is in the list", async () => {
+    const onChange = vi.fn();
+    render(picker(["ZZ"], onChange));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith([]));
+  });
+
+  it("does not prune when every code is in the list", async () => {
+    const onChange = vi.fn();
+    render(picker(["X"], onChange));
+    // The label shows the loaded vernacular, so the list is in by then.
+    expect(await screen.findByText("Deutsch")).not.toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("prunes once, not again on later renders", async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(picker(["X", "ZZ"], onChange));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    rerender(picker(["X"], onChange));
+    rerender(picker(["X", "E"], onChange));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 });

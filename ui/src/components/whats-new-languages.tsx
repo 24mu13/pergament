@@ -21,6 +21,17 @@ export function WhatsNewLanguages({ value, onChange }: { value: string[]; onChan
       .catch((e) => setError(String(e)));
   }, []);
 
+  // Codes the loaded list does not have (a language retired on jw.org, say) are pruned once,
+  // so the selection cannot get stuck on languages the section cannot show; the ref keeps the
+  // prune from firing again on repeated renders.
+  const pruned = useRef(false);
+  useEffect(() => {
+    if (pruned.current || !languages) return;
+    pruned.current = true;
+    const live = value.filter((c) => languages.some((l) => l.code === c));
+    if (live.length !== value.length) onChange(live);
+  }, [languages, value, onChange]);
+
   // Outside clicks and Escape close the dropdown; picking a language keeps it open.
   useEffect(() => {
     if (!open) return;

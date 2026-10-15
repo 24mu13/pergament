@@ -249,6 +249,17 @@ describe("Home with tile menus", () => {
     expect(screen.getByText("Frisch erschienen")).toBeTruthy();
   });
 
+  it("recovers when a stored language no longer exists", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["ZZ"]));
+    renderHome();
+    // The dead code is pruned to an empty selection, which falls back to the app language.
+    expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X"] }),
+    );
+    expect(JSON.parse(localStorage.getItem("whatsNewLangs")!)).toEqual([]);
+  });
+
   it("keeps the rows when the lookup fails", async () => {
     renderHome();
     expect(await screen.findByText("Frisch erschienen")).toBeTruthy();
