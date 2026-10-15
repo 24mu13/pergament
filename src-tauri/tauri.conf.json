@@ -32,12 +32,13 @@
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libsoup-3.0-0", "libssl3", "libsqlite3-0", "gstreamer1.0-libav"],
         "desktopTemplate": "desktop.template",
-        "files": { "io.github.v3rm1n.pergament.metainfo.xml": "/usr/share/metainfo/" }
+        "files": { "/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml": "io.github.v3rm1n.pergament.metainfo.xml" }
       },
       "rpm": {
         "depends": ["webkit2gtk4.1", "gtk3", "libsoup3", "openssl-libs", "sqlite-libs"],
         "recommends": ["gstreamer1-libav"],
-        "desktopTemplate": "desktop.template"
+        "desktopTemplate": "desktop.template",
+        "files": { "/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml": "io.github.v3rm1n.pergament.metainfo.xml" }
       },
       "appimage": { "bundleMediaFramework": true }
     }

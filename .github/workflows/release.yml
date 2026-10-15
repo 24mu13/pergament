@@ -86,7 +86,7 @@ jobs:
             libsoup-3.0-dev libssl-dev libsqlite3-dev appstream \
             gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libegl1 libgl1
+            libegl1 libgl1 rpm
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
@@ -107,6 +107,8 @@ jobs:
         run: |
           dpkg-deb --info target/release/bundle/deb/*.deb | grep -E 'Depends:.*(libwebkit2gtk-4\.1-0|gstreamer1\.0-libav)'
           appstreamcli validate src-tauri/io.github.v3rm1n.pergament.metainfo.xml
+          dpkg-deb --contents target/release/bundle/deb/*.deb | grep -q '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml$'
+          rpm -qlp target/release/bundle/rpm/*.rpm | grep -qx '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml'
 
       - name: Work out the version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
