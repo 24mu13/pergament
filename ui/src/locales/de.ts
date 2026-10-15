@@ -41,6 +41,8 @@ export const de: Record<string, string> = {
   "Add favorites with the menu of a tile": "Favoriten fügst du über das Menü einer Kachel hinzu",
   "What's New": "Neuerscheinungen",
   "Teaching Toolbox": "Werkzeug zum Lehren",
+  "Same as app language": "Wie die App-Sprache",
+  "Toolbox language: {name}": "Sprache des Werkzeugs zum Lehren: {name}",
   "Add to favorites": "Zu Favoriten hinzufügen",
   "Remove from favorites": "Aus Favoriten entfernen",
   "Share Link": "Link teilen",
