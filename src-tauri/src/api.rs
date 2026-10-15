@@ -403,6 +403,18 @@ pub struct HomeLists {
     pub daily_text: Option<CatalogEntry>,
 }
 
+/// The curated Teaching Toolbox of one language, newest first.
+pub fn teaching_toolbox(
+    catalog: &Catalog,
+    meps: i64,
+    library: &Library,
+) -> ApiResult<Vec<CatalogEntry>> {
+    entries(
+        catalog.curated(meps, LIST_TEACHING_TOOLBOX).map_err(err)?,
+        library,
+    )
+}
+
 pub fn home_lists(
     catalog: &Catalog,
     meps: i64,
@@ -416,10 +428,7 @@ pub fn home_lists(
         .map(|(item, _, _)| item)
         .next();
     Ok(HomeLists {
-        teaching_toolbox: entries(
-            catalog.curated(meps, LIST_TEACHING_TOOLBOX).map_err(err)?,
-            library,
-        )?,
+        teaching_toolbox: teaching_toolbox(catalog, meps, library)?,
         whats_new: entries(catalog.whats_new(meps, 12).map_err(err)?, library)?,
         daily_text: entries(daily.into_iter().collect(), library)?
             .into_iter()
@@ -1168,6 +1177,11 @@ mod tests {
             [],
         )
         .unwrap();
+        c.execute(
+            "INSERT INTO CuratedAsset VALUES (?1, ?2, ?3), (?1, ?3, ?2)",
+            rusqlite::params![LIST_TEACHING_TOOLBOX, 1, 3],
+        )
+        .unwrap();
         drop(c);
         Catalog::open(&path, "test".into()).unwrap()
     }
@@ -1400,6 +1414,19 @@ mod tests {
             ["lff_2_0"]
         );
         assert!(favorite_entries(&cat, 2, &lib, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn teaching_toolbox_lists_only_the_curated_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        // German (meps 2) has lff and the German w26 in sort order; English (meps 0) has none listed.
+        assert_eq!(
+            keys(&teaching_toolbox(&cat, 2, &lib).unwrap()),
+            vec!["lff_2_0", "w26_2_20260800"]
+        );
+        assert!(teaching_toolbox(&cat, 0, &lib).unwrap().is_empty());
     }
 
     #[test]
