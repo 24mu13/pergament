@@ -427,6 +427,41 @@ pub fn home_lists(
     })
 }
 
+/// A What's New row: a catalog entry with the language code it was found in.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsNewRow {
+    pub lang_code: String,
+    #[serde(flatten)]
+    pub entry: CatalogEntry,
+}
+
+/// The most recently cataloged publications of several languages, newest
+/// first; undated ones last. Codes the catalog does not know are errors.
+pub fn whats_new(
+    catalog: &Catalog,
+    codes: &[String],
+    library: &Library,
+) -> ApiResult<Vec<WhatsNewRow>> {
+    let mut rows: Vec<WhatsNewRow> = Vec::new();
+    for code in codes {
+        let meps = catalog
+            .meps_language(code)
+            .ok_or_else(|| format!("unknown language code {code:?}"))?;
+        let items = catalog.whats_new(meps, 12).map_err(err)?;
+        rows.extend(
+            entries(items, library)?
+                .into_iter()
+                .map(|entry| WhatsNewRow {
+                    lang_code: code.clone(),
+                    entry,
+                }),
+        );
+    }
+    rows.sort_by(|a, b| b.entry.item.cataloged_on.cmp(&a.entry.item.cataloged_on));
+    Ok(rows)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
     pub id: i64,
@@ -1349,6 +1384,69 @@ mod tests {
             langs.iter().map(|l| l.code.as_str()).collect::<Vec<_>>(),
             ["X"]
         );
+    }
+
+    #[test]
+    fn whats_new_merges_languages_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        // Interleave dates across languages and leave one row undated.
+        let conn = rusqlite::Connection::open(dir.path().join("catalog-test.db")).unwrap();
+        conn.execute(
+            "UPDATE PublicationAsset SET CatalogedOn = '2026-10-05T00:00:00+00:00' WHERE Id = 2",
+            [],
+        )
+        .unwrap(); // E
+        conn.execute(
+            "UPDATE PublicationAsset SET CatalogedOn = '2026-10-04T00:00:00+00:00' WHERE Id = 3",
+            [],
+        )
+        .unwrap(); // X
+        conn.execute(
+            "UPDATE PublicationAsset SET CatalogedOn = '2026-10-03T00:00:00+00:00' WHERE Id = 1",
+            [],
+        )
+        .unwrap(); // X
+        conn.execute(
+            "UPDATE PublicationAsset SET CatalogedOn = NULL WHERE Id = 4",
+            [],
+        )
+        .unwrap(); // X
+        drop(conn);
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        let rows = whats_new(&cat, &["X".to_string(), "E".to_string()], &lib).unwrap();
+        let keys: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}_{}_{}",
+                    r.entry.item.symbol, r.entry.item.meps_language, r.entry.item.issue_tag
+                )
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            ["w26_0_20260800", "lff_2_0", "w26_2_20260800", "lff_2_0"]
+        );
+        let codes: Vec<&str> = rows.iter().map(|r| r.lang_code.as_str()).collect();
+        assert_eq!(codes, ["E", "X", "X", "X"]);
+    }
+
+    #[test]
+    fn whats_new_with_unknown_code_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        let err = whats_new(&cat, &["X".to_string(), "ZZ".to_string()], &lib).unwrap_err();
+        assert!(err.contains("unknown language code"));
+    }
+
+    #[test]
+    fn whats_new_without_languages_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = catalog(dir.path());
+        let lib = Library::open(dir.path().join("lib")).unwrap();
+        assert!(whats_new(&cat, &[], &lib).unwrap().is_empty());
     }
 
     #[test]

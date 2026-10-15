@@ -550,6 +550,24 @@ async fn home_lists(
     .map_err(|e| e.to_string())?
 }
 
+/// The most recently cataloged publications of the given languages, newest
+/// first. `None` when no catalog is cached yet.
+#[tauri::command]
+async fn whats_new(app: AppHandle, langs: Vec<String>) -> ApiResult<Option<Vec<api::WhatsNewRow>>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _gate = state.cache_use()?;
+        let Some(catalog) = cached_catalog(&app)? else {
+            return Ok(None);
+        };
+        let catalog = catalog.lock().map_err(|e| e.to_string())?;
+        let lib = state.lib()?;
+        Ok(Some(api::whats_new(&catalog, &langs, &lib)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn categories(app: AppHandle, lang: String) -> ApiResult<Option<Vec<api::Category>>> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1044,6 +1062,7 @@ pub fn run() {
             load_catalog,
             check_updates,
             home_lists,
+            whats_new,
             categories,
             category,
             meetings,
