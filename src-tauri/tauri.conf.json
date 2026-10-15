@@ -29,16 +29,18 @@
     "active": false,
     "icon": ["icons/icon.png", "icons/256x256.png", "icons/128x128.png", "icons/64x64.png", "icons/32x32.png"],
     "externalBin": ["../target/release/pergament"],
-    "deb": {
-      "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libsoup-3.0-0", "libssl3", "libsqlite3-0", "gstreamer1.0-libav"],
-      "desktopTemplate": "desktop.template",
-      "files": { "io.github.v3rm1n.pergament.metainfo.xml": "/usr/share/metainfo/" }
-    },
-    "rpm": {
-      "depends": ["webkit2gtk4.1", "gtk3", "libsoup3", "openssl-libs", "sqlite-libs"],
-      "recommends": ["gstreamer1-libav"],
-      "desktopTemplate": "desktop.template"
-    },
-    "linux": { "appimage": { "bundleMediaFramework": true } }
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libsoup-3.0-0", "libssl3", "libsqlite3-0", "gstreamer1.0-libav"],
+        "desktopTemplate": "desktop.template",
+        "files": { "io.github.v3rm1n.pergament.metainfo.xml": "/usr/share/metainfo/" }
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "libsoup3", "openssl-libs", "sqlite-libs"],
+        "recommends": ["gstreamer1-libav"],
+        "desktopTemplate": "desktop.template"
+      },
+      "appimage": { "bundleMediaFramework": true }
+    }
   }
 }
