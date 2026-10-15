@@ -35,6 +35,10 @@ mkdir -p "$stage/share/icons/hicolor/512x512/apps"
 install -m644 src-tauri/icons/icon.png "$stage/share/icons/hicolor/512x512/apps/$app_id.png"
 install -m644 src-tauri/icons/icon.svg "$stage/share/icons/hicolor/scalable/apps/$app_id.svg"
 install -m644 "src-tauri/$app_id.metainfo.xml" "$stage/share/metainfo/$app_id.metainfo.xml"
+# The flatpak desktop file is named after the app id, so the metainfo's
+# launchable (Pergament.desktop, correct for the deb, rpm and AppImage)
+# has to point at it in the flatpak tree.
+sed -i "s#>Pergament\.desktop<#>$app_id.desktop<#" "$stage/share/metainfo/$app_id.metainfo.xml"
 
 cat >"$stage/share/applications/$app_id.desktop" <<DESKTOP
 [Desktop Entry]

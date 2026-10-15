@@ -4,6 +4,7 @@
   "runtime-version": "50",
   "sdk": "org.gnome.Sdk",
   "command": "pergament-app",
+  "appstream-compose": false,
   "finish-args": [
     "--socket=wayland",
     "--socket=fallback-x11",
