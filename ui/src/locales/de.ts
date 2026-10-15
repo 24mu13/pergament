@@ -143,6 +143,8 @@ export const de: Record<string, string> = {
   "Add note": "Notiz hinzufügen",
   "Remove highlight": "Markierung entfernen",
   "Edit note": "Notiz bearbeiten",
+  "Show whole note": "Ganze Notiz anzeigen",
+  "Show less": "Weniger anzeigen",
   "New note": "Neue Notiz",
   Title: "Titel",
   "Tags, separated by commas": "Tags, durch Kommas getrennt",

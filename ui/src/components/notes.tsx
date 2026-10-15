@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { NotebookPen, SquareArrowOutUpRight, Trash2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, NotebookPen, SquareArrowOutUpRight, Trash2 } from "lucide-react";
 import { useApp } from "@/app";
 import { api, type Note } from "@/lib/api";
 import { fieldsOf, parseTags, sameFields, type NoteDraft, type NoteFields } from "@/lib/notes";
@@ -70,39 +70,112 @@ export function MarkToolbar({
   );
 }
 
-/** A note as shown in the study pane and in Personal Study. */
+/**
+ * A note as shown in the study pane and in Personal Study. With `onToggle`, a
+ * note cut off at four lines can be opened to its whole text, links and all.
+ */
 export function NoteCard({
   note,
   onClick,
   subtitle,
+  expanded = false,
+  onToggle,
 }: {
   note: Note;
   onClick?: () => void;
   subtitle?: string;
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
-  return (
-    <button onClick={onClick} className="flex w-full gap-3 rounded-md border border-line p-3 text-left hover:bg-bar">
-      <span className={cn("w-1 shrink-0 self-stretch", note.color ? `hl-dot-${note.color}` : "bg-line")} />
+  const body = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState(false);
+  // Measured while clamped: the toggle only shows where there is more to see.
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && !expanded) setClipped(el.scrollHeight > el.clientHeight + 1);
+  }, [note.content, expanded]);
+  const toggle = onToggle && (clipped || expanded);
+  /** Links in the whole note open in the browser; a click elsewhere on it edits the note. */
+  const onBodyClick = (e: React.MouseEvent) => {
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) {
+      // Selecting text to copy it is not a request to edit.
+      if (window.getSelection()?.isCollapsed !== false) onClick?.();
+      return;
+    }
+    e.preventDefault();
+    // The study pane would otherwise follow the link itself.
+    e.stopPropagation();
+    api.openExternal(a.href).catch(() => undefined);
+  };
+  const bar = <span className={cn("w-1 shrink-0 self-stretch", note.color ? `hl-dot-${note.color}` : "bg-line")} />;
+  const tags = note.tags.length > 0 && (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {note.tags.map((t) => (
+        <span key={t} className="rounded border border-line px-1.5 py-0.5 text-xs">
+          {t}
+        </span>
+      ))}
+    </div>
+  );
+  const head = (
+    <>
+      {subtitle && <div className="truncate text-xs text-muted">{subtitle}</div>}
+      {note.title && <div className="font-semibold">{note.title}</div>}
+    </>
+  );
+  const frame = cn("flex w-full gap-3 rounded-md border border-line p-3 text-left hover:bg-bar", toggle && "pr-9");
+  const card = expanded ? (
+    // A button cannot hold links, so the whole note is a plain block; the title stays the button.
+    <div className={frame}>
+      {bar}
       <div className="min-w-0 flex-1">
-        {subtitle && <div className="truncate text-xs text-muted">{subtitle}</div>}
-        {note.title && <div className="font-semibold">{note.title}</div>}
+        <button onClick={onClick} aria-label={note.title || subtitle ? undefined : t("Edit note")} className="block w-full text-left">
+          {head}
+        </button>
         {note.content && (
           <div
+            className="note-md text-sm text-fg/85"
+            onClick={onBodyClick}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(note.content, { links: true }) }}
+          />
+        )}
+        {tags}
+      </div>
+    </div>
+  ) : (
+    <button onClick={onClick} className={frame}>
+      {bar}
+      <div className="min-w-0 flex-1">
+        {head}
+        {note.content && (
+          <div
+            ref={body}
             className="note-md line-clamp-4 text-sm text-fg/85"
             dangerouslySetInnerHTML={{ __html: renderMarkdown(note.content, { links: false }) }}
           />
         )}
-        {note.tags.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {note.tags.map((t) => (
-              <span key={t} className="rounded border border-line px-1.5 py-0.5 text-xs">
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
+        {tags}
       </div>
     </button>
+  );
+  if (!onToggle) return card;
+  const label = expanded ? t("Show less") : t("Show whole note");
+  return (
+    <div className="relative">
+      {card}
+      {toggle && (
+        <button
+          title={label}
+          aria-label={label}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="absolute right-2 top-2 p-1 text-muted hover:text-accent"
+        >
+          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+      )}
+    </div>
   );
 }
 

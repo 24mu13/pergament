@@ -133,6 +133,14 @@ export function ReaderView({
 
   // Highlights and notes of this page from user data.
   const [user, setUser] = useState<PageUserData>({ marks: [], notes: [], answers: {} });
+  /** Notes in the study pane opened to their whole text. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const toggleNote = (guid: string) =>
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (!next.delete(guid)) next.add(guid);
+      return next;
+    });
   const reloadUser = useCallback(() => {
     api
       .pageUserData(target)
@@ -543,7 +551,12 @@ export function ReaderView({
                     {inlineNote?.draft.note.guid === n.guid ? (
                       <InlineNoteEditor />
                     ) : (
-                      <NoteCard note={n} onClick={() => void openNote({ note: n }, { in: "pane" })} />
+                      <NoteCard
+                        note={n}
+                        expanded={expanded.has(n.guid)}
+                        onToggle={() => toggleNote(n.guid)}
+                        onClick={() => void openNote({ note: n }, { in: "pane" })}
+                      />
                     )}
                   </div>
                 ))}
