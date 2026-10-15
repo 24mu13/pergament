@@ -439,6 +439,8 @@ export const api = {
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),
+  /** The abbreviations a Bible uses for its books ("1Ko"), by book number; none for other publications. */
+  bookAbbreviations: (dir: string) => invoke<Record<number, string>>("book_abbreviations", { dir }),
   lastVerse: (dir: string, book: number, chapter: number) =>
     invoke<number>("last_verse", { dir, book, chapter }),
   researchVerses: (dir: string, book: number, chapter: number) =>

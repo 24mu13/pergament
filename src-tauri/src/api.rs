@@ -181,6 +181,16 @@ pub fn last_verse(library: &Library, bible_dir: &str, book: i64, chapter: i64) -
     bible.last_verse(book, chapter).map_err(err)
 }
 
+/// The abbreviations a Bible uses for its books in its own references ("1Ko", "Phil"), by book number.
+/// Other publications have none.
+pub fn book_abbreviations(library: &Library, bible_dir: &str) -> ApiResult<HashMap<i64, String>> {
+    let (_, bible) = open_entry(library, bible_dir)?;
+    if !bible.is_bible() {
+        return Ok(HashMap::new());
+    }
+    bible.book_abbreviations().map_err(err)
+}
+
 /// An excerpt of the Research Guide for a verse.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResearchEntry {
@@ -1245,6 +1255,34 @@ mod tests {
                 rusqlite::params![symbol, issue.to_string(), dir],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn book_abbreviations_only_for_bibles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("lib");
+        let lib = Library::open(&root).unwrap();
+        install(&root, "nwt", 0, &[]);
+        install(&root, "w26", 20260800, &[]);
+        let nwt = root.join("publications/nwt_2_0");
+        rusqlite::Connection::open(nwt.join("c.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE BibleChapter (BookNumber INTEGER);")
+            .unwrap();
+        std::fs::write(
+            nwt.join(".pergament-abbreviations.json"),
+            r#"{"46":"1Ko","50":"Phil"}"#,
+        )
+        .unwrap();
+        let abbr = book_abbreviations(&lib, "nwt_2_0").unwrap();
+        assert_eq!(abbr.get(&46).map(String::as_str), Some("1Ko"));
+        assert_eq!(abbr.get(&50).map(String::as_str), Some("Phil"));
+        assert!(
+            book_abbreviations(&lib, "w26_2_20260800")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(book_abbreviations(&lib, "nope").is_err());
     }
 
     #[test]

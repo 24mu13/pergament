@@ -456,6 +456,14 @@ fn with_catalog_unguarded<T>(
 }
 
 #[tauri::command]
+fn book_abbreviations(
+    state: State<'_, AppState>,
+    dir: String,
+) -> ApiResult<std::collections::HashMap<i64, String>> {
+    api::book_abbreviations(&*state.lib()?, &dir)
+}
+
+#[tauri::command]
 fn last_verse(state: State<'_, AppState>, dir: String, book: i64, chapter: i64) -> ApiResult<i64> {
     api::last_verse(&*state.lib()?, &dir, book, chapter)
 }
@@ -1070,6 +1078,7 @@ pub fn run() {
             languages,
             chapter_study,
             book_overview,
+            book_abbreviations,
             last_verse,
             research_verses,
             research_guide,
