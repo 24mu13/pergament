@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Main window: core events, opening and saving files, asking before unsaved text is dropped and closing without the close request",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-save", "dialog:allow-ask", "dialog:allow-message"]
+}

@@ -391,6 +391,8 @@ export const api = {
   yearText: (lang: string, year: number) => invoke<YearText | null>("year_text", { lang, year }),
   openDisplay: () => invoke<void>("open_display"),
   closeDisplay: () => invoke<void>("close_display"),
+  openNoteWindow: (width?: number, height?: number) =>
+    invoke<void>("open_note_window", { width: width ?? null, height: height ?? null }),
   removePublication: (dir: string) => invoke<void>("remove_publication", { dir }),
   importFiles: (paths: string[]) => invoke<ImportResult[]>("import_files", { paths }),
   languages: () => invoke<Language[]>("languages"),
