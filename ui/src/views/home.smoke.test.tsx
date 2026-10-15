@@ -234,12 +234,19 @@ describe("Home with tile menus", () => {
     expect(screen.queryByText("Brochures and Booklets · Deutsch")).toBeNull();
     cleanup();
     localStorage.setItem("whatsNewLangs", JSON.stringify(["X", "E"]));
-    whatsNewRows.push({ ...entry("lff", "Books", null, "Newly Arrived"), langCode: "E" });
+    // Same symbol and issue in both languages: only the row key tells them apart.
+    whatsNewRows.push({ ...entry("ll", "Books", null, "Newly Arrived"), langCode: "E" });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.join(" ")));
     renderHome();
     expect(await screen.findByText("Newly Arrived")).toBeTruthy();
+    spy.mockRestore();
+    // The backend does not dedupe across languages, so React must not see duplicate keys.
+    expect(errors.join("\n")).not.toContain("same key");
     expect(calls.filter((c) => c.cmd === "whats_new").at(-1)?.args).toEqual({ langs: ["X", "E"] });
     expect(screen.getByText("Brochures and Booklets · Deutsch")).toBeTruthy();
     expect(screen.getByText("Books · English")).toBeTruthy();
+    expect(screen.getByText("Frisch erschienen")).toBeTruthy();
   });
 
   it("keeps the rows when the lookup fails", async () => {

@@ -260,7 +260,7 @@ export function HomeView() {
                 <ul className="border-t border-line">
                   {newRows.map((row) => (
                     <NewRow
-                      key={`${row.item.symbol}-${row.item.issue_tag}`}
+                      key={`${row.item.symbol}-${row.item.issue_tag}-${row.langCode}`}
                       row={row}
                       showLang={wnLangs.length > 1}
                     />
