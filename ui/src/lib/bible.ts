@@ -1,5 +1,6 @@
-import type { CatalogEntry, TocNode } from "./api";
+import { chapterTarget, type BibleBook, type CatalogEntry, type TocNode } from "./api";
 import { inLanguage } from "./settings";
+import type { View } from "./nav";
 
 /** "1. Mose (Genesis)" -> "1. Mose" for compact tiles. */
 export function shortBookName(title: string): string {
@@ -248,4 +249,28 @@ export function bibleFor<T extends { dir: string; symbol: string; langCode: stri
 ): T | undefined {
   const open = publications.find((p) => p.isBible && p.dir === openDir);
   return open ?? pickBible(inLanguage(publications, lang).filter((p) => p.isBible), bibles[lang] ?? null);
+}
+
+/**
+ * The stack to open in another Bible for the place the user is in: the same book, chapter and verse when the new Bible
+ * has the book, otherwise just its book list.
+ */
+export function bibleStackFor(view: View, dir: string, books: BibleBook[]): View[] {
+  if (view.name === "reader" && "chapter" in view.target.kind) {
+    const { book, chapter, verse } = view.target.kind.chapter;
+    const info = books.find((b) => b.number === book);
+    if (info) {
+      return [
+        { name: "publication", dir },
+        { name: "chapters", dir, book },
+        { name: "reader", target: chapterTarget(dir, book, Math.min(chapter, info.chapters), verse) },
+      ];
+    }
+  } else if (view.name === "chapters" && books.some((b) => b.number === view.book)) {
+    return [
+      { name: "publication", dir },
+      { name: "chapters", dir, book: view.book },
+    ];
+  }
+  return [{ name: "publication", dir }];
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { chapterTarget } from "./api";
 import { currentView, initialNav, navReducer, type NavState } from "./nav";
 
 const run = (state: NavState, ...actions: Parameters<typeof navReducer>[1][]) => actions.reduce(navReducer, state);
@@ -34,5 +35,55 @@ describe("rail sections", () => {
       { type: "switch", to: "meetings", view: { name: "meetings" } },
     );
     expect(s.stack).toEqual([{ name: "meetings" }]);
+  });
+});
+
+describe("switch with an explicit stack", () => {
+  it("replaces the stack of the section it is already in", () => {
+    const s = run(
+      initialNav,
+      { type: "switch", to: "bible", view: { name: "bible" } },
+      {
+        type: "switch", to: "bible", view: { name: "publication", dir: "nwt_E" },
+        stack: [
+          { name: "publication", dir: "nwt_E" },
+          { name: "chapters", dir: "nwt_E", book: 43 },
+          { name: "reader", target: chapterTarget("nwt_E", 43, 3) },
+        ],
+      },
+    );
+    expect(s.stack.map((v) => v.name)).toEqual(["publication", "chapters", "reader"]);
+    expect(s.section).toBe("bible");
+  });
+
+  it("wins over the saved stack of the target section", () => {
+    const s = run(
+      initialNav,
+      { type: "switch", to: "bible", view: { name: "bible" } },
+      { type: "push", view: { name: "publication", dir: "nwt_X" } },
+      { type: "switch", to: "home", view: { name: "home" } },
+      {
+        type: "switch", to: "bible", view: { name: "publication", dir: "nwt_E" },
+        stack: [{ name: "reader", target: chapterTarget("nwt_E", 43, 3) }],
+      },
+    );
+    expect(s.stack).toEqual([{ name: "reader", target: chapterTarget("nwt_E", 43, 3) }]);
+    expect(s.saved.bible).toBeUndefined();
+  });
+
+  it("treats an empty stack as none, falling back to the view", () => {
+    const sameSection = run(
+      initialNav,
+      { type: "switch", to: "bible", view: { name: "bible" } },
+      { type: "switch", to: "bible", view: { name: "publication", dir: "nwt_E" }, stack: [] },
+    );
+    expect(sameSection.stack).toEqual([{ name: "publication", dir: "nwt_E" }]);
+
+    const otherSection = run(
+      initialNav,
+      { type: "switch", to: "meetings", view: { name: "meetings" } },
+      { type: "switch", to: "bible", view: { name: "chapters", dir: "nwt_E", book: 43 }, stack: [] },
+    );
+    expect(otherSection.stack).toEqual([{ name: "chapters", dir: "nwt_E", book: 43 }]);
   });
 });
