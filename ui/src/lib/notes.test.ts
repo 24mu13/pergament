@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "./api";
-import { clampPanel, filterNotes, fitPanelSize } from "./notes";
+import { clampPanel, fieldsOf, filterNotes, fitPanelSize, parseTags, sameFields } from "./notes";
 
 const note = (guid: string, over: Partial<Note> = {}): Note => ({
   guid,
@@ -79,5 +79,24 @@ describe("fitPanelSize", () => {
 
   it("lets the area win over the minimum", () => {
     expect(fitPanelSize({ width: 100, height: 100 }, min, { width: 300, height: 200 })).toEqual({ width: 300, height: 200 });
+  });
+});
+
+describe("note fields", () => {
+  it("shows a note's tags comma separated and reads them back trimmed", () => {
+    const f = fieldsOf({ title: "T", content: "C", tags: ["a", "b c"] });
+    expect(f).toEqual({ title: "T", content: "C", tags: "a, b c" });
+    expect(parseTags(" a ,, b c ,")).toEqual(["a", "b c"]);
+  });
+
+  it("treats a missing note as empty fields", () => {
+    expect(fieldsOf({})).toEqual({ title: "", content: "", tags: "" });
+  });
+
+  it("compares every field", () => {
+    const a = { title: "T", content: "C", tags: "x" };
+    expect(sameFields(a, { ...a })).toBe(true);
+    expect(sameFields(a, { ...a, tags: "y" })).toBe(false);
+    expect(sameFields(a, { ...a, content: "D" })).toBe(false);
   });
 });

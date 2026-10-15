@@ -19,7 +19,10 @@ import {
   X,
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
-import type { MediaRef, Note } from "@/lib/api";
+import type { MediaRef } from "@/lib/api";
+import type { NoteDraft } from "@/lib/notes";
+
+export type { NoteDraft } from "@/lib/notes";
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
@@ -65,15 +68,6 @@ interface Toast {
   id: number;
   text: string;
   action?: { label: string; run: () => void };
-}
-
-/** A note being written, and the page and highlight a new one attaches to. */
-export interface NoteDraft {
-  note: Partial<Note>;
-  target?: Target | null;
-  markGuid?: string;
-  blockType?: number;
-  blockIdentifier?: number;
 }
 
 interface AppContextValue {

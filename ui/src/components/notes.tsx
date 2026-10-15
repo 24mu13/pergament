@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GripHorizontal, Maximize2, Minimize2, NotebookPen, Pencil, Trash2, X } from "lucide-react";
 import { useApp } from "@/app";
-import { api, type Note, type NoteInput } from "@/lib/api";
-import { clampPanel, fitPanelSize, type Point, type Size } from "@/lib/notes";
+import { api, type Note } from "@/lib/api";
+import { clampPanel, fieldsOf, fitPanelSize, parseTags, sameFields, type NoteDraft, type NoteFields, type Point, type Size } from "@/lib/notes";
 import { renderMarkdown } from "@/lib/markdown";
 import { loadNoteFull, loadNotePos, loadNoteSize, saveNoteFull, saveNotePos, saveNoteSize } from "@/lib/settings";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
@@ -170,6 +170,133 @@ type Edge = keyof typeof EDGES;
 /** Keeps WebKitGTK's page menu (Back, Reload, ...) from opening on a press held on the panel's handles. */
 const noMenu = (e: React.MouseEvent) => e.preventDefault();
 
+export type NoteSaveInput = { title: string; content: string; tags: string[] };
+
+/** Saves a draft: an existing note by its guid, a new one on the page and highlight it was started on. */
+export const saveDraft = (draft: NoteDraft, input: NoteSaveInput) =>
+  api.saveNote(draft.note.guid ? null : (draft.target ?? null), {
+    ...input,
+    guid: draft.note.guid,
+    blockType: draft.blockType ?? 0,
+    blockIdentifier: draft.blockIdentifier ?? null,
+    markGuid: draft.markGuid ?? null,
+  });
+
+/** The fields of a note and its buttons, shared by the study pane's editor and the note window. */
+export function NoteForm({
+  note,
+  initial,
+  focus = true,
+  onSave,
+  onDelete,
+  onCancel,
+  onDirty,
+  onChange,
+  onError,
+}: {
+  note: Partial<Note>;
+  /** Fields to start with instead of the note's, such as unsaved text moved from another editor. */
+  initial?: NoteFields;
+  /** Focus the title once this is true; a hidden field cannot take focus. */
+  focus?: boolean;
+  onSave: (input: NoteSaveInput) => void;
+  onDelete?: () => void;
+  onCancel: () => void;
+  /** Called with whether the fields differ from the note as opened. */
+  onDirty?: (dirty: boolean) => void;
+  onChange?: (fields: NoteFields) => void;
+  onError?: (message: string) => void;
+}) {
+  const start = initial ?? fieldsOf(note);
+  const [title, setTitle] = useState(start.title);
+  const [content, setContent] = useState(start.content);
+  const [tags, setTags] = useState(start.tags);
+  const [preview, setPreview] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const dirty = !sameFields({ title, content, tags }, fieldsOf(note));
+  useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
+  useEffect(() => onChange?.({ title, content, tags }), [title, content, tags, onChange]);
+  useEffect(() => {
+    if (focus) titleRef.current?.focus();
+  }, [focus]);
+  /** Links in the preview open in the browser, not in the app's window. */
+  const openLink = (e: React.MouseEvent) => {
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) return;
+    e.preventDefault();
+    api.openExternal(a.href).catch((err) => onError?.(String(err)));
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <input
+        id="note-title"
+        ref={titleRef}
+        placeholder={t("Title")}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+      />
+      <div role="group" aria-label={t("Note")} className="-mb-1.5 flex justify-end gap-1 text-xs">
+        {[false, true].map((on) => (
+          <button
+            key={String(on)}
+            type="button"
+            aria-pressed={preview === on}
+            onClick={() => setPreview(on)}
+            className="rounded px-2 py-0.5 text-muted hover:text-fg aria-pressed:bg-bar aria-pressed:font-medium aria-pressed:text-fg"
+          >
+            {on ? t("Preview") : t("Write")}
+          </button>
+        ))}
+      </div>
+      {preview ? (
+        <div
+          data-testid="note-preview"
+          onClick={openLink}
+          className="note-md min-h-0 flex-1 overflow-auto rounded-md border border-line px-3 py-2"
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdown(content, { links: true }) || `<p class="text-muted">${t("Nothing to preview")}</p>`,
+          }}
+        />
+      ) : (
+        <textarea
+          id="note-content"
+          placeholder={t("Note")}
+          rows={6}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+        />
+      )}
+      <input
+        id="note-tags"
+        placeholder={t("Tags, separated by commas")}
+        value={tags}
+        onChange={(e) => setTags(e.target.value)}
+        className="rounded-md border border-line bg-surface px-3 py-2 text-sm focus:border-accent"
+      />
+      <div className="flex items-center gap-2">
+        {onDelete && (
+          <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted hover:text-fg">
+            <Trash2 size={16} /> {t("Delete")}
+          </button>
+        )}
+        <span className="flex-1" />
+        <button onClick={onCancel} className="px-4 py-2 text-sm hover:bg-bar">
+          {t("Cancel")}
+        </button>
+        <button
+          disabled={!title.trim() && !content.trim()}
+          onClick={() => onSave({ title: title.trim(), content, tags: parseTags(tags) })}
+          className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface disabled:opacity-50"
+        >
+          {t("Save")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * A floating panel to write or change a note. It does not block the app, so
  * the user can keep reading. It can be dragged by its header, resized from its
@@ -184,29 +311,15 @@ export function NoteEditor({
   onDirty,
 }: {
   note: Partial<Note>;
-  onSave: (input: Omit<NoteInput, "guid" | "blockType" | "blockIdentifier" | "markGuid">) => void;
+  onSave: (input: NoteSaveInput) => void;
   onDelete?: () => void;
   onClose: () => void;
   /** Called with whether the fields differ from the note as opened. */
   onDirty?: (dirty: boolean) => void;
 }) {
-  const [title, setTitle] = useState(note.title ?? "");
-  const [content, setContent] = useState(note.content ?? "");
-  const [tags, setTags] = useState((note.tags ?? []).join(", "));
-  const [preview, setPreview] = useState(false);
   const { toast } = useApp();
-  /** Links in the preview open in the browser, not in the app's window. */
-  const openLink = (e: React.MouseEvent) => {
-    const a = (e.target as HTMLElement).closest("a");
-    if (!a) return;
-    e.preventDefault();
-    api.openExternal(a.href).catch((err) => toast(String(err)));
-  };
-  const dirty = title !== (note.title ?? "") || content !== (note.content ?? "") || tags !== (note.tags ?? []).join(", ");
-  useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
 
   const ref = useRef<HTMLDivElement>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<Point | null>(null);
   const [full, setFull] = useState(loadNoteFull);
   const fullRef = useRef(full);
@@ -258,9 +371,6 @@ export function NoteEditor({
   }, []);
   // The panel starts hidden until placed, and a hidden field cannot take focus, so focus it once visible.
   const shown = pos !== null;
-  useEffect(() => {
-    if (shown) titleRef.current?.focus();
-  }, [shown]);
   // Give focus back to where the user was, if that is still on the page.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
@@ -474,80 +584,7 @@ export function NoteEditor({
           </button>
         </div>
       </div>
-      <input
-        id="note-title"
-        ref={titleRef}
-        placeholder={t("Title")}
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
-      />
-      <div role="group" aria-label={t("Note")} className="-mb-1.5 flex justify-end gap-1 text-xs">
-        {[false, true].map((on) => (
-          <button
-            key={String(on)}
-            type="button"
-            aria-pressed={preview === on}
-            onClick={() => setPreview(on)}
-            className="rounded px-2 py-0.5 text-muted hover:text-fg aria-pressed:bg-bar aria-pressed:font-medium aria-pressed:text-fg"
-          >
-            {on ? t("Preview") : t("Write")}
-          </button>
-        ))}
-      </div>
-      {preview ? (
-        <div
-          data-testid="note-preview"
-          onClick={openLink}
-          className="note-md min-h-0 flex-1 overflow-auto rounded-md border border-line px-3 py-2"
-          dangerouslySetInnerHTML={{
-            __html: renderMarkdown(content, { links: true }) || `<p class="text-muted">${t("Nothing to preview")}</p>`,
-          }}
-        />
-      ) : (
-        <textarea
-          id="note-content"
-          placeholder={t("Note")}
-          rows={6}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
-        />
-      )}
-      <input
-        id="note-tags"
-        placeholder={t("Tags, separated by commas")}
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        className="rounded-md border border-line bg-surface px-3 py-2 text-sm focus:border-accent"
-      />
-      <div className="flex items-center gap-2">
-        {onDelete && (
-          <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted hover:text-fg">
-            <Trash2 size={16} /> {t("Delete")}
-          </button>
-        )}
-        <span className="flex-1" />
-        <button onClick={onClose} className="px-4 py-2 text-sm hover:bg-bar">
-          {t("Cancel")}
-        </button>
-        <button
-          disabled={!title.trim() && !content.trim()}
-          onClick={() =>
-            onSave({
-              title: title.trim(),
-              content,
-              tags: tags
-                .split(",")
-                .map((t) => t.trim())
-                .filter(Boolean),
-            })
-          }
-          className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface disabled:opacity-50"
-        >
-          {t("Save")}
-        </button>
-      </div>
+      <NoteForm note={note} focus={shown} onSave={onSave} onDelete={onDelete} onCancel={onClose} onDirty={onDirty} onError={toast} />
       {!full &&
         (Object.keys(EDGES) as Edge[]).map((edge) => (
           <div
@@ -598,17 +635,7 @@ export function NoteHost() {
       note={draft.note}
       onDirty={setNoteDirty}
       onClose={() => void closeNote(id)}
-      onSave={(input) =>
-        run(() =>
-          api.saveNote(draft.note.guid ? null : (draft.target ?? null), {
-            ...input,
-            guid: draft.note.guid,
-            blockType: draft.blockType ?? 0,
-            blockIdentifier: draft.blockIdentifier ?? null,
-            markGuid: draft.markGuid ?? null,
-          }),
-        )
-      }
+      onSave={(input) => run(() => saveDraft(draft, input))}
       onDelete={draft.note.guid ? () => run(() => api.deleteNote(draft.note.guid!)) : undefined}
     />
   );

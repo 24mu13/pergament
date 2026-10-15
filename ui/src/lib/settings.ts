@@ -244,3 +244,17 @@ export function loadNoteFull(): boolean {
 export function saveNoteFull(on: boolean) {
   write("noteFull", on ? "1" : "0");
 }
+
+/** The size the user last gave the note window, in logical pixels. */
+export function loadNoteWindowSize(): { width: number; height: number } | null {
+  try {
+    const s = JSON.parse(read("noteWindowSize") ?? "null");
+    return Number.isFinite(s?.width) && Number.isFinite(s?.height) ? { width: s.width, height: s.height } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveNoteWindowSize(size: { width: number; height: number }) {
+  write("noteWindowSize", JSON.stringify(size));
+}
