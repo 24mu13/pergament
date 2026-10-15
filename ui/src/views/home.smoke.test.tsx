@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (p: string) => p,
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn() }));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "main" }) }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ label: "main", onCloseRequested: async () => () => undefined }) }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save: vi.fn() }));
 

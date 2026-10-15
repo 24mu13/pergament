@@ -10,18 +10,17 @@ import {
   type ChapterStudy,
   type Mark,
   type MarkRange,
-  type Note,
   type Page,
   type PageUserData,
   type Target,
   type VerseStudy,
 } from "@/lib/api";
 import { restoreScroll } from "@/lib/scroll";
-import { applyMarks, blockElements, markText, rangeText, selectionRanges, titleFromText } from "@/lib/marks";
+import { applyMarks, blockElements, markText, rangeText, selectionRanges } from "@/lib/marks";
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
-import { MarkToolbar, NoteCard } from "@/components/notes";
+import { InlineNoteEditor, MarkToolbar, NoteCard } from "@/components/notes";
 import { GoToButton } from "@/components/go-to";
 import { OutlineSection } from "@/components/outline-section";
 import { splitPage, verseKeyFromId } from "@/lib/page";
@@ -62,7 +61,25 @@ export function ReaderView({
   noteGuid?: string;
   scroll?: number;
 }) {
-  const { push, replace, toast, lang, userVersion, notesVersion, publications, playRecording, showImage, layout, openNote } = useApp();
+  const {
+    push,
+    replace,
+    toast,
+    lang,
+    userVersion,
+    notesVersion,
+    publications,
+    playRecording,
+    showImage,
+    layout,
+    note: written,
+    releaseNote,
+    keepNote,
+    openNote,
+    setLinkHandler,
+  } = useApp();
+  /** The note being written in the pane; one moving to the note window is gone from here already. */
+  const inlineNote = written?.moving ? null : written;
   const [refs, setRefs] = useState<PaneRef[]>([]);
   const [page, setPage] = useState<Page | null>(null);
   const [study, setStudy] = useState<ChapterStudy | null>(null);
@@ -132,12 +149,20 @@ export function ReaderView({
 
   // Highlights and notes of this page from user data.
   const [user, setUser] = useState<PageUserData>({ marks: [], notes: [], answers: {} });
+  /** Notes in the study pane opened to their whole text. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const toggleNote = (guid: string) =>
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (!next.delete(guid)) next.add(guid);
+      return next;
+    });
   const reloadUser = useCallback(() => {
     api
       .pageUserData(target)
       .then(setUser)
       .catch(() => setUser({ marks: [], notes: [], answers: {} }));
-    // userVersion: reload after a backup was restored; notesVersion: after the floating editor saved.
+    // userVersion: reload after a backup was restored; notesVersion: after the note editor saved.
   }, [target, userVersion, notesVersion]);
   useEffect(reloadUser, [reloadUser]);
 
@@ -320,22 +345,17 @@ export function ReaderView({
       const marked = t.mark && articleRef.current ? markText(articleRef.current, t.mark.guid) : (t.text ?? "");
       window.getSelection()?.removeAllRanges();
       reloadUser();
+      setRefs([]);
+      setPaneOpen(true);
       await openNote(
         existing
           ? { note: existing }
-          : { note: { title: titleFromText(marked) }, target, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
+          : { note: { title: marked }, target, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
+        { in: "pane" },
       );
     } catch (e) {
       toast(String(e));
     }
-  };
-
-  /** Scroll to where a note sits in the text at once; notes without a place in this text open for editing. */
-  const goToNote = (n: Note) => {
-    const root = articleRef.current;
-    const block = root && n.blockIdentifier != null ? blockElements(root, n.blockType, n.blockIdentifier)[0] : undefined;
-    if (!block) return void openNote({ note: n });
-    flash(block, "center", "instant");
   };
 
   /** Open the study pane on the notes and point at one. */
@@ -387,6 +407,15 @@ export function ReaderView({
     const key = verse ? verseKeyOfSpan(verse.id) : null;
     if (key && study?.verses.some((v) => verseKey(v) === key)) selectVerse(key);
   };
+
+  /** A note's links to the app's own pages open like a cross-reference, also those clicked in the note window. */
+  const followNoteLink = (href: string) => void follow(href);
+  const latestFollow = useRef(follow);
+  latestFollow.current = follow;
+  useEffect(() => {
+    setLinkHandler((href) => void latestFollow.current(href));
+    return () => setLinkHandler(null);
+  }, [setLinkHandler]);
 
   const onPaneClick = (e: ReactMouseEvent) => {
     const a = (e.target as HTMLElement).closest("a");
@@ -441,7 +470,7 @@ export function ReaderView({
     if (!paged) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      // Keys pressed in the floating note editor belong to it.
+      // Keys pressed in the note editor belong to it.
       if (e.target instanceof Element && e.target.closest("[data-note-editor]")) return;
       if (e.key === "ArrowLeft" && !e.altKey) go(-1);
       if (e.key === "ArrowRight" && !e.altKey) go(1);
@@ -451,8 +480,18 @@ export function ReaderView({
   });
 
   const docFootnotes = !chapter && split ? Object.keys(split.footnotes) : [];
+  /** The inline draft is new, or its note is not among this page's notes: it shows above them. */
+  const detached = inlineNote !== null && (!inlineNote.draft.note.guid || !user.notes.some((n) => n.guid === inlineNote.draft.note.guid));
   const hasPane =
-    (chapter ? study !== null : docFootnotes.length > 0) || refs.length > 0 || user.notes.length > 0;
+    (chapter ? study !== null : docFootnotes.length > 0) || refs.length > 0 || user.notes.length > 0 || inlineNote !== null;
+  // The note being written lives in the pane: when the page changes or the pane closes,
+  // unsaved text moves to the note window and an unchanged note closes. Behind a followed
+  // reference it waits, and comes back with its text when the reference closes.
+  useEffect(() => releaseNote, [target, releaseNote]);
+  useEffect(() => {
+    if (!paneOpen) releaseNote();
+    else if (refs.length > 0) keepNote();
+  }, [paneOpen, refs.length, releaseNote, keepNote]);
   const subtitle = detail?.card.title ?? "";
   const edge =
     "absolute top-1/2 z-10 flex h-10 w-7 -translate-y-1/2 items-center justify-center rounded-md border border-line bg-surface text-muted hover:bg-bar hover:text-fg";
@@ -530,12 +569,23 @@ export function ReaderView({
             onClick={onPaneClick}
             className="study-pane w-[min(44%,640px)] shrink-0 overflow-y-auto border-l border-line bg-surface px-5 py-4 text-[0.93rem] leading-relaxed"
           >
-            {user.notes.length > 0 && (
+            {(user.notes.length > 0 || detached) && (
               <section className="mb-6 flex flex-col gap-2">
                 <h3 className="text-sm font-semibold">{t("My notes")}</h3>
+                {detached && <InlineNoteEditor onAppLink={followNoteLink} />}
                 {user.notes.map((n) => (
                   <div key={n.guid} data-note={n.guid}>
-                    <NoteCard note={n} onClick={() => goToNote(n)} onEdit={() => void openNote({ note: n })} />
+                    {inlineNote?.draft.note.guid === n.guid ? (
+                      <InlineNoteEditor onAppLink={followNoteLink} />
+                    ) : (
+                      <NoteCard
+                        note={n}
+                        expanded={expanded.has(n.guid)}
+                        onToggle={() => toggleNote(n.guid)}
+                        onClick={() => void openNote({ note: n }, { in: "pane" })}
+                        onAppLink={followNoteLink}
+                      />
+                    )}
                   </div>
                 ))}
               </section>
