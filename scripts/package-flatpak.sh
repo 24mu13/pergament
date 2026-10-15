@@ -50,7 +50,7 @@ Keywords=jwpub;Bible;reader;
 StartupWMClass=pergament-app
 DESKTOP
 
-flatpak-builder --user --arch=x86_64 --branch=stable \
+flatpak-builder --user --arch=x86_64 --default-branch=stable \
     --repo=target/flatpak-repo --force-clean \
     target/flatpak-build "$manifest"
 mkdir -p target/package
