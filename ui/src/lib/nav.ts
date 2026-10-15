@@ -41,7 +41,7 @@ export type NavAction =
     to: Section;
     view: View;
     scroll?: number;
-    /** An explicit stack for the target section that wins over `view` and over a saved one. */
+    /** An explicit non-empty stack for the target section that wins over `view` and over a saved one; an empty one counts as none. */
     stack?: View[];
   };
 
@@ -61,10 +61,10 @@ export function navReducer(state: NavState, action: NavAction): NavState {
       const saved = { ...state.saved };
       if (state.section === action.to) {
         delete saved[action.to];
-        return { ...state, stack: action.stack ?? [action.view], saved };
+        return { ...state, stack: action.stack?.length ? action.stack : [action.view], saved };
       }
       saved[state.section] = [...state.stack.slice(0, -1), { ...currentView(state), scroll: action.scroll }];
-      const stack = action.stack ?? saved[action.to] ?? [action.view];
+      const stack = action.stack?.length ? action.stack : saved[action.to] ?? [action.view];
       delete saved[action.to];
       return { stack, section: action.to, saved };
     }

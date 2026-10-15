@@ -70,4 +70,20 @@ describe("switch with an explicit stack", () => {
     expect(s.stack).toEqual([{ name: "reader", target: chapterTarget("nwt_E", 43, 3) }]);
     expect(s.saved.bible).toBeUndefined();
   });
+
+  it("treats an empty stack as none, falling back to the view", () => {
+    const sameSection = run(
+      initialNav,
+      { type: "switch", to: "bible", view: { name: "bible" } },
+      { type: "switch", to: "bible", view: { name: "publication", dir: "nwt_E" }, stack: [] },
+    );
+    expect(sameSection.stack).toEqual([{ name: "publication", dir: "nwt_E" }]);
+
+    const otherSection = run(
+      initialNav,
+      { type: "switch", to: "meetings", view: { name: "meetings" } },
+      { type: "switch", to: "bible", view: { name: "chapters", dir: "nwt_E", book: 43 }, stack: [] },
+    );
+    expect(otherSection.stack).toEqual([{ name: "chapters", dir: "nwt_E", book: 43 }]);
+  });
 });
