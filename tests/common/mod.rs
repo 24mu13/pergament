@@ -19,6 +19,23 @@ pub fn key(issue: &str) -> ContentKey {
     ContentKey::new(LANG, SYMBOL, YEAR, issue)
 }
 
+/// One row triple of the extract tables: the `Extract` plus its
+/// `DocumentExtract` back reference.
+#[derive(Clone)]
+pub struct ExtractFixture {
+    pub extract_id: i64,
+    /// The citing document (`DocumentExtract.DocumentId`).
+    pub document_id: i64,
+    /// `Extract.Link`, e.g. `p/X:502016128/3-5`.
+    pub link: String,
+    /// Plain-HTML `Extract.Caption` with `eloc`/`etitle` spans.
+    pub caption: String,
+    /// The excerpt text; encrypted with the publication key like document content.
+    pub html: String,
+    /// `(RefPublicationId, Title, ShortTitle)` when the excerpt names its publication.
+    pub ref_publication: Option<(i64, String, String)>,
+}
+
 /// Knobs for producing broken variants.
 #[derive(Clone)]
 pub struct Fixture {
@@ -32,6 +49,8 @@ pub struct Fixture {
     pub extra_entries: Vec<(String, Vec<u8>)>,
     pub db_file_name: Option<String>,
     pub documents: Vec<(i64, String)>,
+    pub extracts: Vec<ExtractFixture>,
+    pub with_extract_tables: bool,
 }
 
 impl Default for Fixture {
@@ -47,6 +66,8 @@ impl Default for Fixture {
             extra_entries: vec![("img_1.jpg".into(), b"\xff\xd8not really a jpeg".to_vec())],
             db_file_name: None,
             documents: vec![(1, "<p id=\"p1\" data-pid=\"1\">Hello</p>".into())],
+            extracts: Vec::new(),
+            with_extract_tables: true,
         }
     }
 }
@@ -84,6 +105,46 @@ impl Fixture {
                 conn.execute(
                     "INSERT INTO Document VALUES (?1, ?1, '13', 0, 'Doc', ?2, ?3)",
                     rusqlite::params![id, k.encode(html.as_bytes()), html.len() as i64],
+                )
+                .unwrap();
+            }
+        }
+        if self.with_extract_tables {
+            conn.execute_batch(
+                "CREATE TABLE RefPublication (RefPublicationId INTEGER PRIMARY KEY, Title TEXT, ShortTitle TEXT);
+                 CREATE TABLE Extract (ExtractId INTEGER PRIMARY KEY, RefPublicationId INTEGER,
+                                       Link TEXT, Caption TEXT, Content BLOB);
+                 CREATE TABLE DocumentExtract (DocumentExtractId INTEGER PRIMARY KEY, DocumentId INTEGER,
+                                               ExtractId INTEGER, BeginParagraphOrdinal INTEGER,
+                                               EndParagraphOrdinal INTEGER, SortPosition INTEGER);",
+            )
+            .unwrap();
+            let k = key(&self.issue);
+            for (n, e) in self.extracts.iter().enumerate() {
+                let n = n as i64;
+                if let Some((id, title, short)) = &e.ref_publication {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO RefPublication VALUES (?1, ?2, ?3)",
+                        rusqlite::params![id, title, short],
+                    )
+                    .unwrap();
+                }
+                // `OR IGNORE`: two `ExtractFixture`s may share an `Extract` when
+                // the same excerpt is cited twice.
+                conn.execute(
+                    "INSERT OR IGNORE INTO Extract VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        e.extract_id,
+                        e.ref_publication.as_ref().map(|r| r.0),
+                        e.link,
+                        e.caption,
+                        k.encode(e.html.as_bytes()),
+                    ],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO DocumentExtract VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+                    rusqlite::params![n, e.document_id, e.extract_id, n, n],
                 )
                 .unwrap();
             }
