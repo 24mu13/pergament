@@ -64,7 +64,7 @@ import { scroller } from "@/lib/scroll";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu, type Translations } from "@/components/language-menu";
 import { useCatalogBibles } from "@/lib/use-catalog-bibles";
-import { bibleChoices, bibleFor, pickBible } from "@/lib/bible";
+import { bibleChoices, bibleFor, bibleStackFor, pickBible } from "@/lib/bible";
 
 /** The note written in the reader's study pane. */
 export interface InlineNote {
@@ -93,7 +93,7 @@ interface AppContextValue {
   replace: (view: View) => void;
   root: (view: View) => void;
   /** Go to a rail section, back to where the user left it. */
-  switchTo: (section: Section, view: View, scroll?: number) => void;
+  switchTo: (section: Section, view: View, scroll?: number, stack?: View[]) => void;
   back: () => void;
   openTarget: (target: Target, note?: boolean) => void;
   publications: PubCard[];
@@ -767,7 +767,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       push: (view) => dispatch({ type: "push", view }),
       replace: (view) => dispatch({ type: "replace", view }),
       root: (view) => dispatch({ type: "root", view }),
-      switchTo: (section, view, scroll) => dispatch({ type: "switch", to: section, view, scroll }),
+      switchTo: (section, view, scroll, stack) => dispatch({ type: "switch", to: section, view, scroll, stack }),
       back: () => dispatch({ type: "back" }),
       openTarget: (target, note) => dispatch({ type: "push", view: { name: "reader", target, note } }),
       publications,
@@ -1142,10 +1142,11 @@ function MoreMenu() {
 
 /**
  * The Bibles each language offers, downloaded or from the catalog, and what picking one does: select its language,
- * remember it for the Bible tab, download it if needed and open it. Only reads the catalog while `enabled`.
+ * remember it for the Bible tab, download it if needed and open it, keeping the place that was open. Only reads the
+ * catalog while `enabled`.
  */
 export function useBibleTranslations(enabled: boolean): Translations | undefined {
-  const { lang, setLang, publications, bibles, chooseBible, download, downloads, switchTo, catalogVersion } = useApp();
+  const { lang, setLang, publications, bibles, chooseBible, download, downloads, switchTo, catalogVersion, view } = useApp();
   const libraryCodes = [...new Set(publications.map((p) => p.langCode).filter((c): c is string => !!c))];
   // Only the languages in the library and the selected one list catalog Bibles; reading the rest would be a lot of queries.
   const catalogBibles = useCatalogBibles([lang, ...libraryCodes], enabled, catalogVersion);
@@ -1159,8 +1160,15 @@ export function useBibleTranslations(enabled: boolean): Translations | undefined
       setLang(c.lang);
       chooseBible(c.lang, c.symbol);
       void (async () => {
+        const place = view;
         const dir = c.dir ?? (c.entry ? await download(c.entry, c.lang, { quiet: true }) : null);
-        if (dir) switchTo("bible", { name: "publication", dir });
+        if (!dir) return;
+        try {
+          const { books } = await api.publication(dir);
+          switchTo("bible", { name: "publication", dir }, undefined, bibleStackFor(place, dir, books));
+        } catch {
+          switchTo("bible", { name: "publication", dir });
+        }
       })();
     },
   };
