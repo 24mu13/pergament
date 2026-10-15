@@ -118,8 +118,27 @@ once a day. Cover images are fetched once and cached.
 
 ## Install
 
-Pergament is released as a zip for Linux and a disk image for Macs with Apple
-Silicon, or you build it from source.
+Pergament is released as packages for Linux, a zip for Linux and a disk image
+for Macs with Apple Silicon, or you build it from source.
+
+**From packages.** Each release has four packages for x86_64 Linux, each with a
+`.sha256` file to check first:
+
+```sh
+sha256sum -c Pergament-X.Y.Z-linux-x86_64.deb.sha256
+sudo apt install ./Pergament-X.Y.Z-linux-x86_64.deb        # Debian, Ubuntu, Mint
+sudo dnf install ./Pergament-X.Y.Z-linux-x86_64.rpm         # Fedora
+chmod +x Pergament-X.Y.Z-linux-x86_64.AppImage && ./Pergament-X.Y.Z-linux-x86_64.AppImage
+flatpak install --user Pergament-X.Y.Z-linux-x86_64.flatpak
+```
+
+The .deb and .rpm pull in what the app needs, including the H.264 video
+decoder, and install both `pergament-app` and the `pergament` command line
+tool. The AppImage runs as it is; on a distribution without FUSE, start it
+with `--appimage-extract-and-run`. The flatpak keeps its data (your library,
+notes and settings) in `~/.var/app/io.github.v3rm1n.pergament/data/pergament`,
+apart from a native install, and the command line tool is
+`flatpak run --command=pergament io.github.v3rm1n.pergament`.
 
 **From the release zip.** Download `pergament-X.Y.Z-linux-x86_64.zip` and its
 `.sha256` file from the [releases page](https://github.com/v3rm1n0/pergament/releases),
@@ -138,9 +157,13 @@ checks that the libraries it needs (WebKitGTK 4.1, GTK 3, libsoup 3, OpenSSL,
 SQLite) are installed. The zip is built on Ubuntu 22.04, so it needs a
 distribution at least that recent.
 
-Playing videos needs GStreamer with an H.264 decoder (`gst-libav` on Debian and
-Ubuntu, `gstreamer1-libav` on Fedora, `gst-libav` on Arch). Without it the
-player offers to open the recording in your browser instead.
+The packages include the H.264 decoder, so video playback works out of the box:
+the .deb and .rpm depend on `gst-libav` (`gstreamer1-libav` on Fedora), the
+AppImage bundles GStreamer, and the flatpak runtime has it. Only from the zip,
+or after building from source, do you need to install it yourself
+(`gst-libav` on Debian and Ubuntu, `gstreamer1-libav` on Fedora, `gst-libav`
+on Arch). Without it the player offers to open the recording in your browser
+instead.
 
 **On a Mac with Apple Silicon.** Each release also has a disk image,
 `Pergament-X.Y.Z-macos-arm64.dmg`, with the desktop app only (no command line
@@ -276,9 +299,10 @@ consequences of using it. You are responsible for checking that your use is
 lawful where you live, in particular decrypting `.jwpub` files and downloading
 from jw.org.
 
-**Official builds.** Each release on GitHub has a zip for Linux with the compiled
-binaries, the icons and an install script, a disk image for Apple Silicon Macs,
-`.sha256` files to check them, and the source code. These are the only
-official builds; there are no distribution packages. You can also build it
-yourself as described under [Install](#install). Compiled versions from anyone
-else do not come from this project and are not supported.
+**Official builds.** Each release on GitHub has an AppImage, a .deb, a .rpm and
+a .flatpak for x86_64 Linux, a zip for Linux with the compiled binaries, the
+icons and an install script, a disk image for Apple Silicon Macs, `.sha256`
+files to check them, and the source code. These are the only official builds;
+there are no repositories for apt, dnf or a flatpak remote. You can also build
+it yourself as described under [Install](#install). Compiled versions from
+anyone else do not come from this project and are not supported.
