@@ -251,7 +251,7 @@ export function HomeView() {
                   )}
                   <TabsContent value={active} className="flex flex-wrap gap-x-3 gap-y-4">
                     {shownGroups.flat().map((e) => (
-                      <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} />
+                      <EntryCover key={`${e.item.symbol}-${e.item.issue_tag}`} entry={e} lang={toolboxEff} />
                     ))}
                   </TabsContent>
                 </Tabs>

@@ -238,6 +238,24 @@ describe("Home with tile menus", () => {
     expect(calls.find((c) => c.cmd === "home_lists")?.args).toMatchObject({ lang: "X" });
   });
 
+  it("downloads a toolbox tile in the toolbox language", async () => {
+    localStorage.setItem("toolboxLang", "T");
+    backend.teaching_toolbox = () => [entry("lff", "Books", null, "Felizes para Sempre")];
+    renderHome();
+    const t = await tile("Felizes para Sempre");
+    fireEvent.click(within(t).getByTitle("Felizes para Sempre"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
+    expect(calls.find((c) => c.cmd === "download_publication")?.args).toMatchObject({ lang: "T" });
+  });
+
+  it("opens a downloaded toolbox tile without downloading again", async () => {
+    localStorage.setItem("toolboxLang", "T");
+    backend.teaching_toolbox = () => [entry("lff", "Books", "lff_2", "Felizes para Sempre")];
+    renderHome();
+    fireEvent.click(within(await tile("Felizes para Sempre")).getByTitle("Felizes para Sempre"));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "download_publication").length).toBe(0));
+  });
+
   it("picks a language with the picker and resets to the app language", async () => {
     backend.languages = () => [{ code: "T", name: "Portuguese", vernacular: "Português", rtl: false, signLanguage: false }];
     renderHome();
