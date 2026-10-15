@@ -227,6 +227,15 @@ describe("Home with tile menus", () => {
     await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
   });
 
+  it("downloads a What's New row in the row's language", async () => {
+    localStorage.setItem("whatsNewLangs", JSON.stringify(["E"]));
+    whatsNewRows = [{ ...entry("lff", "Books", null, "Newly Arrived"), langCode: "E" }];
+    renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: "Get · Newly Arrived" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "download_publication")).toBe(true));
+    expect(calls.find((c) => c.cmd === "download_publication")?.args).toMatchObject({ lang: "E" });
+  });
+
   it("follows the app language until a selection is stored", async () => {
     renderHome();
     await screen.findByText("Frisch erschienen");

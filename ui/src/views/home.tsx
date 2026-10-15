@@ -54,7 +54,7 @@ function NewRow({ row, showLang }: { row: WhatsNewRow; showLang: boolean }) {
         className="h-7 px-2.5 text-[13px]"
         disabled={!!p}
         aria-label={`${action} · ${title}`}
-        onClick={() => void activate(row)}
+        onClick={() => void activate(row, row.langCode)}
       >
         {action}
       </Button>
