@@ -119,6 +119,7 @@ export const de: Record<string, string> = {
   Outline: "Gliederung",
   "Publication Reference": "Publikationsverweis",
   "Open in the reader": "Im Leser öffnen",
+  "Open the publication": "Publikation öffnen",
   "This publication is not in your library.": "Diese Publikation ist nicht in deiner Bibliothek.",
   "This publication is not in your library": "Diese Publikation ist nicht in deiner Bibliothek",
   "Download ({size})": "Herunterladen ({size})",

@@ -20,6 +20,15 @@ export type PaneRef =
   | { kind: "page"; href: string; target: Target; page: Page; studyNote: boolean }
   | { kind: "bible"; href: string; range: BibleRange }
   | { kind: "research"; href: string; dir: string; book: number; chapter: number; verse: number }
+  | {
+      kind: "extract";
+      href: string;
+      url: string | null;
+      publication: string;
+      subject: string;
+      location: string;
+      html: string;
+    }
   | { kind: "missing"; href: string; entry: CatalogEntry | null; url: string | null };
 
 /**
@@ -30,12 +39,15 @@ export function ReferencePane({
   pref,
   onBack,
   onFollow,
+  onOpenSource,
   onRetry,
 }: {
   pref: PaneRef;
   onBack: () => void;
   /** A link clicked inside the pane. */
   onFollow: (href: string) => void;
+  /** The excerpt's publication bar was clicked; offer the download. */
+  onOpenSource: (href: string, url: string | null) => void;
   /** The missing publication was downloaded; resolve the link again. */
   onRetry: () => void;
 }) {
@@ -63,6 +75,8 @@ export function ReferencePane({
       </div>
       {pref.kind === "page" ? (
         <ReferencePage key={`${JSON.stringify(pref.target)}|${pref.href}|${userVersion}`} pref={pref} onFollow={onFollow} />
+      ) : pref.kind === "extract" ? (
+        <ExtractReference pref={pref} onFollow={onFollow} onOpenSource={onOpenSource} />
       ) : (
         <MissingReference pref={pref} onRetry={onRetry} />
       )}
@@ -157,6 +171,63 @@ function ReferencePage({ pref, onFollow }: { pref: Extract<PaneRef, { kind: "pag
           className={cn("reader pane-reader", isChapter && "bible")}
           dangerouslySetInnerHTML={{ __html: body }}
         />
+      </div>
+    </>
+  );
+}
+
+/** The excerpt a publication quotes of one that is not installed. */
+function ExtractReference({
+  pref,
+  onFollow,
+  onOpenSource,
+}: {
+  pref: Extract<PaneRef, { kind: "extract" }>;
+  onFollow: (href: string) => void;
+  onOpenSource: (href: string, url: string | null) => void;
+}) {
+  const { showImage } = useApp();
+  const ref = useRef<HTMLDivElement>(null);
+
+  // The excerpt's pictures load only after hydration, like in ReferencePage.
+  useEffect(() => {
+    if (ref.current) hydrateMedia(ref.current);
+    // pref.html: a new excerpt replaces the markup.
+  }, [pref.html]);
+
+  const onClick = (e: ReactMouseEvent) => {
+    const picture = clickedImage(e.target);
+    if (picture) {
+      showImage(picture.src, picture.caption);
+      return;
+    }
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) return;
+    e.preventDefault();
+    const href = a.getAttribute("href") ?? "";
+    if (href && !href.startsWith("#")) onFollow(href);
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => onOpenSource(pref.href, pref.url)}
+        title={t("Open the publication")}
+        aria-label={t("Open the publication")}
+        className="flex shrink-0 items-center gap-3 border-b border-line bg-surface py-1.5 pl-1.5 pr-3 text-left hover:bg-bar"
+      >
+        {/* No cover: the quoted publication is not in the library. */}
+        <div className="flex h-11 w-11 items-center justify-center rounded-md border border-line bg-tile text-muted">
+          <BookOpen size={20} strokeWidth={1.3} />
+        </div>
+        <div className="min-w-0 flex-1 leading-tight">
+          <div className="truncate font-semibold">{pref.subject || pref.publication}</div>
+          <div className="truncate text-[13px] text-muted">{[pref.publication, pref.location].filter(Boolean).join(" · ")}</div>
+        </div>
+        <ChevronRight size={20} className="shrink-0" />
+      </button>
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div ref={ref} onClick={onClick} className="reader pane-reader" dangerouslySetInnerHTML={{ __html: pref.html }} />
       </div>
     </>
   );

@@ -1,5 +1,6 @@
 //! Tests against user-supplied publications. Skipped unless
-//! `PERGAMENT_TEST_JWPUB` (study Bible) / `PERGAMENT_TEST_JWPUB_WP` (Watchtower) are set.
+//! `PERGAMENT_TEST_JWPUB` (study Bible) / `PERGAMENT_TEST_JWPUB_WP` (Watchtower)
+//! / `PERGAMENT_TEST_JWPUB_LFF` (lff book) are set.
 
 use std::path::PathBuf;
 
@@ -425,4 +426,57 @@ fn chapter_study_genesis_12() {
     let doc = r.document(o.document.unwrap()).unwrap();
     assert!(doc.contains("Übersicht über Matthäus"));
     assert!(doc.contains("<strong>A.</strong>"));
+}
+
+/// Every citation link in a real file resolves: each `Extract.Link` finds its
+/// own excerpt (self-consistency), and the `jwpub://p/…` anchors of the
+/// documents resolve to `Extract` rows more often than not.
+#[test]
+fn extracts_resolve_on_real_files() {
+    let Some((_tmp, lib, entry)) = open_library("PERGAMENT_TEST_JWPUB_LFF") else {
+        return;
+    };
+    let p = pergament::Publication::open(&lib, &entry).unwrap();
+    let conn = jwpub::open_db(&lib.db_path(&entry)).unwrap();
+
+    // Self-consistency: every Extract.Link with content matches exactly one
+    // excerpt.
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT Link FROM Extract WHERE Link IS NOT NULL AND Content IS NOT NULL")
+        .unwrap();
+    let links: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    drop(stmt);
+    assert!(!links.is_empty(), "no Extract rows with content");
+    for link in &links {
+        assert!(p.citation_extract(link).unwrap().is_some(), "{link}");
+    }
+
+    // The citation anchors of the documents correspond to Extract.Link rows
+    // in pub form: "p/" + the tail of jwpub://p/….
+    let marker = "href=\"jwpub://p/";
+    let (mut some, mut none) = (0, 0);
+    for d in p.documents().unwrap().into_iter().filter(|d| d.has_content) {
+        let html = p.document(d.id).unwrap().1.unwrap();
+        let mut rest = html.as_str();
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let end = rest.find('"').unwrap();
+            let link = format!("p/{}", &rest[..end]);
+            rest = &rest[end..];
+            if p.citation_extract(&link).unwrap().is_some() {
+                some += 1;
+            } else {
+                none += 1;
+            }
+        }
+    }
+    assert!(
+        some > none,
+        "of {} anchors, {some} resolved and {none} did not",
+        some + none
+    );
 }

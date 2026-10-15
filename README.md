@@ -35,8 +35,10 @@ references and study notes of each verse. A Bible link opens Parallel
 Translations in a side pane, with the cited verses in every Bible of your
 library; "Customize" chooses which and in what order. Other links show the
 reference with the cited paragraphs tinted, and the pane offers to download a
-publication you don't have. Large pictures in a page are scaled to fit, and a
-click opens one at full size with zoom and its caption.
+publication you don't have; when the file quotes the cited passage itself, the
+pane first shows that embedded excerpt, with the download behind its title
+bar. Large pictures in a page are scaled to fit, and a click opens one at full
+size with zoom and its caption.
 
 **Keep notes.** Select text to highlight it in one of six colors or attach a
 note; click a highlight to change or remove it. Answer fields in workbooks and

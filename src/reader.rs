@@ -712,6 +712,25 @@ pub struct GuideExtract {
     pub html: String,
 }
 
+/// One quoted excerpt of another publication that a document's publication
+/// link (`jwpub://p/`) points at. `html` is the decoded, not yet rewritten
+/// or sanitized content.
+#[derive(Debug, Clone)]
+pub struct CitationExtract {
+    /// `RefPublication.ShortTitle`, falling back to `Title`; empty when the
+    /// row has neither.
+    pub publication: String,
+    /// `<span class="etitle">` of `Extract.Caption`; empty when absent.
+    pub subject: String,
+    /// `<span class="eloc">` of `Extract.Caption`; empty when absent.
+    pub location: String,
+    /// Decoded `Extract.Content`, NOT yet rewritten or sanitized.
+    pub html: String,
+}
+
+/// One matched `Extract` row: `(ExtractId, Caption, Content, publication title)`.
+type CitationRow = (i64, Option<String>, Option<Vec<u8>>, Option<String>);
+
 /// A verse heading in a Research Guide book document.
 struct GuideHeading {
     ordinal: i64,
@@ -834,6 +853,70 @@ impl Publication {
             });
         }
         Ok(out)
+    }
+
+    /// The excerpt a publication link points at. `link` is in `Extract.Link`
+    /// form: `p/{lang}:{docid}[/{from}-{to}]`. Returns `None` when the tables
+    /// are absent, nothing matches, or the match is ambiguous.
+    pub fn citation_extract(&self, link: &str) -> Result<Option<CitationExtract>> {
+        if !self.has_table("DocumentExtract")? || !self.has_table("Extract")? {
+            return Ok(None);
+        }
+        let full = link.trim_end_matches('/');
+        let mut rows = self.citation_rows("WHERE (e.Link = ?1 OR e.Link = ?1 || '/')", full)?;
+        if rows.is_empty()
+            && let Some((head, _)) = full.rsplit_once('/')
+            // A range-less link has no head: its head would be "p", which
+            // matches everything.
+            && head.contains('/')
+        {
+            rows = self.citation_rows("WHERE (e.Link = ?1 OR e.Link LIKE ?1 || '/%')", head)?;
+        }
+        // The same excerpt may be cited by several documents; that is not ambiguity.
+        let mut unique: Vec<CitationRow> = Vec::new();
+        for row in rows {
+            if unique.iter().all(|(id, ..)| *id != row.0) {
+                unique.push(row);
+            }
+        }
+        if unique.len() != 1 {
+            return Ok(None);
+        }
+        let (_, caption, content, publication) = unique.pop().unwrap();
+        let caption = caption.unwrap_or_default();
+        let html = match content {
+            Some(blob) => self.decode(&blob)?,
+            None => String::new(),
+        };
+        Ok(Some(CitationExtract {
+            publication: publication.unwrap_or_default(),
+            subject: span_text(&caption, "etitle"),
+            location: span_text(&caption, "eloc"),
+            html,
+        }))
+    }
+
+    /// `Extract` rows joined with their publication, whose link matches
+    /// `link` per `matching`, in citation order.
+    fn citation_rows(&self, matching: &str, link: &str) -> Result<Vec<CitationRow>> {
+        let sql = format!(
+            "SELECT e.ExtractId, e.Caption, e.Content, IFNULL(r.ShortTitle, r.Title)
+             FROM DocumentExtract de
+             JOIN Extract e ON e.ExtractId = de.ExtractId
+             LEFT JOIN RefPublication r ON r.RefPublicationId = e.RefPublicationId
+             {matching}
+             ORDER BY de.SortPosition, de.DocumentExtractId"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([link], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<Vec<u8>>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
 
