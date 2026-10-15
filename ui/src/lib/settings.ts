@@ -86,6 +86,22 @@ export function saveLang(code: string) {
   write("lang", code);
 }
 
+/** Languages the What's New list shows; `null` is the default (the app language). */
+export function loadWhatsNewLangs(): string[] | null {
+  try {
+    const v: unknown = JSON.parse(read("whatsNewLangs") ?? "null");
+    if (!Array.isArray(v)) return null;
+    const codes = [...new Set(v.filter((x): x is string => typeof x === "string" && /^[A-Z0-9-]{1,8}$/.test(x)))];
+    return codes.length > 0 ? codes : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveWhatsNewLangs(codes: string[]) {
+  write("whatsNewLangs", JSON.stringify(codes));
+}
+
 export function loadUiLang(): UiLangSetting {
   const l = read("uiLang");
   return l && isUiLang(l) ? l : "system";

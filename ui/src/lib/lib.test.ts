@@ -91,6 +91,26 @@ describe("language filter", () => {
   });
 });
 
+import { loadWhatsNewLangs, saveWhatsNewLangs } from "./settings";
+
+describe("whats new languages", () => {
+  it("is null by default and round-trips a selection", () => {
+    expect(loadWhatsNewLangs()).toBeNull();
+    saveWhatsNewLangs(["E", "X"]);
+    expect(loadWhatsNewLangs()).toEqual(["E", "X"]);
+  });
+  it("drops invalid codes and empty lists", () => {
+    saveWhatsNewLangs(["e", "X", "TOOLONGCODE", "X"]);
+    expect(loadWhatsNewLangs()).toEqual(["X"]);
+    saveWhatsNewLangs([]);
+    expect(loadWhatsNewLangs()).toBeNull();
+  });
+  it("survives garbage storage", () => {
+    localStorage.setItem("whatsNewLangs", "{nope");
+    expect(loadWhatsNewLangs()).toBeNull();
+  });
+});
+
 import { addDays, ago, fromDateNumber, isoDate, longDate, rangeLabel, weekLabel, weekStart } from "./dates";
 
 describe("dates", () => {

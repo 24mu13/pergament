@@ -176,6 +176,11 @@ export interface CatalogEntry {
   local: string | null;
 }
 
+/** A publication in the What's New list, with the language it is listed in. */
+export interface WhatsNewRow extends CatalogEntry {
+  langCode: string;
+}
+
 export interface HomeLists {
   teachingToolbox: CatalogEntry[];
   whatsNew: CatalogEntry[];
@@ -408,6 +413,8 @@ export const api = {
   catalogCached: () => invoke<boolean>("catalog_cached"),
   loadCatalog: () => invoke<void>("load_catalog"),
   homeLists: (lang: string, date: string) => invoke<HomeLists | null>("home_lists", { lang, date }),
+  /** Latest publications for `langs`; `null` when no catalog is cached yet. */
+  whatsNew: (langs: string[]) => invoke<WhatsNewRow[] | null>("whats_new", { langs }),
   categories: (lang: string) => invoke<Category[] | null>("categories", { lang }),
   category: (lang: string, id: number) => invoke<CatalogEntry[] | null>("category", { lang, id }),
   meetings: (lang: string, date: string) => invoke<Meetings | null>("meetings", { lang, date }),
