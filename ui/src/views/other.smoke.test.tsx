@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Renders the search, meetings, updates and publication views in StrictMode with a mocked backend.
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { card, entry } from "@/lib/fixtures";
@@ -17,7 +17,15 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
   convertFileSrc: (p: string) => p,
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn() }));
+/** The latest handler per event, so a test can play the note window's messages. */
+const listeners: Record<string, (e: { payload: unknown }) => void> = {};
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (event: string, h: (e: { payload: unknown }) => void) => {
+    listeners[event] = h;
+    return () => undefined;
+  }),
+  emitTo: vi.fn(async () => undefined),
+}));
 let closeRequested: ((e: { preventDefault: () => void }) => Promise<void>) | null = null;
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({
@@ -39,12 +47,13 @@ import { UpdatesTab } from "@/views/updates";
 import { SettingsView } from "@/views/settings";
 import { PersonalView } from "@/views/personal";
 import { GoTo } from "@/components/go-to";
-import { NoteHost } from "@/components/notes";
+import { InlineNoteEditor } from "@/components/notes";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { emitTo } from "@tauri-apps/api/event";
 
 beforeEach(() => {
   calls.length = 0;
+  closeRequested = null;
   localStorage.clear();
   localStorage.setItem("lang", "X");
   backend = {
@@ -280,12 +289,12 @@ describe("Personal Study", () => {
   });
 });
 
-describe("Floating note", () => {
+describe("Note in the study pane", () => {
   const verse = { publication: "nwtsty_E", kind: { chapter: { book: 43, chapter: 3, verse: 16 } } };
 
   /** Opens a new note on John 3:16, then lets the test move elsewhere in the app. */
   function Harness() {
-    const { view, openNote, push, userVersion, notesVersion } = useApp();
+    const { view, openNote, releaseNote, userVersion, notesVersion } = useApp();
     return (
       <>
         <span data-testid="view">{view.name}</span>
@@ -294,7 +303,7 @@ describe("Floating note", () => {
           open
         </button>
         <button onClick={() => void openNote({ note: { title: "Another" } }, { in: "pane" })}>other</button>
-        <button onClick={() => push({ name: "personal" })}>go</button>
+        <button onClick={releaseNote}>leave</button>
       </>
     );
   }
@@ -310,7 +319,7 @@ describe("Floating note", () => {
     renderIn(
       <>
         <Opener />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     fireEvent.click(screen.getByText("window"));
@@ -318,14 +327,14 @@ describe("Floating note", () => {
     await waitFor(() =>
       expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ draft: { note: { title: "Elsewhere" } } })),
     );
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("form")).toBeNull();
   });
 
   it("asks before closing the main window with unsaved text", async () => {
     renderIn(
       <>
         <Harness />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     await waitFor(() => expect(closeRequested).toBeTruthy());
@@ -335,7 +344,7 @@ describe("Floating note", () => {
     expect(clean.preventDefault).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("open"));
-    const editor = await screen.findByRole("dialog", { name: "New note" });
+    const editor = await screen.findByRole("form", { name: "New note" });
     fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
     vi.mocked(ask).mockResolvedValue(false);
     const dirty = { preventDefault: vi.fn() };
@@ -344,62 +353,37 @@ describe("Floating note", () => {
     expect(dirty.preventDefault).toHaveBeenCalled();
   });
 
-  it("stays open while navigating and saves to the page it was started on", async () => {
+  it("asks before closing the main window when only the note window holds unsaved text", async () => {
+    renderIn(<Harness />);
+    await waitFor(() => expect(closeRequested && listeners["note-dirty"]).toBeTruthy());
+    act(() => listeners["note-dirty"]({ payload: true }));
+    vi.mocked(ask).mockResolvedValue(false);
+    const dirty = { preventDefault: vi.fn() };
+    await act(() => closeRequested!(dirty));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(dirty.preventDefault).toHaveBeenCalled();
+  });
+
+  it("saves to the page it was started on", async () => {
     backend.save_note = () => "n1";
     renderIn(
       <>
         <Harness />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     fireEvent.click(screen.getByText("open"));
-    const editor = await screen.findByRole("dialog", { name: "New note" });
+    const editor = await screen.findByRole("form", { name: "New note" });
     fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "God gave his Son" } });
-    fireEvent.click(screen.getByText("go"));
-    expect(screen.getByTestId("view").textContent).toBe("personal");
-    fireEvent.click(within(screen.getByRole("dialog", { name: "New note" })).getByText("Save"));
+    fireEvent.click(within(screen.getByRole("form", { name: "New note" })).getByText("Save"));
     await waitFor(() => expect(calls.some((c) => c.cmd === "save_note")).toBe(true));
     expect(calls.find((c) => c.cmd === "save_note")!.args).toEqual({
       target: verse,
       note: { title: "Loved the world", content: "God gave his Son", tags: [], guid: undefined, blockType: 2, blockIdentifier: 16, markGuid: "m1" },
     });
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("form")).toBeNull();
     // Only the notes signal moves; the study panes key on userVersion and would remount.
     expect(screen.getByTestId("versions").textContent).toBe("0/1");
-  });
-
-  it("starts a drag without selecting the text behind it", async () => {
-    // jsdom has no pointer capture.
-    Element.prototype.setPointerCapture ??= () => undefined;
-    renderIn(
-      <>
-        <Harness />
-        <NoteHost />
-      </>,
-    );
-    fireEvent.click(screen.getByText("open"));
-    const editor = await screen.findByRole("dialog", { name: "New note" });
-    const header = within(editor).getByRole("heading").parentElement!;
-    // fireEvent returns false when the handler cancelled the default action.
-    expect(fireEvent.pointerDown(header, { button: 0, pointerId: 1 })).toBe(false);
-    expect(fireEvent.pointerDown(within(editor).getByRole("button", { name: "Close" }), { button: 0, pointerId: 1 })).toBe(true);
-  });
-
-  it("fills the content area and goes back to its size", async () => {
-    renderIn(
-      <>
-        <Harness />
-        <NoteHost />
-      </>,
-    );
-    fireEvent.click(screen.getByText("open"));
-    const editor = await screen.findByRole("dialog", { name: "New note" });
-    expect(editor.style.width).toBe("440px");
-    fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
-    expect(editor.style.width).toBe("100%");
-    expect(editor.style.height).toBe("100%");
-    fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
-    expect(editor.style.width).toBe("440px");
   });
 
   it("previews Markdown and opens its links in the browser", async () => {
@@ -407,11 +391,11 @@ describe("Floating note", () => {
     renderIn(
       <>
         <Harness />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     fireEvent.click(screen.getByText("open"));
-    const editor = await screen.findByRole("dialog", { name: "New note" });
+    const editor = await screen.findByRole("form", { name: "New note" });
     fireEvent.change(within(editor).getByPlaceholderText("Note"), {
       target: { value: "**Love** for [all](https://example.org/)\n- first\n- second" },
     });
@@ -429,11 +413,11 @@ describe("Floating note", () => {
     renderIn(
       <>
         <Harness />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     fireEvent.click(screen.getByText("open"));
-    return screen.findByRole("dialog", { name: "New note" });
+    return screen.findByRole("form", { name: "New note" });
   };
 
   it("focuses the title once it is shown", async () => {
@@ -443,12 +427,12 @@ describe("Floating note", () => {
 
   it("closes right away without changes and asks before Close, Cancel or Escape drop text", async () => {
     let editor = await openEditor();
-    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(within(editor).getByText("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
     expect(ask).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("open"));
-    editor = await screen.findByRole("dialog", { name: "New note" });
+    editor = await screen.findByRole("form", { name: "New note" });
     fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
     vi.mocked(ask).mockResolvedValue(false);
     fireEvent.keyDown(within(editor).getByPlaceholderText("Note"), { key: "Escape" });
@@ -457,10 +441,10 @@ describe("Floating note", () => {
     fireEvent.click(within(editor).getByText("Cancel"));
     await waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
     await act(async () => undefined);
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("form")).toBeTruthy();
     vi.mocked(ask).mockResolvedValue(true);
-    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(within(editor).getByText("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
   });
 
   it("asks only once when two requests come in while the question is open", async () => {
@@ -475,6 +459,23 @@ describe("Floating note", () => {
     expect(ask).toHaveBeenCalledTimes(1);
   });
 
+  it("does not stack a second question when the window is closed while one is open", async () => {
+    const editor = await openEditor();
+    await waitFor(() => expect(closeRequested).toBeTruthy());
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "draft" } });
+    let answer!: (ok: boolean) => void;
+    vi.mocked(ask).mockReturnValue(new Promise<boolean>((r) => (answer = r)));
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    const closing = { preventDefault: vi.fn() };
+    let closed!: Promise<void>;
+    await act(async () => void (closed = closeRequested!(closing)));
+    expect(ask).toHaveBeenCalledTimes(1);
+    await act(async () => answer(false));
+    await closed;
+    expect(closing.preventDefault).toHaveBeenCalled();
+  });
+
   it("keeps the note open when saving fails, and saves once on a double click", async () => {
     let fail = true;
     backend.save_note = () => {
@@ -484,214 +485,286 @@ describe("Floating note", () => {
     const editor = await openEditor();
     fireEvent.click(within(editor).getByText("Save"));
     expect(await screen.findByText(/disk full/)).toBeTruthy();
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("form")).toBeTruthy();
     fail = false;
     calls.length = 0;
     fireEvent.click(within(editor).getByText("Save"));
     fireEvent.click(within(editor).getByText("Save"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
     expect(calls.filter((c) => c.cmd === "save_note")).toHaveLength(1);
   });
 
-  it("moves with the arrow keys on the grip and resizes with Shift", async () => {
-    const editor = await openEditor();
-    const grip = within(editor).getByRole("button", { name: /Move note/ });
-    const before = editor.style.transform;
-    fireEvent.keyDown(grip, { key: "ArrowLeft" });
-    expect(editor.style.transform).not.toBe(before);
-    const height = parseInt(editor.style.height);
-    fireEvent.keyDown(grip, { key: "ArrowUp", shiftKey: true });
-    expect(parseInt(editor.style.height)).toBe(height - 16);
-    expect(JSON.parse(localStorage.getItem("noteSize")!).height).toBe(height - 16);
-  });
-
-  it("reopens where, as large as and maximized or not as it was left", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
+  it("moves the note with its unsaved text to the window by button and by Ctrl+Shift+O in the text", async () => {
+    backend.open_note_window = () => undefined;
     let editor = await openEditor();
-    const grip = within(editor).getByRole("button", { name: /Move note/ });
-    fireEvent.keyDown(grip, { key: "ArrowLeft" });
-    const place = editor.style.transform;
-    const handle = within(editor).getByTestId("note-resize-se");
-    expect(fireEvent.contextMenu(handle)).toBe(false);
-    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 500, clientY: 500 });
-    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 450, clientY: 460 });
-    fireEvent.pointerUp(handle, { pointerId: 1 });
-    expect(editor.style.width).toBe("390px");
-    expect(editor.style.height).toBe("380px");
-    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "half written" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    await waitFor(() =>
+      expect(vi.mocked(emitTo)).toHaveBeenCalledWith(
+        "note",
+        "note-open",
+        expect.objectContaining({ fields: { title: "Loved the world", content: "half written", tags: "" }, draft: expect.objectContaining({ markGuid: "m1" }) }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+    expect(ask).not.toHaveBeenCalled();
+    // The window saved that note and closed.
+    act(() => listeners["note-closed"]({ payload: undefined }));
+
+    vi.mocked(emitTo).mockClear();
+    fireEvent.click(screen.getByText("open"));
+    editor = await screen.findByRole("form", { name: "New note" });
+    const text = within(editor).getByPlaceholderText("Note");
+    fireEvent.change(text, { target: { value: "again" } });
+    // fireEvent returns false when the handler cancelled the default action (typing the letter).
+    expect(fireEvent.keyDown(text, { key: "O", ctrlKey: true, shiftKey: true })).toBe(false);
+    await waitFor(() => expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.objectContaining({ content: "again" }) })));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+  });
+
+  it("moves unsaved text to the window when its place goes away and just closes an unchanged note", async () => {
+    backend.open_note_window = () => undefined;
+    let editor = await openEditor();
+    fireEvent.click(screen.getByText("leave"));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+    expect(calls.some((c) => c.cmd === "open_note_window")).toBe(false);
 
     fireEvent.click(screen.getByText("open"));
-    editor = await screen.findByRole("dialog", { name: "New note" });
-    expect(editor.style.transform).toBe(place);
-    expect(editor.style.width).toBe("390px");
-    expect(editor.style.height).toBe("380px");
-    fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
-    fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "keep me" } });
+    fireEvent.click(screen.getByText("leave"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_note_window")).toBe(true));
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.objectContaining({ content: "keep me" }) }));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+    expect(ask).not.toHaveBeenCalled();
+  });
 
+  it("keeps the text in the pane when the note window cannot open", async () => {
+    backend.open_note_window = () => {
+      throw new Error("no window");
+    };
+    const editor = await openEditor();
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "precious" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    expect(await screen.findByText(/no window/)).toBeTruthy();
+    expect(screen.getByDisplayValue("precious")).toBeTruthy();
+    expect(screen.getByRole("form", { name: "New note" })).toBeTruthy();
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the text in the pane while the note window holds unsaved text of its own", async () => {
+    backend.open_note_window = () => undefined;
+    const editor = await openEditor();
+    await waitFor(() => expect(listeners["note-dirty"]).toBeTruthy());
+    act(() => listeners["note-dirty"]({ payload: true }));
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "mine" } });
+    vi.mocked(emitTo).mockClear();
+    fireEvent.click(within(editor).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    expect(await screen.findByText("Save or close the note in the note window first.")).toBeTruthy();
+    // The window the message speaks of comes forward.
+    expect(calls.filter((c) => c.cmd === "open_note_window")).toHaveLength(1);
+    fireEvent.click(screen.getByText("leave"));
+    await act(async () => undefined);
+    expect(vi.mocked(emitTo)).not.toHaveBeenCalledWith("note", "note-open", expect.anything());
+    expect(screen.getByDisplayValue("mine")).toBeTruthy();
+    expect(screen.getByRole("form", { name: "New note" })).toBeTruthy();
+  });
+
+  it("does not send another note over moved text the note window has not taken yet", async () => {
+    backend.open_note_window = () => undefined;
+    function Opener() {
+      const { openNote } = useApp();
+      return <button onClick={() => void openNote({ note: { title: "Elsewhere" } })}>window</button>;
+    }
+    renderIn(
+      <>
+        <Harness />
+        <Opener />
+        <InlineNoteEditor />
+      </>,
+    );
     fireEvent.click(screen.getByText("open"));
-    editor = await screen.findByRole("dialog", { name: "New note" });
-    expect(within(editor).getByRole("button", { name: "Restore size" })).toBeTruthy();
+    const editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "moved" } });
+    fireEvent.click(screen.getByText("leave"));
+    await waitFor(() => expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.anything() })));
+    vi.mocked(emitTo).mockClear();
+    calls.length = 0;
+    fireEvent.click(screen.getByText("window"));
+    expect(await screen.findByText("Save or close the note in the note window first.")).toBeTruthy();
+    // The window the message speaks of comes forward, and still gets the moved text when it gets ready.
+    expect(calls.filter((c) => c.cmd === "open_note_window")).toHaveLength(1);
+    await act(async () => listeners["note-ready"]({ payload: undefined }));
+    expect(vi.mocked(emitTo)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.objectContaining({ content: "moved" }) }));
   });
 
-  it("grows up and to the left from its top left corner", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
-    const editor = await openEditor();
-    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
-    const handle = within(editor).getByTestId("note-resize-nw");
-    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 300, clientY: 300 });
-    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 240, clientY: 250 });
-    fireEvent.pointerUp(handle, { pointerId: 1 });
-    expect(editor.style.width).toBe("500px");
-    expect(editor.style.height).toBe("470px");
-    expect(editor.style.transform).toBe(`translate(${x - 60}px, ${y - 50}px)`);
-    expect(JSON.parse(localStorage.getItem("notePos")!)).toEqual({ x: x - 60, y: y - 50 });
-  });
-
-  it("stops at its smallest size and at the edges when resized from the top left", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
-    const editor = await openEditor();
-    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
-    const handle = within(editor).getByTestId("note-resize-nw");
-    fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 300, clientY: 300 });
-    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 900, clientY: 900 });
-    expect(editor.style.width).toBe("380px");
-    expect(editor.style.height).toBe("320px");
-    // The right and bottom edges stay where they were.
-    expect(editor.style.transform).toBe(`translate(${x + 60}px, ${y + 100}px)`);
-    fireEvent.pointerMove(handle, { pointerId: 1, clientX: -5000, clientY: -5000 });
-    fireEvent.pointerUp(handle, { pointerId: 1 });
-    expect(editor.style.transform).toBe("translate(0px, 0px)");
-    expect(editor.style.width).toBe(`${x + 440}px`);
-    expect(editor.style.height).toBe(`${y + 420}px`);
-  });
-
-  it("keeps the chosen size on an axis a small window only capped", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
-    const width = window.innerWidth;
-    localStorage.setItem("noteSize", JSON.stringify({ width: 700, height: 400 }));
-    try {
-      const editor = await openEditor();
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
-      fireEvent(window, new Event("resize"));
-      const handle = within(editor).getByTestId("note-resize-s");
-      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
-      fireEvent.pointerUp(handle, { pointerId: 1 });
-      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 400 });
-      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowRight", shiftKey: true });
-      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 400 });
-      expect(localStorage.getItem("notePos")).toBeNull();
-      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
-      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 100, clientY: 80 });
-      fireEvent.pointerUp(handle, { pointerId: 1 });
-      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 700, height: 380 });
-      // The capped width is not left behind: back in a wide window the panel shows the chosen one.
-      expect(editor.style.width).toBe("700px");
-    } finally {
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  it("sends another note to the note window holding its own unsaved text, which asks about it", async () => {
+    backend.open_note_window = () => undefined;
+    function Opener() {
+      const { openNote } = useApp();
+      return <button onClick={() => void openNote({ note: { title: "Elsewhere" } })}>window</button>;
     }
+    renderIn(<Opener />);
+    await waitFor(() => expect(listeners["note-dirty"]).toBeTruthy());
+    act(() => listeners["note-dirty"]({ payload: true }));
+    vi.mocked(emitTo).mockClear();
+    fireEvent.click(screen.getByText("window"));
+    await waitFor(() =>
+      expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ draft: { note: { title: "Elsewhere" } } })),
+    );
+    expect(screen.queryByText("Save or close the note in the note window first.")).toBeNull();
   });
 
-  it("raises a size saved below the minimum, so it cannot be moved past the edges", async () => {
-    localStorage.setItem("noteSize", JSON.stringify({ width: 320, height: 280 }));
-    const editor = await openEditor();
-    expect(editor.style.width).toBe("380px");
-    expect(editor.style.height).toBe("320px");
-    const grip = within(editor).getByRole("button", { name: /Move note/ });
-    for (let i = 0; i < 80; i++) fireEvent.keyDown(grip, { key: i % 2 ? "ArrowRight" : "ArrowDown" });
-    const [x, y] = /translate\((-?\d+)px, (-?\d+)px/.exec(editor.style.transform)!.slice(1).map(Number);
-    expect(x + 380).toBeLessThanOrEqual(window.innerWidth);
-    expect(y + 320).toBeLessThanOrEqual(window.innerHeight);
+  it("keeps a second note in the pane while the first one's unsaved text has not reached the new window", async () => {
+    backend.open_note_window = () => undefined;
+    let editor = await openEditor();
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "first" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+    // The window has not said yet that it holds the first text.
+    fireEvent.click(screen.getByText("other"));
+    editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "second" } });
+    vi.mocked(emitTo).mockClear();
+    fireEvent.click(within(editor).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    expect(await screen.findByText("Save or close the note in the note window first.")).toBeTruthy();
+    expect(vi.mocked(emitTo)).not.toHaveBeenCalledWith("note", "note-open", expect.anything());
+    expect(screen.getByDisplayValue("second")).toBeTruthy();
+    // Once the window reports, its own state counts.
+    act(() => listeners["note-dirty"]({ payload: false }));
+    fireEvent.click(within(screen.getByRole("form", { name: "New note" })).getByRole("button", { name: "Open in window (Ctrl+Shift+O)" }));
+    await waitFor(() => expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.objectContaining({ content: "second" }) })));
   });
 
-  it("does not remember a place a small window forced when the header is only clicked", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
-    localStorage.setItem("notePos", JSON.stringify({ x: 2000, y: 100 }));
-    const editor = await openEditor();
-    const header = within(editor).getByRole("heading").parentElement!;
-    fireEvent.pointerDown(header, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
-    fireEvent.pointerUp(header, { pointerId: 1 });
-    expect(JSON.parse(localStorage.getItem("notePos")!)).toEqual({ x: 2000, y: 100 });
+  /** Shows the editor in another place on each page, as the reader's study pane does when the page changes. */
+  function Pages() {
+    const { releaseNote } = useApp();
+    const [page, setPage] = useState(1);
+    useEffect(() => releaseNote, [page, releaseNote]);
+    return (
+      <>
+        <button onClick={() => setPage((p) => p + 1)}>next page</button>
+        {page % 2 ? (
+          <div>
+            <InlineNoteEditor />
+          </div>
+        ) : (
+          <section>
+            <InlineNoteEditor />
+          </section>
+        )}
+      </>
+    );
+  }
+
+  it("hides the editor while its text moves to the window and brings the text back when the window cannot open", async () => {
+    let fail!: (e: Error) => void;
+    backend.open_note_window = () => new Promise((_, reject) => (fail = reject));
+    renderIn(
+      <>
+        <Harness />
+        <Pages />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "precious" } });
+    fireEvent.click(screen.getByText("next page"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_note_window")).toBe(true));
+    // Nothing typed while the window opens can get lost.
+    expect(screen.queryByRole("form")).toBeNull();
+    await act(async () => fail(new Error("no window")));
+    expect(await screen.findByText(/no window/)).toBeTruthy();
+    expect(screen.getByDisplayValue("precious")).toBeTruthy();
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(within(screen.getByRole("form", { name: "New note" })).getByText("Cancel"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
   });
 
-  it("opens above the player bar without forgetting a taller chosen size", async () => {
-    // The content area above a player bar, 400px tall.
-    const content = document.body.appendChild(document.createElement("div"));
-    content.id = "content";
-    const above = content.appendChild(document.createElement("div"));
-    Object.defineProperty(above, "offsetHeight", { configurable: true, value: 400 });
-    localStorage.setItem("noteSize", JSON.stringify({ width: 440, height: 800 }));
-    try {
-      const editor = await openEditor();
-      const y = Number(/translate\(-?\d+px, (-?\d+)px/.exec(editor.style.transform)![1]);
-      expect(y + parseInt(editor.style.height)).toBe(400 - 16);
-      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowRight", shiftKey: true });
-      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 456, height: 800 });
-      expect(y + parseInt(editor.style.height)).toBe(400 - 16);
-      // Moved and reopened, it still ends above the bar.
-      fireEvent.keyDown(within(editor).getByRole("button", { name: /Move note/ }), { key: "ArrowLeft" });
-      fireEvent.click(within(editor).getByRole("button", { name: "Close" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      fireEvent.click(screen.getByText("open"));
-      const reopened = await screen.findByRole("dialog", { name: "New note" });
-      expect(Number(/translate\(-?\d+px, (-?\d+)px/.exec(reopened.style.transform)![1]) + parseInt(reopened.style.height)).toBe(400 - 16);
-    } finally {
-      content.remove();
-    }
+  it("asks before another note replaces the unsaved text that is moving to the window", async () => {
+    let opened!: () => void;
+    backend.open_note_window = () => new Promise<void>((r) => (opened = r));
+    renderIn(
+      <>
+        <Harness />
+        <Pages />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "moving" } });
+    fireEvent.click(screen.getByText("next page"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_note_window")).toBe(true));
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(screen.getByText("other"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await act(async () => opened());
+    await waitFor(() => expect(screen.queryByRole("form")).toBeNull());
+    expect(vi.mocked(emitTo)).toHaveBeenCalledWith("note", "note-open", expect.objectContaining({ fields: expect.objectContaining({ content: "moving" }) }));
   });
 
-  it("moves a place saved in a taller window up above the player bar", async () => {
-    const height = window.innerHeight;
-    const content = document.body.appendChild(document.createElement("div"));
-    content.id = "content";
-    const above = content.appendChild(document.createElement("div"));
-    Object.defineProperty(above, "offsetHeight", { configurable: true, value: 600 });
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 680 });
-    localStorage.setItem("notePos", JSON.stringify({ x: 100, y: 650 }));
-    try {
-      const editor = await openEditor();
-      const y = Number(/translate\(-?\d+px, (-?\d+)px/.exec(editor.style.transform)![1]);
-      expect(editor.style.height).toBe("420px");
-      expect(y + 420).toBe(600 - 16);
-    } finally {
-      content.remove();
-      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
-    }
+  it("keeps track of unsaved text in a note opened while another one moves to the window", async () => {
+    let opened!: () => void;
+    backend.open_note_window = () => new Promise<void>((r) => (opened = r));
+    renderIn(
+      <>
+        <Harness />
+        <Pages />
+      </>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "moving" } });
+    fireEvent.click(screen.getByText("next page"));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_note_window")).toBe(true));
+    vi.mocked(ask).mockResolvedValue(true);
+    fireEvent.click(screen.getByText("other"));
+    await screen.findByDisplayValue("Another");
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "typed meanwhile" } });
+    await act(async () => opened());
+    vi.mocked(ask).mockClear();
+    vi.mocked(ask).mockResolvedValue(false);
+    fireEvent.click(within(screen.getByRole("form")).getByText("Cancel"));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("typed meanwhile")).toBeTruthy();
   });
 
-  it("keeps the chosen size when it opens in a window too small for it", async () => {
-    Element.prototype.setPointerCapture ??= () => undefined;
-    const height = window.innerHeight;
-    localStorage.setItem("noteSize", JSON.stringify({ width: 440, height: 600 }));
-    localStorage.setItem("notePos", JSON.stringify({ x: 100, y: 100 }));
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
-    try {
-      const editor = await openEditor();
-      expect(editor.style.maxHeight).toBe("500px");
-      const handle = within(editor).getByTestId("note-resize-e");
-      fireEvent.pointerDown(handle, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
-      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 140, clientY: 100 });
-      fireEvent.pointerUp(handle, { pointerId: 1 });
-      expect(JSON.parse(localStorage.getItem("noteSize")!)).toEqual({ width: 480, height: 600 });
-    } finally {
-      Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
-    }
+  it("brings the text back on the new page when the note window holds unsaved text", async () => {
+    renderIn(
+      <>
+        <Harness />
+        <Pages />
+      </>,
+    );
+    await waitFor(() => expect(listeners["note-dirty"]).toBeTruthy());
+    act(() => listeners["note-dirty"]({ payload: true }));
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("form", { name: "New note" });
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "precious" } });
+    fireEvent.click(screen.getByText("next page"));
+    expect(await screen.findByText("Save or close the note in the note window first.")).toBeTruthy();
+    expect(await screen.findByDisplayValue("precious")).toBeTruthy();
   });
 
-  it("fits back into a window that shrank while maximized", async () => {
-    const width = window.innerWidth;
-    try {
-      const editor = await openEditor();
-      fireEvent.click(within(editor).getByRole("button", { name: "Maximize" }));
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
-      fireEvent(window, new Event("resize"));
-      fireEvent.click(within(editor).getByRole("button", { name: "Restore size" }));
-      const x = Number(/translate\((-?\d+)px/.exec(editor.style.transform)![1]);
-      expect(x + parseInt(editor.style.width)).toBeLessThanOrEqual(600);
-    } finally {
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-    }
+  it("keeps a preview link click from reaching the pane around the editor", async () => {
+    backend.open_external = () => undefined;
+    const outer = vi.fn();
+    renderIn(
+      <div onClick={outer}>
+        <Harness />
+        <InlineNoteEditor />
+      </div>,
+    );
+    fireEvent.click(screen.getByText("open"));
+    const editor = await screen.findByRole("form", { name: "New note" });
+    outer.mockClear();
+    fireEvent.change(within(editor).getByPlaceholderText("Note"), { target: { value: "[all](https://example.org/)" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "Preview" }));
+    outer.mockClear();
+    fireEvent.click(within(within(editor).getByTestId("note-preview")).getByText("all"));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "open_external")).toHaveLength(1));
+    expect(outer).not.toHaveBeenCalled();
   });
 
   it("does not mark a newer note as saved when an older save finishes late", async () => {
@@ -706,7 +779,7 @@ describe("Floating note", () => {
     await act(async () => finish());
     expect(screen.getByDisplayValue("Another")).toBe(other);
     vi.mocked(ask).mockResolvedValue(false);
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByText("Cancel"));
     await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
     expect(screen.getByDisplayValue("unsaved")).toBeTruthy();
   });
@@ -715,7 +788,7 @@ describe("Floating note", () => {
     renderIn(
       <>
         <Harness />
-        <NoteHost />
+        <InlineNoteEditor />
       </>,
     );
     fireEvent.click(screen.getByText("other"));

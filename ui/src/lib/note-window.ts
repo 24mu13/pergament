@@ -1,5 +1,7 @@
 import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { t } from "./i18n";
 import type { NoteDraft, NoteFields } from "./notes";
 
 /** Label of the note window (NOTE in src-tauri/src/lib.rs). */
@@ -25,3 +27,26 @@ export const sendToNoteWindow = (message: NoteWindowMessage) =>
 
 /** Whether a message is not the one shown already: the app may send it twice while the window opens. */
 export const isNewMessage = (shown: NoteWindowMessage | null, message: NoteWindowMessage) => shown?.id !== message.id;
+
+/** Set while the discard question is open in this window, so a second request does not stack another dialog. */
+let asking = false;
+
+/**
+ * Whether unsaved text may be dropped: asks the user, once at a time. A request
+ * while the question is open gets false, so it keeps the text.
+ */
+export async function askDiscard(): Promise<boolean> {
+  if (asking) return false;
+  asking = true;
+  try {
+    return await ask(t("The note you are writing has not been saved."), {
+      title: t("Discard note?"),
+      kind: "warning",
+      okLabel: t("Discard"),
+    });
+  } catch {
+    return false;
+  } finally {
+    asking = false;
+  }
+}

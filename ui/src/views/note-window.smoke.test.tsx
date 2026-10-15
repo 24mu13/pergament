@@ -8,6 +8,9 @@ const handlers: Record<string, (e: { payload: unknown }) => void> = {};
 const emitted: { to: string; event: string; payload?: unknown }[] = [];
 let closeRequested: ((e: { preventDefault: () => void }) => Promise<void>) | null = null;
 const destroy = vi.fn(async () => undefined);
+let resized: ((e: { payload: { toLogical: (scale: number) => { width: number; height: number } } }) => Promise<void>) | null = null;
+let maximized = false;
+let subscriptions = 0;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
@@ -29,11 +32,16 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
     label: "note",
     destroy,
     onCloseRequested: async (h: typeof closeRequested) => {
+      subscriptions++;
       closeRequested = h;
       return () => undefined;
     },
-    onResized: async () => () => undefined,
+    onResized: async (h: typeof resized) => {
+      resized = h;
+      return () => undefined;
+    },
     scaleFactor: async () => 1,
+    isMaximized: async () => maximized,
   }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn() }));
@@ -42,14 +50,17 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { NoteWindowView } from "@/views/note-window";
 
 const verse = { publication: "nwtsty_E", kind: { chapter: { book: 43, chapter: 3, verse: 16 } } };
-const open = (id: number, fields?: object) =>
-  act(async () =>
-    handlers["note-open"]({
-      payload: { id, draft: { note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 }, fields },
-    }),
-  );
+const message = (id: number, fields?: object) => ({
+  payload: { id, draft: { note: { title: "Loved the world" }, target: verse, markGuid: "m1", blockType: 2, blockIdentifier: 16 }, fields },
+});
+const open = (id: number, fields?: object) => act(async () => handlers["note-open"](message(id, fields)));
+/** Sends a note without waiting for the window to take it, as it may be asking first. */
+const send = (id: number, fields?: object) => act(async () => void handlers["note-open"](message(id, fields)));
+const text = () => (screen.getByPlaceholderText("Note") as HTMLTextAreaElement).value;
 
 beforeEach(() => {
+  localStorage.clear();
+  maximized = false;
   calls.length = 0;
   emitted.length = 0;
   destroy.mockClear();
@@ -66,9 +77,72 @@ describe("Note window", () => {
   it("says it is ready, then shows the note it is sent once", async () => {
     await waitFor(() => expect(emitted.some((e) => e.to === "main" && e.event === "note-ready")).toBe(true));
     await open(1);
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
     await open(1);
-    expect((screen.getByPlaceholderText("Title") as HTMLInputElement).value).toBe("Loved the world");
+    expect(text()).toBe("draft");
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("asks once while notes keep coming in, then takes the newest", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1);
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
+    let answer!: (ok: boolean) => void;
+    vi.mocked(ask).mockReturnValue(new Promise<boolean>((r) => (answer = r)));
+    await send(2, { title: "two", content: "second", tags: "" });
+    await send(3, { title: "three", content: "third", tags: "" });
+    const closing = { preventDefault: vi.fn() };
+    let closed!: Promise<void>;
+    await act(async () => void (closed = closeRequested!(closing)));
+    expect(ask).toHaveBeenCalledTimes(1);
+    await act(async () => answer(true));
+    await closed;
+    expect(closing.preventDefault).toHaveBeenCalled();
+    await waitFor(() => expect(text()).toBe("third"));
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a note that came in while Escape asked about unsaved text instead of closing", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1);
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
+    let answer!: (ok: boolean) => void;
+    vi.mocked(ask).mockReturnValue(new Promise<boolean>((r) => (answer = r)));
+    fireEvent.keyDown(screen.getByPlaceholderText("Note"), { key: "Escape" });
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    await send(2, { title: "two", content: "second", tags: "" });
+    await act(async () => answer(true));
+    await waitFor(() => expect(text()).toBe("second"));
+    expect(destroy).not.toHaveBeenCalled();
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again for a note that came in while the close button asked and the text was kept", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1);
+    fireEvent.change(screen.getByPlaceholderText("Note"), { target: { value: "draft" } });
+    const answers: ((ok: boolean) => void)[] = [];
+    vi.mocked(ask).mockImplementation(() => new Promise<boolean>((r) => answers.push(r)));
+    const closing = { preventDefault: vi.fn() };
+    let closed!: Promise<void>;
+    await act(async () => void (closed = closeRequested!(closing)));
+    await send(2, { title: "two", content: "second", tags: "" });
+    await act(async () => answers[0](false));
+    await closed;
+    expect(closing.preventDefault).toHaveBeenCalled();
+    expect(text()).toBe("draft");
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+    await act(async () => answers[1](true));
+    await waitFor(() => expect(text()).toBe("second"));
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("subscribes to its window's events once, not on every render", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    const before = subscriptions;
+    await open(1);
+    await open(2);
+    expect(subscriptions).toBe(before);
   });
 
   it("starts with text moved from the study pane and counts it as unsaved", async () => {
@@ -119,6 +193,18 @@ describe("Note window", () => {
     expect((screen.getByPlaceholderText("Note") as HTMLTextAreaElement).value).toBe("");
   });
 
+  it("asks before another note replaces moved text that came in just before it", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    vi.mocked(ask).mockResolvedValue(false);
+    await act(async () => {
+      void handlers["note-open"](message(1, { title: "Loved the world", content: "moved", tags: "" }));
+      void handlers["note-open"](message(2));
+    });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(text()).toBe("moved");
+    expect(emitted).toContainEqual({ to: "main", event: "note-dirty", payload: true });
+  });
+
   it("closes on Escape, asking first when there are changes", async () => {
     await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
     await open(1);
@@ -127,5 +213,30 @@ describe("Note window", () => {
     fireEvent.keyDown(screen.getByPlaceholderText("Note"), { key: "Escape" });
     await waitFor(() => expect(destroy).toHaveBeenCalled());
     expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows the theme and language chosen in the app", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    localStorage.setItem("theme", "dark");
+    localStorage.setItem("uiLang", "de");
+    act(() => void window.dispatchEvent(new StorageEvent("storage", { key: "theme" })));
+    act(() => void window.dispatchEvent(new StorageEvent("storage", { key: "uiLang" })));
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(screen.getByPlaceholderText("Titel")).toBeTruthy();
+    localStorage.clear();
+    act(() => void window.dispatchEvent(new StorageEvent("storage", { key: "uiLang" })));
+    expect(screen.getByPlaceholderText("Title")).toBeTruthy();
+  });
+
+  it("remembers its size, but not the maximized one", async () => {
+    await waitFor(() => expect(resized).toBeTruthy());
+    const size = (width: number, height: number) => ({ payload: { toLogical: () => ({ width, height }) } });
+    await act(() => resized!(size(600, 500)));
+    expect(JSON.parse(localStorage.getItem("noteWindowSize")!)).toEqual({ width: 600, height: 500 });
+    maximized = true;
+    await act(() => resized!(size(1920, 1080)));
+    expect(JSON.parse(localStorage.getItem("noteWindowSize")!)).toEqual({ width: 600, height: 500 });
   });
 });

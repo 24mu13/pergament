@@ -1,25 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { NoteForm, saveDraft, type NoteSaveInput } from "@/components/notes";
 import { api } from "@/lib/api";
-import { isNewMessage, NOTE_DIRTY, NOTE_OPEN, NOTE_READY, NOTES_CHANGED, type NoteWindowMessage } from "@/lib/note-window";
-import { loadTheme, loadUiLang, prefersDark, saveNoteWindowSize } from "@/lib/settings";
+import { fieldsOf, sameFields } from "@/lib/notes";
+import { askDiscard, isNewMessage, NOTE_DIRTY, NOTE_OPEN, NOTE_READY, NOTES_CHANGED, type NoteWindowMessage } from "@/lib/note-window";
+import { LOOK_KEYS, loadTheme, loadUiLang, prefersDark, saveNoteWindowSize } from "@/lib/settings";
 import { resolveUiLang, setUiLang, t } from "@/lib/i18n";
 import { useSystemDark } from "@/lib/theme";
-
-/** Whether unsaved text may be dropped; the window asks itself, the app may be behind it. */
-const askDiscard = () =>
-  ask(t("The note you are writing has not been saved."), { title: t("Discard note?"), kind: "warning", okLabel: t("Discard") }).catch(
-    () => false,
-  );
 
 /**
  * The note window: one note at a time, sent by the app. It saves on its own and
  * tells the app, which reloads its notes.
  */
 export function NoteWindowView() {
+  // The app saves the theme and language to the storage this window shares; follow its changes.
+  const [, restyle] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const changed = (e: StorageEvent) => {
+      if (e.key === null || LOOK_KEYS.includes(e.key)) restyle();
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
   setUiLang(resolveUiLang(loadUiLang(), navigator.language));
   const dark = prefersDark(loadTheme(), useSystemDark());
   useEffect(() => {
@@ -27,7 +30,8 @@ export function NoteWindowView() {
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
   }, [dark]);
 
-  const win = getCurrentWebviewWindow();
+  // One handle, so the effects below subscribe once instead of on every render.
+  const win = useMemo(() => getCurrentWebviewWindow(), []);
   const [message, setMessage] = useState<NoteWindowMessage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const shown = useRef<NoteWindowMessage | null>(null);
@@ -44,36 +48,90 @@ export function NoteWindowView() {
     setDirty(false);
     void win.destroy();
   }, [setDirty, win]);
-  const cancel = useCallback(async () => {
-    if (!dirty.current || (await askDiscard())) close();
-  }, [close]);
-
-  useEffect(() => {
-    const un = listen<NoteWindowMessage>(NOTE_OPEN, async ({ payload: m }) => {
-      if (!isNewMessage(shown.current, m)) return;
-      if (dirty.current && !(await askDiscard())) return;
+  const show = useCallback(
+    (m: NoteWindowMessage) => {
       shown.current = m;
+      // Moved text is unsaved from the start, before its form reports so: a note right behind it must ask.
+      setDirty(m.fields !== undefined && !sameFields(m.fields, fieldsOf(m.draft.note)));
       setError(null);
       setMessage(m);
-    });
+    },
+    [setDirty],
+  );
+
+  /** Set while the discard question is open; a note that comes in meanwhile waits, the newest one wins. */
+  const asking = useRef(false);
+  const waiting = useRef<NoteWindowMessage | null>(null);
+  /** Asks whether the unsaved text may go; also hands back a new note that came in while asking. */
+  const question = useCallback(async () => {
+    asking.current = true;
+    const drop = await askDiscard();
+    asking.current = false;
+    const next = waiting.current && isNewMessage(shown.current, waiting.current) ? waiting.current : null;
+    waiting.current = null;
+    return { drop, next };
+  }, []);
+  /** Shows a note, asking first about unsaved text. When the text is kept, a note that came in meanwhile is asked about next. */
+  const take = useCallback(
+    async (m: NoteWindowMessage) => {
+      if (asking.current) return void (waiting.current = m);
+      let next: NoteWindowMessage | null = m;
+      while (next && isNewMessage(shown.current, next)) {
+        if (!dirty.current) return show(next);
+        const asked: NoteWindowMessage = next;
+        const answer = await question();
+        if (answer.drop) return show(answer.next ?? asked);
+        next = answer.next?.id === asked.id ? null : answer.next;
+      }
+    },
+    [question, show],
+  );
+  /**
+   * After the question that came with closing: a note that came in meanwhile was
+   * asked for, so dropping the text shows it instead of closing; keeping the text
+   * asks about that note next. Returns whether the window may close.
+   */
+  const closing = useCallback(
+    (drop: boolean, next: NoteWindowMessage | null) => {
+      if (!next) return drop;
+      if (drop) show(next);
+      else void take(next);
+      return false;
+    },
+    [show, take],
+  );
+  const cancel = useCallback(async () => {
+    if (!dirty.current) return close();
+    if (asking.current) return;
+    const { drop, next } = await question();
+    if (closing(drop, next)) close();
+  }, [close, closing, question]);
+
+  useEffect(() => {
+    const un = listen<NoteWindowMessage>(NOTE_OPEN, ({ payload }) => void take(payload));
     // Ask for the note, in case the app sent it before this window listened.
     void un.then(() => emitTo("main", NOTE_READY));
     return () => void un.then((f) => f());
-  }, []);
+  }, [take]);
 
   useEffect(() => {
-    const closing = win.onCloseRequested(async (e) => {
-      if (dirty.current && !(await askDiscard())) e.preventDefault();
+    const closeRequested = win.onCloseRequested(async (e) => {
+      if (!dirty.current) return;
+      if (asking.current) return e.preventDefault();
+      const { drop, next } = await question();
+      if (!closing(drop, next)) e.preventDefault();
     });
     const resized = win.onResized(async ({ payload }) => {
+      // A maximized window would open that large next time.
+      if (await win.isMaximized().catch(() => false)) return;
       const size = payload.toLogical(await win.scaleFactor());
       saveNoteWindowSize({ width: Math.round(size.width), height: Math.round(size.height) });
     });
     return () => {
-      void closing.then((f) => f());
+      void closeRequested.then((f) => f());
       void resized.then((f) => f());
     };
-  }, [win]);
+  }, [win, question, closing]);
 
   // The window stays open until the backend agreed, so a failure does not lose the text.
   const run = (action: () => Promise<unknown>) => {
