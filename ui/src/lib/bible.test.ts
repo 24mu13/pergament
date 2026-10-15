@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { bibleFor, namedBooks, parseReference, parseReferences, type Book } from "./bible";
+import { bibleFor, bibleStackFor, namedBooks, parseReference, parseReferences, type Book } from "./bible";
 import { linkEdit } from "./note-links";
+import { chapterTarget, documentTarget, type BibleBook } from "./api";
+import type { View } from "./nav";
 
 const CHAPTERS = [
   50, 40, 27, 36, 34, 24, 21, 4, 31, 24, 22, 25, 29, 36, 10, 13, 10, 42, 150, 31, 12, 8, 66, 52, 5, 48, 12, 14, 3, 9, 1, 4, 7,
@@ -195,5 +197,51 @@ describe("linkEdit", () => {
     const text = `Joh 15:13, ${"1".repeat(600)}`;
     expect(linkEdit(text, 0, text.length, de).text).toBe(`[${text}]()`);
     expect(linkEdit("Joh 15:13", 0, 9, de).text).toBe("[Joh 15:13](pergament://bible/43:15:13-43:15:13)");
+  });
+});
+
+const bibleBook = (number: number, chapters: number): BibleBook =>
+  ({ number, title: `Book ${number}`, chapter_title: "Chapter", book_document_id: null, chapters });
+const books = [bibleBook(1, 50), bibleBook(19, 150)];
+const reading = (b: number, c: number, v = 1): View => ({ name: "reader", target: chapterTarget("nwt_X", b, c, v) });
+const list = [{ name: "publication", dir: "nwt_E" }] as View[];
+
+describe("bibleStackFor", () => {
+  it("keeps the open chapter over the book and chapter lists", () => {
+    expect(bibleStackFor(reading(1, 3, 7), "nwt_E", books)).toEqual([
+      { name: "publication", dir: "nwt_E" },
+      { name: "chapters", dir: "nwt_E", book: 1 },
+      { name: "reader", target: chapterTarget("nwt_E", 1, 3, 7) },
+    ]);
+  });
+
+  it("clamps the chapter to the new translation's book", () => {
+    expect(bibleStackFor(reading(1, 60), "nwt_E", books)[2]).toEqual({
+      name: "reader", target: chapterTarget("nwt_E", 1, 50),
+    });
+  });
+
+  it("falls back to the book list when the book is missing", () => {
+    expect(bibleStackFor(reading(58, 1), "nwt_E", books)).toEqual(list);
+  });
+
+  it("falls back for readers that are not chapters", () => {
+    const doc: View = { name: "reader", target: documentTarget("nwt_X", 5) };
+    const dated: View = { name: "reader", target: { publication: "nwt_X", kind: { dated: { date: 20260101 } } } };
+    expect(bibleStackFor(doc, "nwt_E", books)).toEqual(list);
+    expect(bibleStackFor(dated, "nwt_E", books)).toEqual(list);
+  });
+
+  it("keeps the open book on its chapter list, or falls back", () => {
+    expect(bibleStackFor({ name: "chapters", dir: "nwt_X", book: 19 }, "nwt_E", books)).toEqual([
+      { name: "publication", dir: "nwt_E" },
+      { name: "chapters", dir: "nwt_E", book: 19 },
+    ]);
+    expect(bibleStackFor({ name: "chapters", dir: "nwt_X", book: 58 }, "nwt_E", books)).toEqual(list);
+  });
+
+  it("opens the book list for anything else", () => {
+    expect(bibleStackFor({ name: "publication", dir: "nwt_X" }, "nwt_E", books)).toEqual(list);
+    expect(bibleStackFor({ name: "bible" }, "nwt_E", books)).toEqual(list);
   });
 });
