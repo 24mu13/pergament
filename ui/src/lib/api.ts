@@ -148,6 +148,7 @@ export type LinkAction =
   | { kind: "external"; url: string }
   | { kind: "media"; media: MediaRef }
   | { kind: "missing"; url: string | null }
+  | { kind: "extract"; url: string | null; publication: string; subject: string; location: string; html: string }
   | { kind: "ignore" };
 
 export interface CatalogItem {

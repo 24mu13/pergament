@@ -290,6 +290,20 @@ export function ReaderView({
             showRef({ kind: "missing", href, entry, url: action.url }, mode);
             break;
           }
+          case "extract":
+            showRef(
+              {
+                kind: "extract",
+                href,
+                url: action.url,
+                publication: action.publication,
+                subject: action.subject,
+                location: action.location,
+                html: action.html,
+              },
+              mode,
+            );
+            break;
           case "ignore":
             break;
         }
@@ -298,6 +312,15 @@ export function ReaderView({
       }
     },
     [chapter, lang, playRecording, publications, selectVerse, showRef, target.publication, toast],
+  );
+
+  /** The bar of an embedded excerpt was clicked; offer to download the quoted publication. */
+  const openSource = useCallback(
+    async (href: string, url: string | null) => {
+      const entry = await api.missingEntry(lang, href).catch(() => null);
+      showRef({ kind: "missing", href, entry, url }, "push");
+    },
+    [lang, showRef],
   );
 
   // Highlighting: a selection or a click on a highlight shows the toolbar.
@@ -558,6 +581,7 @@ export function ReaderView({
               pref={refs[refs.length - 1]}
               onBack={() => setRefs((r) => r.slice(0, -1))}
               onFollow={(href) => void follow(href, "push")}
+              onOpenSource={(href, url) => void openSource(href, url)}
               onRetry={() => void follow(refs[refs.length - 1].href, "replace")}
             />
           </aside>
