@@ -16,7 +16,7 @@ import {
   type VerseStudy,
 } from "@/lib/api";
 import { restoreScroll } from "@/lib/scroll";
-import { applyMarks, blockElements, markText, rangeText, selectionRanges, titleFromText } from "@/lib/marks";
+import { applyMarks, blockElements, markText, rangeText, selectionRanges } from "@/lib/marks";
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
@@ -334,7 +334,7 @@ export function ReaderView({
       await openNote(
         existing
           ? { note: existing }
-          : { note: { title: titleFromText(marked) }, target, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
+          : { note: { title: marked }, target, markGuid, blockType: block?.blockType, blockIdentifier: block?.identifier },
         { in: "pane" },
       );
     } catch (e) {
