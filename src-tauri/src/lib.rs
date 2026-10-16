@@ -1056,7 +1056,7 @@ async fn install_app_update(app: AppHandle, version: String) -> ApiResult<()> {
                 )
                 .map_err(|e| e.to_string())?;
             let sig_text = std::fs::read_to_string(&sig_path).map_err(|e| e.to_string())?;
-            app_update::verify_file(&file_path, &sig_text, app_update::PUBLIC_KEY)?;
+            app_update::verify_file(&file_path, &file.name, &sig_text, app_update::PUBLIC_KEY)?;
             app_update::install(&kind, &file_path)
         })();
         let _ = std::fs::remove_dir_all(&dir);

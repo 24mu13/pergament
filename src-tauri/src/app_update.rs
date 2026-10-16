@@ -205,8 +205,16 @@ fn decode_text(b64: &str, what: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("{what} is not text"))
 }
 
-/// Check `path` against a signature made with the key `public_key_b64`.
-pub fn verify_file(path: &Path, sig_b64: &str, public_key_b64: &str) -> Result<(), String> {
+/// Check `path` against a signature made with the key `public_key_b64` for a
+/// file called `name`. Tauri signs the name in the trusted comment
+/// (`timestamp:…\tfile:<name>`), so a genuine older release cannot be passed
+/// off under a newer release's file name.
+pub fn verify_file(
+    path: &Path,
+    name: &str,
+    sig_b64: &str,
+    public_key_b64: &str,
+) -> Result<(), String> {
     let key = PublicKey::decode(&decode_text(public_key_b64, "the public key")?)
         .map_err(|e| format!("bad public key: {e}"))?;
     let sig = Signature::decode(&decode_text(sig_b64, "the signature")?)
@@ -225,7 +233,19 @@ pub fn verify_file(path: &Path, sig_b64: &str, public_key_b64: &str) -> Result<(
     }
     verifier
         .finalize()
-        .map_err(|e| format!("signature does not match: {e}"))
+        .map_err(|e| format!("signature does not match: {e}"))?;
+    let signed_for = sig
+        .trusted_comment()
+        .split('\t')
+        .find_map(|field| field.strip_prefix("file:"));
+    if signed_for == Some(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the signature is for {}, not {name}",
+            signed_for.unwrap_or("an unnamed file")
+        ))
+    }
 }
 
 /// Write `contents` to a temp file next to `dest` and rename it over `dest`,
@@ -503,6 +523,7 @@ mod tests {
     fn accepts_a_good_signature() {
         let r = verify_file(
             &fixture("update.zip"),
+            "update.zip",
             &read("update.zip.sig"),
             &read("test.key.pub"),
         );
@@ -516,12 +537,40 @@ mod tests {
         bytes[100] ^= 1;
         let path = dir.path().join("update.zip");
         fs::write(&path, bytes).unwrap();
-        assert!(verify_file(&path, &read("update.zip.sig"), &read("test.key.pub")).is_err());
+        assert!(
+            verify_file(
+                &path,
+                "update.zip",
+                &read("update.zip.sig"),
+                &read("test.key.pub")
+            )
+            .is_err()
+        );
+    }
+
+    /// The signature names the file it was made for, so an older signed build cannot pose as a newer one.
+    #[test]
+    fn rejects_a_signature_for_another_file() {
+        let r = verify_file(
+            &fixture("update.zip"),
+            "pergament-9.9.9-linux-x86_64.zip",
+            &read("update.zip.sig"),
+            &read("test.key.pub"),
+        );
+        assert!(r.is_err());
     }
 
     #[test]
     fn rejects_another_key() {
-        assert!(verify_file(&fixture("update.zip"), &read("update.zip.sig"), PUBLIC_KEY).is_err());
+        assert!(
+            verify_file(
+                &fixture("update.zip"),
+                "update.zip",
+                &read("update.zip.sig"),
+                PUBLIC_KEY
+            )
+            .is_err()
+        );
     }
 
     #[test]
