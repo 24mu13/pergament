@@ -7,7 +7,7 @@ const push = vi.fn();
 const download = vi.fn(async () => "lff_2");
 vi.mock("@/app", () => ({
   useApp: () => ({ push, download, downloads: {} }),
-  taskKey: (e: CatalogEntry) => `download:${e.item.symbol}:${e.item.issue_tag}`,
+  taskKey: (e: CatalogEntry) => `download:${e.item.meps_language}:${e.item.symbol}:${e.item.issue_tag}`,
 }));
 vi.mock("@/lib/api", () => ({ api: {} }));
 

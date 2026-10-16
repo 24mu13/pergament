@@ -128,16 +128,22 @@ function byAttribute(entries: CatalogEntry[], rules: [attr: string, title: strin
     .filter((s) => s.parts[0].entries.length > 0);
 }
 
-/** Entries split by their first attribute, whatever it is; entries without one come first, untitled. */
+/**
+ * Entries split by their first attribute, whatever it is; entries without one come first, untitled. The headings are
+ * the attribute names, translated where the locales know them.
+ */
 function byEveryAttribute(entries: CatalogEntry[]): Section[] {
   const buckets = new Map<string | null, CatalogEntry[]>();
   for (const e of entries) {
     const key = e.item.attributes[0] ?? null;
     buckets.set(key, [...(buckets.get(key) ?? []), e]);
   }
-  const titles = [...buckets.keys()].filter((k): k is string => k !== null).sort((a, b) => a.localeCompare(b));
-  return [null, ...titles].flatMap((title): Section[] => {
-    const list = buckets.get(title);
+  const titles = [...buckets.keys()]
+    .filter((k): k is string => k !== null)
+    .map((k) => [k, t(k)] as const)
+    .sort(([, a], [, b]) => a.localeCompare(b));
+  return [[null, null] as const, ...titles].flatMap(([key, title]): Section[] => {
+    const list = buckets.get(key);
     return list ? [{ title, parts: [{ title: null, entries: list }] }] : [];
   });
 }

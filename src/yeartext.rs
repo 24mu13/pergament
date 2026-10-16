@@ -48,7 +48,7 @@ fn last_link_text(html: &str) -> Option<String> {
     let start = html.rfind("<a ")?;
     let after = &html[start..];
     let text_start = after.find('>')? + 1;
-    let text_end = after.find("</a>")?;
+    let text_end = text_start + after[text_start..].find("</a>")?;
     let text = collapse(&strip_tags(&after[text_start..text_end]));
     (!text.is_empty()).then_some(text)
 }
@@ -162,5 +162,12 @@ mod tests {
             None
         );
         assert_eq!(find("no paragraphs"), None);
+    }
+
+    #[test]
+    fn malformed_links_do_not_panic() {
+        let y = find(r#"<p class="sn">Vers (<a </a>)</p>"#).unwrap();
+        assert_eq!(y.reference, None);
+        find(r#"<p class="sn">Vers (<a title="</a>">Mt 5:3</a>)</p>"#);
     }
 }

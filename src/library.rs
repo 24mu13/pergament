@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
+use sha1::{Digest, Sha1};
 
 use crate::jwpub::{self, JwPub, Limits, PublicationInfo};
 use crate::links::MediaKind;
@@ -367,6 +368,33 @@ impl Library {
         self.root.join(MEDIA)
     }
 
+    /// File name stem for a download of a recording: [`media_stem`], unless
+    /// another recording's files already use it (their names differ only in
+    /// characters the cleaning replaces). Then a short hash of the raw names
+    /// is appended, so neither download overwrites the other's files.
+    pub fn media_file_stem(&self, key: &str, lang_code: &str, label: &str) -> Result<String> {
+        let stem = media_stem(key, lang_code, label);
+        let taken: bool = self
+            .index
+            .prepare(
+                "SELECT 1 FROM media
+                 WHERE NOT (key = ?2 AND lang_code = ?3)
+                   AND (substr(file_name, 1, length(?1) + 1) = ?1 || '.'
+                        OR subtitle_file = ?1 || '.vtt')",
+            )?
+            .exists(params![stem, key, lang_code])?;
+        if !taken {
+            return Ok(stem);
+        }
+        let mut hash = Sha1::new();
+        for part in [key, lang_code, label] {
+            hash.update(part.as_bytes());
+            hash.update([0]);
+        }
+        let hash = hex::encode(hash.finalize());
+        Ok(format!("{stem}_{}", &hash[..8]))
+    }
+
     /// Record a downloaded recording whose files are already in
     /// [`Library::media_dir`]. An earlier download of the same recording
     /// (another quality) is replaced and its files deleted.
@@ -654,6 +682,45 @@ mod tests {
         assert!(!lib.remove_media(saved.id).unwrap());
         assert!(!lib.media_dir().join(&b.file_name).exists());
         assert!(lib.list_media().unwrap().is_empty());
+    }
+
+    #[test]
+    fn media_file_stems_do_not_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let a = media_entry("480p");
+        write_media(&lib, &a);
+        lib.add_media(&a).unwrap();
+        let stem = media_stem("pub-nwtsv_X_1_VIDEO", "X", "480p");
+        // The same recording keeps its name, in any quality.
+        assert_eq!(
+            lib.media_file_stem("pub-nwtsv_X_1_VIDEO", "X", "480p")
+                .unwrap(),
+            stem
+        );
+        assert_eq!(
+            lib.media_file_stem("pub-nwtsv_X_1_VIDEO", "X", "240p")
+                .unwrap(),
+            media_stem("pub-nwtsv_X_1_VIDEO", "X", "240p")
+        );
+        // Another one whose cleaned name is the same gets a name of its own.
+        let other = lib
+            .media_file_stem("pub-nwtsv.X_1_VIDEO", "X", "480p")
+            .unwrap();
+        assert_eq!(media_stem("pub-nwtsv.X_1_VIDEO", "X", "480p"), stem);
+        assert_ne!(other, stem);
+        assert!(other.starts_with(&format!("{stem}_")));
+        assert_eq!(
+            lib.media_file_stem("pub-nwtsv.X_1_VIDEO", "X", "480p")
+                .unwrap(),
+            other,
+            "stable across downloads"
+        );
+        // A stem that is only a prefix of a used one is free.
+        assert_eq!(
+            lib.media_file_stem("pub-nwtsv_X_1", "VIDEO_X", "").unwrap(),
+            "pub-nwtsv_X_1_VIDEO_X"
+        );
     }
 
     #[test]

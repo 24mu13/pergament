@@ -320,25 +320,73 @@ pub fn category(
         return Err(Error::NotFound(format!("invalid category {lang}/{key}")));
     }
     let file = cache_file(cache, lang, key, detailed);
-    if !fresh(&file, ttl) {
-        let url = format!(
-            "{MEDIATOR_URL}/{lang}/{key}?detailed={}",
-            u8::from(detailed)
-        );
+    let url = format!(
+        "{MEDIATOR_URL}/{lang}/{key}?detailed={}",
+        u8::from(detailed)
+    );
+    cached(client, &url, &file, ttl).map_err(|e| match e {
+        Error::Http(m) if m.contains("HTTP 404") => {
+            Error::NotFound(format!("category {key} in {lang}"))
+        }
+        e => e,
+    })
+}
+
+/// How long a stale copy is used before the network is tried again after a
+/// failed refresh.
+const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// The category at `url`, cached in `file` for `ttl`. A response replaces the
+/// cached copy only once it parses, and it is fetched into a file of its own,
+/// so concurrent refreshes do not share a partial download. When the refresh
+/// fails, a stale copy is used and kept for [`RETRY_AFTER`] before the next try.
+/// A fresh copy that does not parse (saved by an older version, or damaged)
+/// is fetched again.
+fn cached(client: &Client, url: &str, file: &Path, ttl: Duration) -> Result<Category> {
+    if fresh(file, ttl)
+        && let Ok(category) = File::open(file)
+            .map_err(Error::from)
+            .and_then(|f| parse(BufReader::new(f), client))
+    {
+        return Ok(category);
+    }
+    let fetched = (|| {
+        let dir = file.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(dir)?;
+        let name = file.file_name().unwrap_or_default().to_string_lossy();
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!(".{name}."))
+            .suffix(".tmp")
+            .tempfile_in(dir)?
+            .into_temp_path();
         let mut ignore = |_: u64, _: Option<u64>| {};
-        if let Err(e) = client.download(&url, &file, &Default::default(), &mut ignore) {
-            let _ = fs::remove_file(crate::net::part_path(&file));
-            if !file.is_file() {
-                return Err(match e {
-                    Error::Http(m) if m.contains("HTTP 404") => {
-                        Error::NotFound(format!("category {key} in {lang}"))
-                    }
-                    e => e,
-                });
+        let got = client
+            .download(url, &tmp, &Default::default(), &mut ignore)
+            .and_then(|()| parse(BufReader::new(File::open(&tmp)?), client));
+        let _ = fs::remove_file(crate::net::part_path(&tmp));
+        let category = got?;
+        tmp.persist(file).map_err(|e| Error::Io(e.error))?;
+        Ok(category)
+    })();
+    match fetched {
+        Ok(category) => Ok(category),
+        Err(e) => {
+            let Ok(category) = File::open(file)
+                .map_err(Error::from)
+                .and_then(|f| parse(BufReader::new(f), client))
+            else {
+                return Err(e);
+            };
+            // Fresh again for a short while, so offline use does not wait for
+            // the retries on every call.
+            if let Some(t) = SystemTime::now().checked_sub(ttl.saturating_sub(RETRY_AFTER))
+                && let Ok(f) = File::options().write(true).open(file)
+            {
+                let _ = f.set_modified(t);
             }
+            Ok(category)
         }
     }
-    parse(BufReader::new(File::open(&file)?), client)
 }
 
 #[cfg(test)]
@@ -364,6 +412,126 @@ mod tests {
          "files":[{"progressiveDownloadURL":"https://cfp2.jw-cdn.org/a/3/x.mp3","label":null,"mimetype":"audio/mpeg"}]},
         {"naturalKey":"odd","type":"other","files":[]},
         {"naturalKey":"nofiles","type":"video","files":[]}]}]}}"#;
+
+    /// Serves `body` with status 200 to every request on a local port.
+    fn serve(body: &'static str) -> String {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/c", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        url
+    }
+
+    fn local_client() -> Client {
+        Client::new(HttpConfig {
+            min_interval: Duration::ZERO,
+            max_retries: 0,
+            allowed_hosts: vec!["127.0.0.1".into()],
+            allow_plain_http: true,
+            ..HttpConfig::default()
+        })
+    }
+
+    fn age(path: &Path) -> Duration {
+        SystemTime::now()
+            .duration_since(fs::metadata(path).unwrap().modified().unwrap())
+            .unwrap_or_default()
+    }
+
+    const TTL: Duration = Duration::from_secs(6 * 3600);
+
+    #[test]
+    fn caches_a_fetched_category() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("mediator/X_VODBible_1.json");
+        let c = cached(&local_client(), &serve(SAMPLE), &file, TTL).unwrap();
+        assert_eq!(c.key, "VODBible");
+        assert_eq!(fs::read_to_string(&file).unwrap(), SAMPLE);
+        // Only the cached file is left behind.
+        assert_eq!(fs::read_dir(d.path().join("mediator")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn an_unparsable_response_keeps_the_stale_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("X_VODBible_1.json");
+        fs::write(&file, SAMPLE).unwrap();
+        let old = SystemTime::now() - TTL - Duration::from_secs(60);
+        File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let c = cached(
+            &local_client(),
+            &serve("<html>maintenance</html>"),
+            &file,
+            TTL,
+        )
+        .unwrap();
+        assert_eq!(c.key, "VODBible");
+        assert_eq!(fs::read_to_string(&file).unwrap(), SAMPLE);
+        // The stale copy is used without asking again for a short while.
+        assert!(fresh(&file, TTL));
+        assert!(age(&file) >= TTL - RETRY_AFTER);
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_fresh_copy_that_does_not_parse_is_fetched_again() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("X_VODBible_1.json");
+        fs::write(&file, "<html>maintenance</html>").unwrap();
+        assert!(fresh(&file, TTL));
+        let c = cached(&local_client(), &serve(SAMPLE), &file, TTL).unwrap();
+        assert_eq!(c.key, "VODBible");
+        assert_eq!(fs::read_to_string(&file).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn an_unparsable_response_without_a_copy_is_an_error() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("X_VODBible_1.json");
+        assert!(cached(&local_client(), &serve("nope"), &file, TTL).is_err());
+        assert!(!file.exists());
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn offline_uses_the_stale_copy_and_waits_before_retrying() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("X_VODBible_1.json");
+        fs::write(&file, SAMPLE).unwrap();
+        let old = SystemTime::now() - TTL - Duration::from_secs(60);
+        File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // A port nothing listens on.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/c", closed.local_addr().unwrap());
+        drop(closed);
+        let c = cached(&local_client(), &url, &file, TTL).unwrap();
+        assert_eq!(c.key, "VODBible");
+        assert!(fresh(&file, TTL));
+    }
 
     #[test]
     fn parses_catalog() {

@@ -31,6 +31,19 @@ describe("useCatalogBibles", () => {
     expect(category).toHaveBeenCalledWith("X", 1);
   });
 
+  it("tells every hook when a list arrives, also one mounted while it was read", async () => {
+    let resolve!: (e: CatalogEntry[]) => void;
+    category.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    const first = renderHook(() => useCatalogBibles(["X"], true, 0));
+    first.unmount();
+    const second = renderHook(() => useCatalogBibles(["X"], true, 0));
+    const third = renderHook(() => useCatalogBibles(["X"], true, 0));
+    resolve([entry("nwt")]);
+    await waitFor(() => expect(second.result.current.X).toHaveLength(1));
+    expect(third.result.current.X).toHaveLength(1);
+    expect(category).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the last list while a new catalog version is read", async () => {
     category.mockResolvedValueOnce([entry("nwt")]);
     const { result, rerender } = renderHook(({ v }) => useCatalogBibles(["X"], true, v), { initialProps: { v: 0 } });

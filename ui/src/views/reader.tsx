@@ -71,6 +71,7 @@ export function ReaderView({
     publications,
     playRecording,
     showImage,
+    viewer,
     layout,
     note: written,
     releaseNote,
@@ -495,6 +496,8 @@ export function ReaderView({
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       // Keys pressed in the note editor belong to it.
       if (e.target instanceof Element && e.target.closest("[data-note-editor]")) return;
+      // A picture or the full-size player over the page has the keys (the player marks the ones it took).
+      if (viewer || e.defaultPrevented) return;
       if (e.key === "ArrowLeft" && !e.altKey) go(-1);
       if (e.key === "ArrowRight" && !e.altKey) go(1);
     };

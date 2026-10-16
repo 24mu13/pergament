@@ -73,7 +73,7 @@ fi
 
 # Where the source is: this checkout, or a fresh clone of the newest release.
 src=
-cleanup() { [[ -n ${tmp:-} ]] && rm -rf "$tmp"; }
+cleanup() { if [[ -n ${tmp:-} ]]; then rm -rf "$tmp"; fi; }
 trap cleanup EXIT
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
 if [[ -n $script_dir && -f $script_dir/../Cargo.toml && -f $script_dir/../flake.nix ]]; then

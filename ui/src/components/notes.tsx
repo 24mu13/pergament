@@ -105,10 +105,17 @@ export function NoteCard({
 }) {
   const body = useRef<HTMLDivElement>(null);
   const [clipped, setClipped] = useState(false);
-  // Measured while clamped: the toggle only shows where there is more to see.
+  // Measured while clamped: the toggle only shows where there is more to see. A pane that gets narrower or wider
+  // wraps the text anew, so it is measured again then.
   useLayoutEffect(() => {
     const el = body.current;
-    if (el && !expanded) setClipped(el.scrollHeight > el.clientHeight + 1);
+    if (!el || expanded) return;
+    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [note.content, expanded]);
   const toggle = onToggle && (clipped || expanded);
   /** Links in the whole note open in the app or the browser; a click elsewhere on it edits the note. */

@@ -2,8 +2,9 @@
 //! Everything in it can be fetched again; downloaded publications and user
 //! data live elsewhere and are never touched here.
 //!
-//! Only the entries Pergament itself creates are measured and removed, so a
-//! cache directory pointed at a shared folder never loses foreign files.
+//! Only the files Pergament itself creates (matched by name, also inside its
+//! own folders) are measured and removed, so a cache directory pointed at a
+//! shared folder never loses foreign files.
 
 use std::fs;
 use std::io;
@@ -37,23 +38,70 @@ enum Kind {
     Other,
 }
 
+/// What a top-level cache entry holds, if Pergament created it.
+enum Layout {
+    /// A file of ours.
+    File,
+    /// A directory in which only the files whose names pass the check are
+    /// ours; anything else found in it, subfolders included, is left alone.
+    Dir(fn(&str) -> bool),
+    /// Like [`Layout::Dir`], but the files in its subfolders are checked too.
+    Tree(fn(&str) -> bool),
+}
+
 /// What a top-level cache entry is, or `None` if Pergament did not create it.
 /// Keep in sync with the writers: `catalog.rs` (catalog files), `api.rs`
 /// (`catalog-images`, `cms-images`), `languages.rs`, `mediator.rs`, the
-/// download commands (`downloads`) and older versions (`view`).
-fn kind_of(name: &str) -> Option<Kind> {
+/// download commands (`downloads`).
+fn kind_of(name: &str) -> Option<(Kind, Layout)> {
+    let catalog = name.strip_suffix(".part").unwrap_or(name);
     if name == "catalog-images" || name == "cms-images" {
-        Some(Kind::Covers)
-    } else if (name.starts_with("catalog-") && name.ends_with(".db"))
-        || (name.starts_with("catalog-") && name.ends_with(".db.gz"))
+        Some((Kind::Covers, Layout::Tree(is_image)))
+    } else if (catalog.starts_with("catalog-") && catalog.ends_with(".db"))
+        || (catalog.starts_with("catalog-") && catalog.ends_with(".db.gz"))
         || (name.starts_with(".catalog-") && name.ends_with(".tmp"))
     {
-        Some(Kind::Catalog)
-    } else if matches!(name, "downloads" | "languages.json" | "mediator" | "view") {
-        Some(Kind::Other)
+        Some((Kind::Catalog, Layout::File))
     } else {
-        None
+        match name {
+            "languages.json" => Some((Kind::Other, Layout::File)),
+            "downloads" => Some((Kind::Other, Layout::Dir(is_publication_part))),
+            "mediator" => Some((Kind::Other, Layout::Dir(is_category))),
+            _ => None,
+        }
     }
+}
+
+/// A cached cover or media image (`net` downloads it via `<name>.part`).
+fn is_image(name: &str) -> bool {
+    let name = name.strip_suffix(".part").unwrap_or(name);
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    matches!(
+        ext.as_deref(),
+        Some("jpg" | "jpeg" | "png" | "webp" | "gif")
+    )
+}
+
+/// An unfinished publication download. Finished files are imported and
+/// removed right away, so a complete `.jwpub` here is not assumed to be ours.
+fn is_publication_part(name: &str) -> bool {
+    name.ends_with(".jwpub.part")
+}
+
+/// A media category response, `{lang}_{key}_{0|1}.json`, or one being
+/// fetched as `.{lang}_{key}_{0|1}.json.{random}.tmp` (see `mediator.rs`).
+fn is_category(name: &str) -> bool {
+    let name = name.strip_suffix(".part").unwrap_or(name);
+    let name = match name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")) {
+        Some(tmp) => tmp.rsplit_once('.').map_or(tmp, |(n, _)| n),
+        None => name,
+    };
+    name.strip_suffix("_0.json")
+        .or_else(|| name.strip_suffix("_1.json"))
+        .and_then(|rest| rest.split_once('_'))
+        .is_some_and(|(lang, key)| {
+            crate::mediator::valid_key(lang) && crate::mediator::valid_key(key)
+        })
 }
 
 /// Fail unless `cache` can be emptied without touching the library at
@@ -129,30 +177,49 @@ fn unless_gone<T>(r: io::Result<T>) -> io::Result<Option<T>> {
     }
 }
 
-/// Bytes below `path`; symlinks count as zero and are not followed.
-/// `.part` files are added to `partial` instead of the returned size.
-/// Entries that vanish during the walk count as zero.
-fn size_of(path: &Path, partial: &mut u64) -> Result<u64> {
+/// Bytes of the files of ours at `path` (see [`Layout`]); symlinks count as
+/// zero and are not followed. `.part` files are added to `partial` instead of
+/// the returned size. Entries that vanish during the walk count as zero.
+fn size_of(path: &Path, layout: &Layout, partial: &mut u64) -> Result<u64> {
     let Some(meta) = unless_gone(fs::symlink_metadata(path))? else {
         return Ok(0);
     };
-    if meta.file_type().is_symlink() {
-        return Ok(0);
+    match layout {
+        Layout::File if meta.is_file() => Ok(file_size(path, meta.len(), partial)),
+        Layout::Dir(is_ours) if meta.is_dir() => dir_size(path, *is_ours, false, partial),
+        Layout::Tree(is_ours) if meta.is_dir() => dir_size(path, *is_ours, true, partial),
+        _ => Ok(0),
     }
-    if meta.is_file() {
-        if path.extension().is_some_and(|e| e == "part") {
-            *partial += meta.len();
-            return Ok(0);
-        }
-        return Ok(meta.len());
+}
+
+fn file_size(path: &Path, len: u64, partial: &mut u64) -> u64 {
+    if path.extension().is_some_and(|e| e == "part") {
+        *partial += len;
+        0
+    } else {
+        len
     }
-    let Some(entries) = unless_gone(fs::read_dir(path))? else {
+}
+
+/// Bytes of the files in `dir` that `is_ours` accepts, and with `deep` also
+/// of those in its subfolders.
+fn dir_size(dir: &Path, is_ours: fn(&str) -> bool, deep: bool, partial: &mut u64) -> Result<u64> {
+    let Some(entries) = unless_gone(fs::read_dir(dir))? else {
         return Ok(0);
     };
     let mut n = 0;
     for e in entries {
-        if let Some(e) = unless_gone(e)? {
-            n += size_of(&e.path(), partial)?;
+        let Some(e) = unless_gone(e)? else { continue };
+        let path = e.path();
+        let Some(meta) = unless_gone(fs::symlink_metadata(&path))? else {
+            continue;
+        };
+        if meta.is_dir() {
+            if deep {
+                n += dir_size(&path, is_ours, deep, partial)?;
+            }
+        } else if meta.is_file() && is_ours(&e.file_name().to_string_lossy()) {
+            n += file_size(&path, meta.len(), partial);
         }
     }
     Ok(n)
@@ -170,10 +237,10 @@ pub fn usage(dir: &Path) -> Result<Usage> {
     for e in entries {
         let Some(e) = unless_gone(e)? else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(kind) = kind_of(&name) else {
+        let Some((kind, layout)) = kind_of(&name) else {
             continue;
         };
-        let bytes = size_of(&e.path(), &mut u.partial)?;
+        let bytes = size_of(&e.path(), &layout, &mut u.partial)?;
         match kind {
             Kind::Catalog => u.catalog += bytes,
             Kind::Covers => u.covers += bytes,
@@ -183,22 +250,52 @@ pub fn usage(dir: &Path) -> Result<Usage> {
     Ok(u)
 }
 
-/// Remove `path` (a directory with its contents, or a file or symlink).
-/// A path that is already gone is fine; a directory that gained an entry
-/// while it was emptied (a download writing into it) is tried once more.
-fn remove(path: &Path) -> io::Result<()> {
+/// Remove the files of ours at `path` (see [`Layout`]). A directory is
+/// removed too once that leaves it empty; one that still holds other
+/// entries, or gained one meanwhile (a download writing into it), stays.
+/// Symlinks are never followed or removed. A path that is already gone is fine.
+fn remove(path: &Path, layout: &Layout) -> io::Result<()> {
     let Some(meta) = unless_gone(fs::symlink_metadata(path))? else {
         return Ok(());
     };
-    if meta.is_dir() && !meta.file_type().is_symlink() {
-        match fs::remove_dir_all(path) {
-            Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {
-                unless_gone(fs::remove_dir_all(path)).map(drop)
+    match layout {
+        Layout::File if meta.is_file() => unless_gone(fs::remove_file(path)).map(drop),
+        Layout::Dir(is_ours) if meta.is_dir() => clear_dir(path, *is_ours, false).map(drop),
+        Layout::Tree(is_ours) if meta.is_dir() => clear_dir(path, *is_ours, true).map(drop),
+        _ => Ok(()),
+    }
+}
+
+/// Remove the files in `dir` that `is_ours` accepts (with `deep` also those
+/// in its subfolders), then `dir` itself if that emptied it. Returns whether
+/// `dir` is gone.
+fn clear_dir(dir: &Path, is_ours: fn(&str) -> bool, deep: bool) -> io::Result<bool> {
+    let Some(entries) = unless_gone(fs::read_dir(dir))? else {
+        return Ok(true);
+    };
+    let mut removed = false;
+    for e in entries {
+        let Some(e) = unless_gone(e)? else { continue };
+        let path = e.path();
+        let Some(meta) = unless_gone(fs::symlink_metadata(&path))? else {
+            continue;
+        };
+        if meta.is_dir() {
+            if deep {
+                removed |= clear_dir(&path, is_ours, deep)?;
             }
-            r => unless_gone(r).map(drop),
+        } else if meta.is_file() && is_ours(&e.file_name().to_string_lossy()) {
+            unless_gone(fs::remove_file(&path))?;
+            removed = true;
         }
-    } else {
-        unless_gone(fs::remove_file(path)).map(drop)
+    }
+    // Only a directory we emptied is removed: an empty one of someone else's stays.
+    if !removed {
+        return Ok(false);
+    }
+    match fs::remove_dir(dir) {
+        Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(false),
+        r => unless_gone(r).map(|_| true),
     }
 }
 
@@ -213,8 +310,8 @@ pub fn clear(dir: &Path) -> Result<()> {
     };
     for e in entries {
         let Some(e) = unless_gone(e)? else { continue };
-        if kind_of(&e.file_name().to_string_lossy()).is_some() {
-            remove(&e.path())?;
+        if let Some((_, layout)) = kind_of(&e.file_name().to_string_lossy()) {
+            remove(&e.path(), &layout)?;
         }
     }
     Ok(())
@@ -238,16 +335,16 @@ mod tests {
         write(d.path(), "catalog-abc.db.gz", 100);
         write(d.path(), "catalog-images/ab/c.jpg", 10);
         write(d.path(), "cms-images/p/x.jpg", 5);
+        write(d.path(), "catalog-abc.db.gz.part", 20);
         write(d.path(), "downloads/w_E.jwpub.part", 7);
-        write(d.path(), "downloads/other.jwpub", 3);
         write(d.path(), "languages.json", 2);
-        write(d.path(), "mediator/E/x.json", 4);
+        write(d.path(), "mediator/E_x_1.json", 4);
         let u = usage(d.path()).unwrap();
         assert_eq!(
             (u.catalog, u.covers, u.partial, u.other),
-            (1100, 15, 7, 2 + 4 + 3)
+            (1100, 15, 27, 2 + 4)
         );
-        assert_eq!(u.total(), 1100 + 15 + 7 + 9);
+        assert_eq!(u.total(), 1100 + 15 + 27 + 6);
     }
 
     #[test]
@@ -262,7 +359,8 @@ mod tests {
     fn clear_removes_contents_but_keeps_the_directory() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "catalog-abc.db", 10);
-        write(d.path(), "downloads/a.part", 10);
+        write(d.path(), "downloads/a_E_0.jwpub.part", 10);
+        write(d.path(), "mediator/E_VideoOnDemand_0.json", 10);
         write(d.path(), "cms-images/p/x.jpg", 10);
         clear(d.path()).unwrap();
         assert!(d.path().is_dir());
@@ -275,10 +373,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let gone = d.path().join("downloads/w_E.jwpub.part");
         let mut partial = 0;
-        assert_eq!(size_of(&gone, &mut partial).unwrap(), 0);
+        let file = Layout::File;
+        let dir = Layout::Dir(is_category);
+        assert_eq!(size_of(&gone, &file, &mut partial).unwrap(), 0);
         assert_eq!(partial, 0);
-        remove(&gone).unwrap();
-        remove(&d.path().join("mediator")).unwrap();
+        remove(&gone, &file).unwrap();
+        remove(&d.path().join("mediator"), &dir).unwrap();
         assert!(unless_gone(fs::read_dir(&gone)).unwrap().is_none());
         let denied = io::Error::from(io::ErrorKind::PermissionDenied);
         assert!(unless_gone::<()>(Err(denied)).is_err());
@@ -288,19 +388,85 @@ mod tests {
     fn clear_leaves_unknown_entries_alone() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "catalog-abc.db", 10);
-        write(d.path(), "view/x.html", 10);
         write(d.path(), "keep.txt", 3);
         write(d.path(), "Documents/thesis.odt", 4);
         write(d.path(), "catalog-notes.txt", 5);
         let u = usage(d.path()).unwrap();
-        assert_eq!(u.total(), 20, "only what clear removes is counted");
+        assert_eq!(u.total(), 10, "only what clear removes is counted");
         clear(d.path()).unwrap();
         assert!(d.path().join("keep.txt").is_file());
         assert!(d.path().join("Documents/thesis.odt").is_file());
         assert!(d.path().join("catalog-notes.txt").is_file());
         assert!(!d.path().join("catalog-abc.db").exists());
-        assert!(!d.path().join("view").exists());
         assert_eq!(usage(d.path()).unwrap().total(), 0);
+    }
+
+    #[test]
+    fn clear_keeps_pages_and_files_in_subfolders_of_flat_folders() {
+        // A shared folder with a saved website in `view` and our file names
+        // in subfolders of `downloads` and `mediator`, which Pergament never makes.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "view/index.html", 3);
+        write(d.path(), "view/pages/1.html", 4);
+        write(d.path(), "downloads/old/w_E_0.jwpub.part", 5);
+        write(d.path(), "mediator/backup/E_x_0.json", 6);
+        write(d.path(), "mediator/E_x_0.json", 10);
+        assert_eq!(usage(d.path()).unwrap().total(), 10);
+        clear(d.path()).unwrap();
+        for kept in [
+            "view/index.html",
+            "view/pages/1.html",
+            "downloads/old/w_E_0.jwpub.part",
+            "mediator/backup/E_x_0.json",
+        ] {
+            assert!(d.path().join(kept).is_file(), "{kept}");
+        }
+        assert!(!d.path().join("mediator/E_x_0.json").exists());
+        assert_eq!(usage(d.path()).unwrap().total(), 0);
+    }
+
+    #[test]
+    fn clear_keeps_foreign_files_in_folders_with_our_names() {
+        // A cache pointed at a shared folder that has its own `downloads`.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "downloads/w_E_202401_0.jwpub.part", 10);
+        write(d.path(), "downloads/w_E_202401.jwpub", 3);
+        write(d.path(), "downloads/holiday/photo.jpg", 4);
+        write(d.path(), "mediator/E_x_0.json", 10);
+        write(d.path(), "mediator/.E_x_1.json.a1B2c3.tmp.part", 10);
+        write(d.path(), "mediator/settings.json", 5);
+        write(d.path(), "view/index.css", 6);
+        write(d.path(), "cms-images/p/a/x.jpg", 10);
+        write(d.path(), "cms-images/p/readme.txt", 7);
+        fs::create_dir_all(d.path().join("languages.json")).unwrap();
+        write(d.path(), "languages.json/x.json", 8);
+        let u = usage(d.path()).unwrap();
+        assert_eq!(u.total(), 40, "only what clear removes is counted");
+        clear(d.path()).unwrap();
+        for kept in [
+            "downloads/w_E_202401.jwpub",
+            "downloads/holiday/photo.jpg",
+            "mediator/settings.json",
+            "view/index.css",
+            "cms-images/p/readme.txt",
+            "languages.json/x.json",
+        ] {
+            assert!(d.path().join(kept).is_file(), "{kept}");
+        }
+        assert!(!d.path().join("downloads/w_E_202401_0.jwpub.part").exists());
+        assert!(!d.path().join("mediator/E_x_0.json").exists());
+        // Emptied folders go, the ones still holding something stay.
+        assert!(!d.path().join("cms-images/p/a").exists());
+        assert!(d.path().join("cms-images/p").is_dir());
+        assert_eq!(usage(d.path()).unwrap().total(), 0);
+    }
+
+    #[test]
+    fn clear_keeps_an_empty_folder_it_did_not_empty() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("downloads")).unwrap();
+        clear(d.path()).unwrap();
+        assert!(d.path().join("downloads").is_dir());
     }
 
     fn safe(cache: &Path, root: &Path, home: Option<&Path>) -> bool {
@@ -392,9 +558,15 @@ mod tests {
         write(outside.path(), "keep.txt", 5);
         let d = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), d.path().join("mediator")).unwrap();
+        write(outside.path(), "E_x_0.json", 5);
+        std::os::unix::fs::symlink(outside.path(), d.path().join("cms-images")).unwrap();
+        write(d.path(), "downloads/w_E_0.jwpub.part", 5);
+        std::os::unix::fs::symlink(outside.path(), d.path().join("downloads/link")).unwrap();
+        assert_eq!(usage(d.path()).unwrap().total(), 5);
         clear(d.path()).unwrap();
         assert!(outside.path().join("keep.txt").exists());
-        assert!(fs::symlink_metadata(d.path().join("mediator")).is_err());
+        assert!(outside.path().join("E_x_0.json").exists());
+        assert!(fs::symlink_metadata(d.path().join("downloads/link")).is_ok());
         assert_eq!(usage(d.path()).unwrap().total(), 0);
     }
 }
