@@ -335,12 +335,11 @@ pub fn download_media(
         let saved = client
             .download(url, &path, &Expected::default(), &mut ignore)
             .is_ok();
-        if !saved {
-            let _ = fs::remove_file(crate::net::part_path(&path));
+        if saved {
+            return Some(name);
         }
-        // A failed download leaves the file of an earlier download of this
-        // recording (same name) untouched; keep using it.
-        (saved || path.is_file()).then_some(name)
+        let _ = fs::remove_file(crate::net::part_path(&path));
+        earlier_captions(library, &media.key, lang_code, &name)
     });
 
     library.add_media(&MediaEntry {
@@ -359,6 +358,23 @@ pub fn download_media(
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0)),
     })
+}
+
+/// Captions to record under `name` (in [`Library::media_dir`]) after their
+/// download failed: those an earlier download of this recording left there
+/// (same quality), or else a copy of the earlier download's captions, which
+/// are the same in every quality. `None` if there were none.
+fn earlier_captions(library: &Library, key: &str, lang_code: &str, name: &str) -> Option<String> {
+    let path = library.media_dir().join(name);
+    if path.is_file() {
+        return Some(name.to_owned());
+    }
+    let old = library.find_media(key, lang_code).ok()??.subtitle_file?;
+    if fs::copy(library.media_dir().join(old), &path).is_err() {
+        let _ = fs::remove_file(&path);
+        return None;
+    }
+    Some(name.to_owned())
 }
 
 #[cfg(test)]
@@ -458,6 +474,60 @@ mod tests {
             f.track_image.as_ref().map(|i| i.url.as_str()),
             Some("https://cfp2.jw-cdn.org/a/x.jpg")
         );
+    }
+
+    fn media_entry(label: &str, subtitles: bool) -> MediaEntry {
+        let stem = crate::library::media_stem("pub-x_X_1_VIDEO", "X", label);
+        MediaEntry {
+            id: 0,
+            key: "pub-x_X_1_VIDEO".into(),
+            lang_code: "X".into(),
+            title: "Einführung".into(),
+            kind: MediaKind::Video,
+            label: label.into(),
+            file_name: format!("{stem}.mp4"),
+            subtitle_file: subtitles.then(|| format!("{stem}.vtt")),
+            size: 4,
+            duration: None,
+            image: None,
+            downloaded_at: 1,
+        }
+    }
+
+    #[test]
+    fn failed_captions_fall_back_to_the_earlier_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let dir = lib.media_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let (key, lang) = ("pub-x_X_1_VIDEO", "X");
+
+        // Nothing earlier: no captions.
+        let a = media_entry("480p", true);
+        let a_vtt = a.subtitle_file.clone().unwrap();
+        assert_eq!(earlier_captions(&lib, key, lang, &a_vtt), None);
+        assert!(!dir.join(&a_vtt).exists());
+
+        fs::write(dir.join(&a.file_name), "data").unwrap();
+        fs::write(dir.join(&a_vtt), "WEBVTT").unwrap();
+        lib.add_media(&a).unwrap();
+        // The same quality again keeps the file it left.
+        assert_eq!(
+            earlier_captions(&lib, key, lang, &a_vtt),
+            Some(a_vtt.clone())
+        );
+
+        // Another quality gets a copy under its own name, which survives
+        // the earlier download's files being replaced.
+        let mut b = media_entry("720p", false);
+        let b_vtt = format!("{}.vtt", b.file_name.strip_suffix(".mp4").unwrap());
+        b.subtitle_file = earlier_captions(&lib, key, lang, &b_vtt);
+        assert_eq!(b.subtitle_file.as_deref(), Some(b_vtt.as_str()));
+        fs::write(dir.join(&b.file_name), "data").unwrap();
+        lib.add_media(&b).unwrap();
+        assert_eq!(fs::read_to_string(dir.join(&b_vtt)).unwrap(), "WEBVTT");
+        assert!(!dir.join(&a_vtt).exists());
+        assert!(!dir.join(&a.file_name).exists());
     }
 
     #[test]
