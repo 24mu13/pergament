@@ -87,9 +87,14 @@ fn is_publication_part(name: &str) -> bool {
     name.ends_with(".jwpub.part")
 }
 
-/// A media category response, `{lang}_{key}_{0|1}.json` (see `mediator.rs`).
+/// A media category response, `{lang}_{key}_{0|1}.json`, or one being
+/// fetched as `.{lang}_{key}_{0|1}.json.{random}.tmp` (see `mediator.rs`).
 fn is_category(name: &str) -> bool {
     let name = name.strip_suffix(".part").unwrap_or(name);
+    let name = match name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")) {
+        Some(tmp) => tmp.rsplit_once('.').map_or(tmp, |(n, _)| n),
+        None => name,
+    };
     name.strip_suffix("_0.json")
         .or_else(|| name.strip_suffix("_1.json"))
         .and_then(|rest| rest.split_once('_'))
@@ -402,6 +407,7 @@ mod tests {
         write(d.path(), "downloads/w_E_202401.jwpub", 3);
         write(d.path(), "downloads/holiday/photo.jpg", 4);
         write(d.path(), "mediator/E_x_0.json", 10);
+        write(d.path(), "mediator/.E_x_1.json.a1B2c3.tmp.part", 10);
         write(d.path(), "mediator/settings.json", 5);
         write(d.path(), "view/index.css", 6);
         write(d.path(), "cms-images/p/a/x.jpg", 10);
@@ -409,7 +415,7 @@ mod tests {
         fs::create_dir_all(d.path().join("languages.json")).unwrap();
         write(d.path(), "languages.json/x.json", 8);
         let u = usage(d.path()).unwrap();
-        assert_eq!(u.total(), 30, "only what clear removes is counted");
+        assert_eq!(u.total(), 40, "only what clear removes is counted");
         clear(d.path()).unwrap();
         for kept in [
             "downloads/w_E_202401.jwpub",
