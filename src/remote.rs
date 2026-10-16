@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use crate::catalog::CatalogItem;
-use crate::library::{Entry, Library, MediaEntry, media_stem};
+use crate::library::{Entry, Library, MediaEntry};
 use crate::links::{MediaKind, MediaRef};
 use crate::mediator::Media;
 use crate::net::{Client, Expected, encode_query};
@@ -316,7 +316,7 @@ pub fn download_media(
     let ext = media_extension(&file.mime)
         .ok_or_else(|| Error::NotFound(format!("cannot save {}", file.mime)))?;
 
-    let stem = media_stem(&media.key, lang_code, label);
+    let stem = library.media_file_stem(&media.key, lang_code, label)?;
     let name = format!("{stem}.{ext}");
     let dest = library.media_dir().join(&name);
     let expected = Expected {
