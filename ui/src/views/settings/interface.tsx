@@ -1,5 +1,14 @@
 import { useApp } from "@/app";
+import { ChevronDown } from "lucide-react";
 import { Segmented } from "@/components/segmented";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Layout, Theme } from "@/lib/settings";
 import { t, uiLanguages } from "@/lib/i18n";
 import type { UiLangSetting } from "@/lib/i18n";
@@ -8,6 +17,9 @@ const uiLangs: { value: UiLangSetting; label: string }[] = [
   { value: "system", label: "System" },
   ...uiLanguages().map((l) => ({ value: l.code, label: l.name })),
 ];
+
+// Language names are shown in their own language; only "System" is translated.
+const label = (l: { value: UiLangSetting; label: string }) => (l.value === "system" ? t(l.label) : l.label);
 
 const themes: { value: Theme; label: string }[] = [
   { value: "system", label: "System" },
@@ -26,12 +38,24 @@ export function InterfaceTab() {
     <div className="space-y-10">
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Interface language")}</h2>
-        <Segmented
-          label={t("Interface language")}
-          value={uiLang}
-          options={uiLangs.map((l) => ({ value: l.value, label: l.value === "system" ? t(l.label) : l.label }))}
-          onChange={setUiLang}
-        />
+        {/* A list rather than buttons, so it keeps its size as languages are added. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" aria-label={t("Interface language")} className="min-w-56 justify-between font-normal">
+              {label(uiLangs.find((l) => l.value === uiLang) ?? uiLangs[0])}
+              <ChevronDown size={16} className="text-muted" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuRadioGroup value={uiLang} onValueChange={(v) => setUiLang(v as UiLangSetting)}>
+              {uiLangs.map((l) => (
+                <DropdownMenuRadioItem key={l.value} value={l.value}>
+                  {label(l)}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </section>
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Appearance")}</h2>

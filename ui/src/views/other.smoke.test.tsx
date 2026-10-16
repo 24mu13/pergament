@@ -2,6 +2,8 @@
 // Renders the search, meetings, updates and publication views in StrictMode with a mocked backend.
 import { StrictMode, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setUiLang } from "@/lib/i18n";
+import { locales } from "@/locales";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { card, entry } from "@/lib/fixtures";
 
@@ -149,6 +151,20 @@ describe("Settings", () => {
     expect(localStorage.getItem("layout")).toBe("wide");
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("100000px");
     expect(screen.getByRole("button", { name: "Full width" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("picks the interface language from a list", async () => {
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Interface" }));
+    const trigger = await screen.findByRole("button", { name: "Interface language" });
+    // Radix opens the menu on a pointer press, not on a click.
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: "mouse" });
+    const items = await screen.findAllByRole("menuitemradio");
+    expect(items.map((i) => i.textContent)).toEqual(["System", "English", ...locales.map((l) => l.name)]);
+    expect(items[0].getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Deutsch" }));
+    expect(localStorage.getItem("uiLang")).toBe("de");
+    setUiLang("en"); // the language is module state; the other tests read English
   });
 
   it("switches to the easy-to-read font and remembers it", async () => {
