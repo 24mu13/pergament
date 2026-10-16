@@ -436,6 +436,13 @@ impl<'a> Renderer<'a> {
                     }
                     Ok(())
                 }))
+                // A picture in a style, such as a lesson's background, is found like an
+                // `img`; any other `url()` would load from outside, so it goes.
+                .append_element_content_handler(element!("[style]", |el| {
+                    let style = el.get_attribute("style").unwrap_or_default();
+                    el.set_attribute("style", &rewrite_style(&style, media_base))?;
+                    Ok(())
+                }))
                 .append_element_content_handler(element!("img", |el| {
                     let src = el.get_attribute("src");
                     match (media_base, src.as_deref().and_then(media_name)) {
@@ -459,6 +466,37 @@ fn to_field_marker(el: &mut Element<'_, '_>, class: &str) -> lol_html::HandlerRe
         lol_html::html_content::ContentType::Html,
     );
     Ok(())
+}
+
+/// Keep the declarations of an inline style, with each `url(jwpub-media://NAME)`
+/// pointing at the publication's pictures; a declaration with any other `url()`
+/// is dropped. The sanitizer then keeps only the allowed properties.
+fn rewrite_style(style: &str, media_base: Option<&str>) -> String {
+    let mut out = Vec::new();
+    for decl in style.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        let Some(start) = decl.find("url(") else {
+            out.push(decl.to_owned());
+            continue;
+        };
+        let Some(len) = decl[start..].find(')') else {
+            continue;
+        };
+        let inner = decl[start + 4..start + len]
+            .trim()
+            .trim_matches(['\'', '"']);
+        let (Some(base), Some(name)) = (media_base, media_name(inner)) else {
+            continue;
+        };
+        if decl[start + len + 1..].contains("url(") {
+            continue;
+        }
+        out.push(format!(
+            "{}url(\"{base}{name}\"){}",
+            &decl[..start],
+            &decl[start + len + 1..]
+        ));
+    }
+    out.join("; ")
 }
 
 fn to_marker_link(
@@ -630,6 +668,56 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// What an inline style may set: text, color, spacing, borders and size. Nothing
+/// that could move it out of the page, such as `position` or `z-index`.
+const STYLE_PROPERTIES: &[&str] = &[
+    "background-color",
+    "background-image",
+    "background-position",
+    "background-repeat",
+    "background-size",
+    "border",
+    "border-bottom",
+    "border-color",
+    "border-left",
+    "border-radius",
+    "border-right",
+    "border-style",
+    "border-top",
+    "border-width",
+    "clear",
+    "color",
+    "display",
+    "float",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-variant",
+    "font-weight",
+    "height",
+    "letter-spacing",
+    "line-height",
+    "list-style-type",
+    "margin",
+    "margin-bottom",
+    "margin-left",
+    "margin-right",
+    "margin-top",
+    "max-width",
+    "padding",
+    "padding-bottom",
+    "padding-left",
+    "padding-right",
+    "padding-top",
+    "text-align",
+    "text-decoration",
+    "text-indent",
+    "text-transform",
+    "vertical-align",
+    "white-space",
+    "width",
+];
+
 fn sanitizer() -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     b.add_tags([
@@ -645,7 +733,8 @@ fn sanitizer() -> ammonia::Builder<'static> {
     ])
     .add_tags(["fieldset", "label", "legend"])
     .add_tag_attributes("label", ["for"])
-    .add_generic_attributes(["id", "class"])
+    .add_generic_attributes(["id", "class", "style"])
+    .filter_style_properties(STYLE_PROPERTIES.iter().copied().collect())
     // `jwmedia` is the app's image scheme (MEDIA_SCHEME in src-tauri).
     .add_url_schemes(["pergament", "file", "jwmedia"]);
     b
@@ -770,6 +859,48 @@ mod tests {
         assert_eq!(
             file_url_for_dir(Path::new("/a b/ü")),
             "file:///a%20b/%C3%BC/"
+        );
+    }
+
+    #[test]
+    fn styles_keep_the_publications_pictures_only() {
+        let base = Some("jwmedia://localhost/d/");
+        assert_eq!(
+            rewrite_style("background-image: url('jwpub-media://a_b.jpg')", base),
+            r#"background-image: url("jwmedia://localhost/d/a_b.jpg")"#
+        );
+        assert_eq!(
+            rewrite_style(
+                "color: red; background: url(https://x.org/t.png); margin: 0",
+                base
+            ),
+            "color: red; margin: 0"
+        );
+        assert_eq!(
+            rewrite_style("background-image: url(jwpub-media://../x.jpg)", base),
+            ""
+        );
+        assert_eq!(
+            rewrite_style("background-image: url(jwpub-media://a.jpg)", None),
+            ""
+        );
+    }
+
+    #[test]
+    fn sanitizer_keeps_safe_styles_and_form_labels() {
+        let out = sanitizer()
+            .clean(r#"<fieldset><legend>Goal</legend><label for="tt1" class="dc-screenReaderText">x</label><p style="color: red; position: fixed; z-index: 9; margin-top: 1em">a</p></fieldset>"#)
+            .to_string();
+        assert!(out.contains("<fieldset><legend>Goal</legend>"), "{out}");
+        assert!(
+            out.contains(r#"<label for="tt1" class="dc-screenReaderText">x</label>"#),
+            "{out}"
+        );
+        assert!(out.contains("color:red"), "{out}");
+        assert!(out.contains("margin-top:1em"), "{out}");
+        assert!(
+            !out.contains("position") && !out.contains("z-index"),
+            "{out}"
         );
     }
 

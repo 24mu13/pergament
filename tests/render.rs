@@ -127,3 +127,19 @@ fn goal_fields_keep_their_kind_and_label() {
     assert!(out.contains("<fieldset><legend>Ziel</legend>"), "{out}");
     assert!(!out.contains("<input") && !out.contains("tt9"), "{out}");
 }
+
+#[test]
+fn background_pictures_point_at_the_publication() {
+    let out = render(
+        r#"<div class="dc-bgImageLayout--matchContainerWidth-top" style="background-image: url('jwpub-media://1102021201_univ_cbg_02.jpg'); position: fixed">x</div>"#,
+        RenderOptions {
+            media_base: Some("jwmedia://localhost/lff_X/".into()),
+            standalone: false,
+        },
+    );
+    assert!(
+        out.contains("jwmedia://localhost/lff_X/1102021201_univ_cbg_02.jpg"),
+        "{out}"
+    );
+    assert!(!out.contains("position"), "{out}");
+}
