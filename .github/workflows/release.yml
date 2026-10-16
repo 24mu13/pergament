@@ -130,7 +130,7 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.*
+        run: gh release upload --clobber "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.*
 
   # A single-file flatpak bundle from packaging/flatpak/, which only stages the
   # built files into the GNOME runtime sandbox. Added to the release the
@@ -194,7 +194,7 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.flatpak*
+        run: gh release upload --clobber "$GITHUB_REF_NAME" target/package/Pergament-*linux-x86_64.flatpak*
 
   # An unsigned disk image for Apple Silicon, added to the release the job above
   # made. It is ad-hoc signed only (no Apple Developer ID, no notarization), so
@@ -239,4 +239,4 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" target/package/*.dmg target/package/*.dmg.sha256
+        run: gh release upload --clobber "$GITHUB_REF_NAME" target/package/*.dmg target/package/*.dmg.sha256
