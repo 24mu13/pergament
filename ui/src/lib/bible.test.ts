@@ -168,8 +168,45 @@ describe("parseReferences", () => {
     expect(parts("Joh 15:13; 16:0")).toBeNull();
     expect(parts("Joh 15:13; 16:4-2")).toBeNull();
     expect(parts("Joh 15:13; 16:2, 0")).toBeNull();
-    expect(parts("Joh 15:13;")).toBeNull();
-    expect(parts("Ps 23;")).toBeNull();
+    expect(parts("Joh 15:13; ; x")).toBeNull();
+  });
+
+  it("passes over empty parts after semicolons", () => {
+    const at = (chapter: number, verse: number) => ({ book: 43, chapter, verse });
+    expect(parts("Joh 15:13;")).toEqual([["Joh 15:13", v(13)]]);
+    expect(parts("Joh 15:13 ; ")).toEqual([["Joh 15:13", v(13)]]);
+    expect(parts("Joh 15:13;;16:2")).toEqual([["Joh 15:13", v(13)], ["16:2", at(16, 2)]]);
+    expect(parts("Ps 23;")).toEqual([["Ps 23", { book: 19, chapter: 23, verse: null }]]);
+  });
+
+  it("reads chapter and verse with a comma or a dot after semicolons", () => {
+    const at = (chapter: number, verse: number) => ({ book: 43, chapter, verse });
+    expect(parts("Joh 15,13; 16,2")).toEqual([["Joh 15,13", v(13)], ["16,2", at(16, 2)]]);
+    expect(parts("Joh 15,13; 16,2, 4")).toEqual([["Joh 15,13", v(13)], ["16,2", at(16, 2)], ["4", at(16, 4)]]);
+    expect(parts("Joh 15.13; 16.2")).toEqual([["Joh 15.13", v(13)], ["16.2", at(16, 2)]]);
+  });
+
+  it("reads a list after a dot between chapter and verse", () => {
+    expect(parts("Joh 15.13, 15")).toEqual([["Joh 15.13", v(13)], ["15", v(15)]]);
+    expect(parts("1. Mose 2.3, 5")).toEqual([
+      ["1. Mose 2.3", { book: 1, chapter: 2, verse: 3 }],
+      ["5", { book: 1, chapter: 2, verse: 5 }],
+    ]);
+    expect(parts("1. Mose 2")).toEqual([["1. Mose 2", { book: 1, chapter: 2, verse: null }]]);
+  });
+
+  it("reads a list of verses in a book of one chapter", () => {
+    const jude = (verse: number, verseEnd?: number) => ({ book: 65, chapter: 1, verse, ...(verseEnd ? { verseEnd } : {}) });
+    expect(parts("Jud 5, 7")).toEqual([["Jud 5", jude(5)], ["7", jude(7)]]);
+    expect(parts("Jud 5,7")).toEqual([["Jud 5", jude(5)], ["7", jude(7)]]);
+    expect(parts("Jud 5-6, 9, 12")).toEqual([["Jud 5-6", jude(5, 6)], ["9", jude(9)], ["12", jude(12)]]);
+    expect(parts("Phm 4, 6")).toEqual([
+      ["Phm 4", { book: 57, chapter: 1, verse: 4 }],
+      ["6", { book: 57, chapter: 1, verse: 6 }],
+    ]);
+    expect(parts("Jud 1:5, 7")).toEqual([["Jud 1:5", jude(5)], ["7", jude(7)]]);
+    // In a book of several chapters it stays chapter and verse.
+    expect(parts("Phil 4, 6")).toEqual([["Phil 4, 6", { book: 50, chapter: 4, verse: 6 }]]);
   });
 
   it("keeps a comma between chapter and verse, and lists after it", () => {

@@ -157,21 +157,34 @@ const MORE_VERSES = /\s*,\s*((\d+)(?:\s*[-–]\s*(\d+))?)/g;
 /**
  * Reads a reference that may go on with more verses of its chapter, as in "Joh 15:13,15", "Joh 15:13-14, 16" or, with
  * the comma between chapter and verse, "Joh 15,13,15", and with more chapters of its book after semicolons, as in
- * "Joh 15:13, 15; 16:2-4". A comma starts another verse only after a verse; "Joh 15,13" alone is chapter 15, verse 13.
- * A part after a semicolon is a chapter and verse of the same book. Returns the parts in their order, one for a plain
- * reference, or null when the reference or any further chapter or verse does not fit.
+ * "Joh 15:13, 15; 16:2-4" or "Joh 15,13; 16,2". A comma starts another verse only after a verse; "Joh 15,13" alone is
+ * chapter 15, verse 13, except in a book of one chapter, where "Jud 5, 7" lists verses 5 and 7.
+ * A part after a semicolon is a chapter and verse of the same book; empty ones ("Joh 15:13;") are passed over. Returns
+ * the parts in their order, one for a plain reference, or null when the reference or any further chapter or verse
+ * does not fit.
  */
 export function parseReferences(input: string, books: Book[]): ListedReference[] | null {
   const text = input.trim();
   const [head, ...rest] = text.split(";");
-  const m = head.match(/^(.*?\d+\s*[:,]\s*\d+(?:\s*[-–]\s*\d+)?)((?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*$/u);
+  const m = head.match(/^(.*?\d+\s*[:,.]\s*\d+(?:\s*[-–]\s*\d+)?)((?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*$/u);
   if (!m) {
-    const ref = rest.length === 0 && parseReference(text, books);
-    return ref ? [{ ref, start: 0, end: text.length }] : null;
+    const ref = rest.every((part) => !part.trim()) && parseReference(head, books);
+    return ref ? [{ ref, start: 0, end: head.trimEnd().length }] : null;
   }
-  const first = parseReference(m[1], books);
+  let [, reference, list] = m;
+  let first = parseReference(reference, books);
+  if (!first) {
+    // "Jud 5, 7": after a single number in a book of one chapter, the comma lists another verse.
+    const single = reference.match(/^(.*?\d+(?:\s*[-–]\s*\d+)?)(\s*,\s*\d+(?:\s*[-–]\s*\d+)?)$/u);
+    const verse = single && parseReference(single[1], books);
+    if (single && verse && books.find((b) => b.number === verse.book)?.chapters === 1) {
+      first = verse;
+      [reference, list] = [single[1], single[2] + list];
+    }
+  }
   if (!first || first.verse == null) return null;
-  const out: ListedReference[] = [{ ref: first, start: 0, end: m[1].length }];
+  const book = first.book;
+  const out: ListedReference[] = [{ ref: first, start: 0, end: reference.length }];
   /** Adds the verses listed in `list`, found at `offset`; false when one does not fit. */
   const more = (list: string, offset: number, chapter: number) => {
     for (const g of list.matchAll(MORE_VERSES)) {
@@ -180,25 +193,29 @@ export function parseReferences(input: string, books: Book[]): ListedReference[]
       if (verse < 1 || (verseEnd != null && verseEnd < verse)) return false;
       const start = offset + g.index + g[0].length - g[1].length;
       out.push({
-        ref: { book: first.book, chapter, verse, ...(verseEnd != null ? { verseEnd } : {}) },
+        ref: { book, chapter, verse, ...(verseEnd != null ? { verseEnd } : {}) },
         start,
         end: start + g[1].length,
       });
     }
     return true;
   };
-  if (!more(m[2], m[1].length, first.chapter)) return null;
-  const chapters = books.find((b) => b.number === first.book)?.chapters ?? 0;
+  if (!more(list, reference.length, first.chapter)) return null;
+  const chapters = books.find((b) => b.number === book)?.chapters ?? 0;
   let at = head.length + 1;
   for (const part of rest) {
-    const c = part.match(/^(\s*)((\d+)\s*:\s*(\d+)(?:\s*[-–]\s*(\d+))?)((?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*$/);
-    if (!c) return null;
+    const c = part.match(/^(\s*)((\d+)\s*[:,.]\s*(\d+)(?:\s*[-–]\s*(\d+))?)((?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*$/);
+    if (!c) {
+      if (part.trim()) return null;
+      at += part.length + 1;
+      continue;
+    }
     const [chapter, verse] = [Number(c[3]), Number(c[4])];
     const verseEnd = c[5] ? Number(c[5]) : undefined;
     if (chapter < 1 || chapter > chapters || verse < 1 || (verseEnd != null && verseEnd < verse)) return null;
     const start = at + c[1].length;
     out.push({
-      ref: { book: first.book, chapter, verse, ...(verseEnd != null ? { verseEnd } : {}) },
+      ref: { book, chapter, verse, ...(verseEnd != null ? { verseEnd } : {}) },
       start,
       end: start + c[2].length,
     });
