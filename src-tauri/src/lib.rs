@@ -487,7 +487,7 @@ fn research_guide(
     api::research_guide(&*state.lib()?, &dir, book, chapter, verse)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn chapter_study(
     state: State<'_, AppState>,
     dir: String,
