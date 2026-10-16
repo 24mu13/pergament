@@ -338,7 +338,9 @@ pub fn download_media(
         if !saved {
             let _ = fs::remove_file(crate::net::part_path(&path));
         }
-        saved.then_some(name)
+        // A failed download leaves the file of an earlier download of this
+        // recording (same name) untouched; keep using it.
+        (saved || path.is_file()).then_some(name)
     });
 
     library.add_media(&MediaEntry {
