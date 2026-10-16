@@ -226,6 +226,7 @@ export function NoteForm({
   onChange,
   onError,
   onAppLink,
+  onOpenLink,
   books = null,
 }: {
   note: Partial<Note>;
@@ -242,6 +243,8 @@ export function NoteForm({
   onError?: (message: string) => void;
   /** Opens the app's own links in the preview, such as a Bible verse; without it the main window opens them. */
   onAppLink?: (href: string) => void;
+  /** Opens the verses Ctrl+P links; without it Ctrl+P does nothing. */
+  onOpenLink?: (href: string) => void;
   /** The books of the Bible that Ctrl+L links references to; without them it links no reference. */
   books?: Book[] | null;
 }) {
@@ -265,9 +268,14 @@ export function NoteForm({
   useEffect(() => {
     if (focus) titleRef.current?.focus();
   }, [focus]);
-  /** Ctrl+L, or Cmd+L on a Mac, makes the selection a link; a Bible reference links to its verses. */
+  /**
+   * Ctrl+L, or Cmd+L on a Mac, makes the selection a link; a Bible reference links to its verses. Ctrl+P does the same
+   * and opens the first verses linked, where the form can open them.
+   */
   const onContentKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.nativeEvent.isComposing || e.key.toLowerCase() !== "l") return;
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.nativeEvent.isComposing) return;
+    const key = e.key.toLowerCase();
+    if (key !== "l" && !(key === "p" && onOpenLink)) return;
     e.preventDefault();
     const area = e.currentTarget;
     const edit = linkEdit(area.value, area.selectionStart, area.selectionEnd, books);
@@ -279,6 +287,7 @@ export function NoteForm({
       caret.current = edit.caret;
       setContent(area.value.slice(0, edit.start) + edit.text + area.value.slice(edit.end));
     }
+    if (key === "p" && edit.href) onOpenLink?.(edit.href);
   };
   /** Links in the preview open in the app or the browser, not in the editor's window. */
   const openLink = (e: React.MouseEvent) => {
@@ -300,7 +309,17 @@ export function NoteForm({
         className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
       />
       <div role="group" aria-label={t("Note")} className="-mb-1.5 flex items-center justify-end gap-1 text-xs">
-        {!preview && <span className="mr-auto text-muted">{t("Ctrl+L: link a Bible reference")}</span>}
+        {!preview && (
+          <span className="mr-auto text-muted">
+            {t("Ctrl+L: link a Bible reference")}
+            {onOpenLink && (
+              <>
+                {" · "}
+                <span>{t("Ctrl+P: link and open a Bible reference")}</span>
+              </>
+            )}
+          </span>
+        )}
         {[false, true].map((on) => (
           <button
             key={String(on)}

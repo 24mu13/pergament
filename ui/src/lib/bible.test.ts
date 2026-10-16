@@ -235,6 +235,14 @@ describe("linkEdit", () => {
     expect(linkEdit(text, 0, text.length, de).text).toBe(`[${text}]()`);
     expect(linkEdit("Joh 15:13", 0, 9, de).text).toBe("[Joh 15:13](pergament://bible/43:15:13-43:15:13)");
   });
+
+  it("names the first verses it links, to open", () => {
+    expect(linkEdit("Joh 15:13", 0, 9, de).href).toBe("pergament://bible/43:15:13-43:15:13");
+    expect(linkEdit("Joh 15:13, 15", 0, 13, de).href).toBe("pergament://bible/43:15:13-43:15:13");
+    expect(linkEdit("Joh 15:13-15; 16:2", 0, 18, de).href).toBe("pergament://bible/43:15:13-43:15:15");
+    expect(linkEdit("a word", 0, 6, de).href).toBeUndefined();
+    expect(linkEdit("", 0, 0, de).href).toBeUndefined();
+  });
 });
 
 const bibleBook = (number: number, chapters: number): BibleBook =>

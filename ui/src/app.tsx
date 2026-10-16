@@ -25,7 +25,17 @@ import { fieldsOf, sameFields, type NoteDraft, type NoteFields } from "@/lib/not
 import { conflictText, mergeToast } from "@/lib/merge";
 import type { PlayerItem } from "@/lib/player";
 import { linkedItem } from "@/lib/recording";
-import { askDiscard, NOTE_CLOSED, NOTE_DIRTY, NOTE_LINK, NOTE_READY, NOTES_CHANGED, sendToNoteWindow, type NoteWindowMessage } from "@/lib/note-window";
+import {
+  askDiscard,
+  NOTE_CLOSED,
+  NOTE_DIRTY,
+  NOTE_LINK,
+  NOTE_READY,
+  NOTE_SHOW_LINK,
+  NOTES_CHANGED,
+  sendToNoteWindow,
+  type NoteWindowMessage,
+} from "@/lib/note-window";
 import { DISPLAY_CLOSED, DISPLAY_READY, remember, sendToDisplay, type DisplayMessage } from "@/lib/display";
 import { currentView, initialNav, navReducer, type Section, type View } from "@/lib/nav";
 import {
@@ -749,19 +759,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // The latest opener, so the note window's links are heard all along, not only between library changes.
   const latestOpenLink = useRef(openLink);
   latestOpenLink.current = openLink;
-  // A link clicked in the note window opens here, brought in front of it; the note window stays open.
+  // A link clicked in the note window opens here, brought in front of it; the note window stays open. One linked and
+  // opened with Ctrl+P is shown behind it, so the note can be written on.
   useEffect(() => {
-    const un = listen<unknown>(NOTE_LINK, ({ payload }) => {
-      if (typeof payload !== "string" || !payload.startsWith("pergament://")) return;
+    const follow = (payload: unknown) => {
+      if (typeof payload !== "string" || !payload.startsWith("pergament://")) return false;
       if (linkHandler.current) linkHandler.current(payload);
       else void latestOpenLink.current(payload);
+      return true;
+    };
+    const clicked = listen<unknown>(NOTE_LINK, ({ payload }) => {
+      if (!follow(payload)) return;
       const win = getCurrentWebviewWindow();
       void win
         .unminimize()
         .then(() => win.setFocus())
         .catch(() => undefined);
     });
-    return () => void un.then((f) => f());
+    const shown = listen<unknown>(NOTE_SHOW_LINK, ({ payload }) => void follow(payload));
+    return () => {
+      void clicked.then((f) => f());
+      void shown.then((f) => f());
+    };
   }, []);
 
   const value = useMemo<AppContextValue>(

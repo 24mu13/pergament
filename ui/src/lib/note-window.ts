@@ -27,8 +27,14 @@ export const isNoteWindow = () => getCurrentWebviewWindow().label === NOTE_LABEL
 export const sendToNoteWindow = (message: NoteWindowMessage) =>
   emitTo(NOTE_LABEL, NOTE_OPEN, message).catch(() => undefined);
 
+/** A link the note window linked and opened with Ctrl+P, for the app to show behind it while the note is written. */
+export const NOTE_SHOW_LINK = "note-show-link";
+
 /** Asks the app's main window to open one of its own links, such as a Bible verse. */
 export const sendNoteLink = (href: string) => emitTo("main", NOTE_LINK, href).catch(() => undefined);
+
+/** Asks the app's main window to show one of its own links without coming in front of the note window. */
+export const showNoteLink = (href: string) => emitTo("main", NOTE_SHOW_LINK, href).catch(() => undefined);
 
 /** Whether a message is not the one shown already: the app may send it twice while the window opens. */
 export const isNewMessage = (shown: NoteWindowMessage | null, message: NoteWindowMessage) => shown?.id !== message.id;

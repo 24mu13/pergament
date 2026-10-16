@@ -171,6 +171,47 @@ describe("NoteForm", () => {
     expect(link("Mt\n24:14", 0, 8).value).toBe("[Mt 24:14](pergament://bible/40:24:14-40:24:14)");
   });
 
+  /** Writes the text, selects `start`..`end` and presses Ctrl+P in a form that can open links. */
+  function linkAndOpen(text: string, start: number, end: number, key: { key: string; ctrlKey?: boolean; metaKey?: boolean } = { key: "p", ctrlKey: true }) {
+    const onOpenLink = vi.fn();
+    render(<NoteForm note={{ content: text }} focus={false} onSave={() => undefined} onCancel={() => undefined} books={books} onOpenLink={onOpenLink} />);
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    area.focus();
+    area.setSelectionRange(start, end);
+    const passed = fireEvent.keyDown(area, key);
+    return { area, onOpenLink, passed };
+  }
+
+  it("links a reference with Ctrl+P and opens it", () => {
+    const { area, onOpenLink, passed } = linkAndOpen("See Mt 24:14 now", 4, 12);
+    expect(passed).toBe(false);
+    expect(area.value).toBe("See [Mt 24:14](pergament://bible/40:24:14-40:24:14) now");
+    expect(onOpenLink).toHaveBeenCalledExactlyOnceWith("pergament://bible/40:24:14-40:24:14");
+  });
+
+  it("opens the first of several verses with Ctrl+P, and takes Cmd+P on a Mac", () => {
+    const { area, onOpenLink } = linkAndOpen("Mt 24:14, 16; 25:1", 0, 18, { key: "p", metaKey: true });
+    expect(area.value).toBe(
+      "[Mt 24:14](pergament://bible/40:24:14-40:24:14), [16](pergament://bible/40:24:16-40:24:16); [25:1](pergament://bible/40:25:1-40:25:1)",
+    );
+    expect(onOpenLink).toHaveBeenCalledExactlyOnceWith("pergament://bible/40:24:14-40:24:14");
+  });
+
+  it("links other text with Ctrl+P but opens nothing", () => {
+    const { area, onOpenLink } = linkAndOpen("a word", 2, 6);
+    expect(area.value).toBe("a [word]()");
+    expect(onOpenLink).not.toHaveBeenCalled();
+  });
+
+  it("leaves Ctrl+P alone where links cannot be opened", () => {
+    render(<NoteForm note={{ content: "Mt 24:14" }} focus={false} onSave={() => undefined} onCancel={() => undefined} books={books} />);
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    area.setSelectionRange(0, 8);
+    expect(fireEvent.keyDown(area, { key: "p", ctrlKey: true })).toBe(true);
+    expect(area.value).toBe("Mt 24:14");
+    expect(screen.queryByText("Ctrl+P: link and open a Bible reference")).toBeNull();
+  });
+
   it("takes Cmd+L on a Mac, and leaves the title alone", () => {
     render(<NoteForm note={{ title: "Mt 24:14", content: "Mt 24:14" }} focus={false} onSave={() => undefined} onCancel={() => undefined} books={books} />);
     const title = screen.getByPlaceholderText<HTMLInputElement>("Title");

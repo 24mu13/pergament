@@ -4,7 +4,16 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { NoteForm, saveDraft, type NoteSaveInput } from "@/components/notes";
 import { api, type PubCard } from "@/lib/api";
 import { fieldsOf, sameFields } from "@/lib/notes";
-import { askDiscard, isNewMessage, NOTE_DIRTY, NOTE_OPEN, NOTE_READY, NOTES_CHANGED, type NoteWindowMessage } from "@/lib/note-window";
+import {
+  askDiscard,
+  isNewMessage,
+  NOTE_DIRTY,
+  NOTE_OPEN,
+  NOTE_READY,
+  NOTES_CHANGED,
+  showNoteLink,
+  type NoteWindowMessage,
+} from "@/lib/note-window";
 import { useLinkBible } from "@/lib/note-links";
 import { LOOK_KEYS, loadBibles, loadLang, loadTheme, loadUiLang, prefersDark, saveNoteWindowSize } from "@/lib/settings";
 import { resolveUiLang, setUiLang, t } from "@/lib/i18n";
@@ -178,6 +187,7 @@ export function NoteWindowView() {
         onDirty={setDirty}
         onError={setError}
         books={bible?.books}
+        onOpenLink={showNoteLink}
         onCancel={() => void cancel()}
         onSave={(input: NoteSaveInput) => run(() => saveDraft(draft, input))}
         onDelete={draft.note.guid ? () => run(() => api.deleteNote(draft.note.guid!)) : undefined}

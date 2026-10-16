@@ -162,6 +162,7 @@ export const de: Record<string, string> = {
   Discard: "Verwerfen",
   "Open in window (Ctrl+Shift+O)": "In eigenem Fenster öffnen (Strg+Umschalt+O)",
   "Ctrl+L: link a Bible reference": "Strg+L: Bibelstelle verlinken",
+  "Ctrl+P: link and open a Bible reference": "Strg+P: Bibelstelle verlinken und öffnen",
   Write: "Schreiben",
   Preview: "Vorschau",
   "Nothing to preview": "Noch nichts geschrieben",

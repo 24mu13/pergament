@@ -15,6 +15,8 @@ export interface LinkEdit {
   end: number;
   text: string;
   caret: number;
+  /** The first verses linked, which Ctrl+P opens; none when no reference was linked. */
+  href?: string;
 }
 
 /**
@@ -45,7 +47,7 @@ export function linkEdit(value: string, start: number, end: number, books: Book[
     at = p.end;
   }
   text += label.slice(at);
-  return { start, end, text, caret: start + text.length };
+  return { start, end, text, caret: start + text.length, href: bibleHref(parts[0].ref) };
 }
 
 /**
