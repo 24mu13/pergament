@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogEntry, PubCard } from "@/lib/api";
+import { setUiLang } from "@/lib/i18n";
 import { categoryOf, groupByCategory, importedOnly, mergeCategories, sectionsFor } from "@/lib/types";
 
 const pub = (dir: string, publicationType: string | null, year = 2026): PubCard => ({
@@ -103,6 +104,16 @@ describe("category sections", () => {
       ["Meetings", [[null, ["a"]]]],
       ["Zeta", [[null, ["b"]]]],
     ]);
+  });
+
+  it("translates the Guidelines headings it knows", () => {
+    setUiLang("de");
+    try {
+      const s = sectionsFor(17, [entry("a", 2020, ["Meetings"]), entry("b", 2021, ["Alpha"])]);
+      expect(s.map((x) => x.title)).toEqual(["Alpha", "Zusammenkünfte"]);
+    } finally {
+      setUiLang("en");
+    }
   });
 
   it("shows one untitled Guidelines section when nothing has an attribute", () => {
