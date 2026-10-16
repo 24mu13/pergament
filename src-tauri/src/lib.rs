@@ -274,15 +274,13 @@ fn open_display(app: AppHandle) -> ApiResult<()> {
     let current = app
         .get_webview_window("main")
         .and_then(|w| w.current_monitor().ok().flatten());
-    let other = app
-        .available_monitors()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|m| {
-            current
-                .as_ref()
-                .is_none_or(|c| c.position() != m.position() || c.size() != m.size())
-        });
+    // Without knowing the app's monitor, any monitor could be the app's own.
+    let other = current.and_then(|c| {
+        app.available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|m| c.position() != m.position() || c.size() != m.size())
+    });
     let mut builder =
         WebviewWindowBuilder::new(&app, DISPLAY, WebviewUrl::App("index.html".into()))
             .title("Pergament")
