@@ -5,6 +5,7 @@ import { api, chapterTarget } from "@/lib/api";
 import { bibleFor, parseReferences, type Book } from "@/lib/bible";
 import { loadBooks } from "@/lib/note-links";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { t } from "@/lib/i18n";
 
@@ -27,8 +28,8 @@ export function GoTo() {
   const [text, setText] = useState("");
   const [bible, setBible] = useState<{ dir: string; books: Book[] } | null>(null);
   const [missed, setMissed] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  const before = useRef<Element | null>(null);
+  // Focus goes back where it was when the box closes, unless it closed by going to the verse.
+  const went = useRef(false);
 
   const isOpen = useRef(false);
   isOpen.current = open;
@@ -39,7 +40,7 @@ export function GoTo() {
     const openDir = view.name === "reader" ? view.target.publication : "dir" in view ? view.dir : null;
     const found = bibleFor(openDir, publications, lang, bibles);
     if (!found) return toast(t("No Bible in this language in your library yet"));
-    before.current = document.activeElement;
+    went.current = false;
     setBible(null);
     setText("");
     setMissed(false);
@@ -47,10 +48,6 @@ export function GoTo() {
     loadBooks(found.dir)
       .then((books) => setBible({ dir: found.dir, books }))
       .catch((e) => toast(String(e)));
-  };
-  const close = () => {
-    setOpen(false);
-    (before.current as HTMLElement | null)?.focus?.();
   };
 
   // The listeners are set once and call whatever `show` is current.
@@ -71,22 +68,6 @@ export function GoTo() {
       window.removeEventListener(GO_TO_EVENT, open);
     };
   }, []);
-  // Escape closes the box wherever focus is, and does not also close a picture or recording underneath it.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      close();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  });
-  useEffect(() => {
-    if (open) input.current?.focus();
-  }, [open]);
-
-  if (!open) return null;
   const go = async () => {
     // A list of verses goes to its first one.
     const ref = bible && parseReferences(text, bible.books)?.[0].ref;
@@ -98,60 +79,49 @@ export function GoTo() {
     } catch (e) {
       return toast(String(e));
     }
+    went.current = true;
     setOpen(false);
     openTarget(chapterTarget(bible.dir, ref.book, ref.chapter, ref.verse ?? 1));
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 pt-[18vh]" onMouseDown={close}>
-      <form
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("Go to a verse")}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // Tab stays inside the box.
-          if (e.key !== "Tab") return;
-          const items = [...e.currentTarget.querySelectorAll<HTMLElement>("input, button:not(:disabled)")];
-          const first = items[0];
-          const last = items[items.length - 1];
-          if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-          } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus();
-          }
-        }}
-        onSubmit={(e) => {
-          e.preventDefault();
-          void go();
-        }}
-        className="flex w-[min(90vw,420px)] flex-col gap-3 rounded-md border border-line bg-surface p-4 shadow-sm"
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent
+        aria-describedby={undefined}
+        onCloseAutoFocus={(e) => went.current && e.preventDefault()}
+        className="top-[18vh] translate-y-0 p-4"
       >
-        <h2 className="text-sm font-semibold">{t("Go to a verse")}</h2>
-        <div className="flex gap-2">
-          <Input
-            ref={input}
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              setMissed(false);
-            }}
-            placeholder={t("Reference, for example Heb 10:24")}
-            aria-label={t("Reference, for example Heb 10:24")}
-            aria-invalid={missed}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={!bible}>
-            {t("Go")}
-          </Button>
-        </div>
-        {missed && (
-          <p role="alert" className="text-[13px] text-muted">
-            {t("No such place in this Bible.")}
-          </p>
-        )}
-      </form>
-    </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void go();
+          }}
+          className="flex flex-col gap-3"
+        >
+          <DialogTitle>{t("Go to a verse")}</DialogTitle>
+          <div className="flex gap-2">
+            <Input
+              autoFocus
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setMissed(false);
+              }}
+              placeholder={t("Reference, for example Heb 10:24")}
+              aria-label={t("Reference, for example Heb 10:24")}
+              aria-invalid={missed}
+              className="flex-1"
+            />
+            <Button type="submit" disabled={!bible}>
+              {t("Go")}
+            </Button>
+          </div>
+          {missed && (
+            <p role="alert" className="text-[13px] text-muted">
+              {t("No such place in this Bible.")}
+            </p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

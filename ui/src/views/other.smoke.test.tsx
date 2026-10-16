@@ -986,7 +986,7 @@ describe("Go to", () => {
     go.focus();
     fireEvent.keyDown(go, { key: "Tab" });
     expect(document.activeElement).toBe(box);
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.keyDown(window, { key: "g", ctrlKey: true });
     const again = await screen.findByLabelText("Reference, for example Heb 10:24");
