@@ -850,11 +850,11 @@ describe("Merging backups", () => {
 
   it("is off by default and the checkbox is remembered", async () => {
     await dataTab();
-    const box = (await screen.findByLabelText("Merge backups instead of replacing")) as HTMLInputElement;
-    expect(box.checked).toBe(false);
+    const box = await screen.findByRole("switch", { name: "Merge backups instead of replacing" });
+    expect(box.getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("button", { name: "Restore backup…" })).toBeTruthy();
     fireEvent.click(box);
-    expect(box.checked).toBe(true);
+    expect(box.getAttribute("aria-checked")).toBe("true");
     expect(localStorage.getItem("mergeBackups")).toBe("true");
     expect(screen.getByRole("button", { name: "Merge backup…" })).toBeTruthy();
   });
