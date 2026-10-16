@@ -183,11 +183,24 @@ function Player({ item }: { item: PlayerItem }) {
       } else if (e.key === " ") {
         e.preventDefault();
         toggle();
-      } else if (e.key === "ArrowLeft") seekBy(-5);
-      else if (e.key === "ArrowRight") seekBy(15);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        seekBy(-5);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        seekBy(15);
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // The other keys come before the page under the player, which then sees they were taken and does not turn the
+    // page; Escape waits, so the "go to" box over the player can keep it.
+    const onEscape = (e: KeyboardEvent) => e.key === "Escape" && onKey(e);
+    const onOther = (e: KeyboardEvent) => e.key !== "Escape" && onKey(e);
+    window.addEventListener("keydown", onOther, true);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      window.removeEventListener("keydown", onOther, true);
+      window.removeEventListener("keydown", onEscape);
+    };
   }, [full, menu, viewer, toggle, seekBy]);
 
   const onLoaded = () => {
