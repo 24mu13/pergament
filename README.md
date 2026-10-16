@@ -31,7 +31,7 @@ More in [docs/screenshots](docs/screenshots). All content shown is invented.
   `Ctrl+L` links a Bible reference and `Ctrl+P` also opens it.
 - **Backups:** `.jwlibrary` files, the same format JW Library uses. Restore
   one, or merge it with your data.
-- **Settings:** English, German or Portuguese (Brazil); light or dark; a
+- **Settings:** English, German, Portuguese (Brazil) or French; light or dark; a
   centered or full-width layout; an easy-to-read font; and a second display for
   the year text, recordings and pictures.
 

@@ -1,5 +1,6 @@
 import { de } from "@/locales/de";
 import { ptBR } from "@/locales/pt-BR";
+import { fr } from "@/locales/fr";
 
 /** An interface language. English is the source language and has no entry here. */
 export interface Locale {
@@ -17,4 +18,5 @@ export interface Locale {
 export const locales: Locale[] = [
   { code: "de", name: "Deutsch", tag: "de-DE", texts: de },
   { code: "pt-BR", name: "Português (Brasil)", tag: "pt-BR", texts: ptBR },
+  { code: "fr", name: "Français", tag: "fr-FR", texts: fr },
 ];
