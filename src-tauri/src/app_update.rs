@@ -63,7 +63,8 @@ fn writable(dir: &Path) -> bool {
 
 pub fn current_install_kind() -> InstallKind {
     let appimage = env::var_os("APPIMAGE").map(PathBuf::from);
-    match env::current_exe() {
+    // Cached before `main`, so it still names the installed file after an update replaced it.
+    match tauri::utils::platform::current_exe() {
         Ok(exe) => install_kind(
             option_env!("PERGAMENT_UPDATER") == Some("nix"),
             appimage.as_deref(),
