@@ -19,7 +19,6 @@ use pergament::userdata::{self, Loc, NoteInput, Range, UserData};
 use serde::Serialize;
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
-use tauri_plugin_opener::OpenerExt;
 
 use api::{ApiResult, LinkAction, PubCard, PubDetail};
 
@@ -330,12 +329,9 @@ fn open_note_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> 
 
 /// Open an http(s) link in the browser. Anything else is refused.
 #[tauri::command]
-fn open_external(app: AppHandle, url: String) -> ApiResult<()> {
+fn open_external(url: String) -> ApiResult<()> {
     match Link::parse(&url) {
-        Some(Link::External(url)) => app
-            .opener()
-            .open_url(url, None::<&str>)
-            .map_err(|e| e.to_string()),
+        Some(Link::External(url)) => open::that_detached(url).map_err(|e| e.to_string()),
         _ => Err(format!("refusing to open {url:?}")),
     }
 }
@@ -1029,7 +1025,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             library: Mutex::new(library),
             user: Mutex::new(user),
