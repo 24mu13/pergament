@@ -4,8 +4,17 @@ import { useApp } from "@/app";
 import { api, type CatalogEntry, type Language, type LanguageEntry, type PubCard } from "@/lib/api";
 import { loadLanguages } from "@/components/language-menu";
 import { Menu, menuItem } from "@/components/menu";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { mediaLink, pubKey, publicationLink } from "@/lib/share";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -66,12 +75,6 @@ function LanguagePicker({ target, onClose }: { target: PubTarget; onClose: () =>
       .catch(() => undefined);
   }, [target.symbol, target.issueTag]);
 
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, [onClose]);
-
   const label = useCallback(
     (code: string) => {
       const l = names.find((n) => n.code === code);
@@ -94,65 +97,41 @@ function LanguagePicker({ target, onClose }: { target: PubTarget; onClose: () =>
   };
 
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("More Languages")}
-        className="fixed left-1/2 top-1/2 z-50 flex max-h-[70vh] w-[320px] max-w-[calc(100vw-16px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-md border border-line bg-surface shadow-sm"
-      >
-        <div className="p-3">
-          <Input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("Search languages")} />
-        </div>
-        <div className="flex-1 overflow-y-auto pb-2">
-          {rows === undefined && <div className="px-4 py-2 text-sm text-muted">{t("Loading…")}</div>}
-          {rows === null && (
-            <div className="px-4 py-2 text-sm text-muted">{t("Load the catalog to see more languages.")}</div>
-          )}
-          {shown.map((r) => (
-            <button
-              key={r.code}
-              className={cn(menuItem, "flex w-full items-center justify-between")}
-              onClick={() => void pick(r)}
-            >
-              {r.name}
-              {r.entry.local && <Check size={15} />}
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent aria-describedby={undefined} className="max-h-[70vh] w-[min(90vw,320px)] gap-0 overflow-hidden p-0">
+        <DialogTitle className="sr-only">{t("More Languages")}</DialogTitle>
+        {/* Filtered here rather than by cmdk, so a language is found by its name or its code. */}
+        <Command shouldFilter={false} label={t("More Languages")}>
+          <CommandInput autoFocus value={query} onValueChange={setQuery} placeholder={t("Search languages")} />
+          <CommandList className="pb-2">
+            {rows === undefined && <div className="px-4 py-2 text-sm text-muted">{t("Loading…")}</div>}
+            {rows === null && <div className="px-4 py-2 text-sm text-muted">{t("Load the catalog to see more languages.")}</div>}
+            {shown.map((r) => (
+              <CommandItem key={r.code} value={r.code} onSelect={() => void pick(r)} className="justify-between">
+                {r.name}
+                {r.entry.local && <Check size={15} />}
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 /** Asks before a downloaded publication is deleted. */
 function RemoveConfirm({ title, onConfirm, onClose }: { title: string; onConfirm: () => void; onClose: () => void }) {
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, [onClose]);
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={t("Remove from library")}
-        className="fixed left-1/2 top-1/2 z-50 flex w-[320px] max-w-[calc(100vw-16px)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-md border border-line bg-surface p-4 shadow-sm"
-      >
-        <p className="text-sm">{t("Remove {title} from the library?", { title })}</p>
-        <div className="flex justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={onClose}>
-            {t("Cancel")}
-          </Button>
-          <Button size="sm" autoFocus onClick={onConfirm}>
-            {t("Remove")}
-          </Button>
-        </div>
-      </div>
-    </>
+    <AlertDialog open onOpenChange={(o) => !o && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogTitle className="sr-only">{t("Remove from library")}</AlertDialogTitle>
+        <AlertDialogDescription>{t("Remove {title} from the library?", { title })}</AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>{t("Remove")}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
