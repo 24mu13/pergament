@@ -176,30 +176,67 @@ export function ReaderView({
       const key = verseKeyOfSpan(el.id);
       if (key && owners.noted.has(key)) el.classList.add("has-notes");
     });
-    // Answer fields of workbooks and study articles become text boxes. Their
-    // text is kept in the user data under the id of the original text area.
+    // Answer fields of workbooks and study articles: text boxes, checkboxes and lines for a date. Each is kept in
+    // the user data under the id of the original field (`TextTag`), as JW Library does; a checkbox as "1" or "0".
+    const keep = (tag: string, value: string, wait: number) => {
+      answers.current[tag] = value;
+      window.clearTimeout(timers.get(tag));
+      timers.set(
+        tag,
+        window.setTimeout(() => api.saveAnswer(target, tag, value).catch((e) => toast(String(e))), wait),
+      );
+    };
+    const timers = new Map<string, number>();
+    root.querySelectorAll<HTMLElement>("span.gen-tag[id]").forEach((marker) => {
+      const tag = marker.id;
+      const value = answers.current[tag] ?? user.answers[tag] ?? "";
+      const label = root.querySelector<HTMLElement>(`label[for="${CSS.escape(tag)}"]`)?.textContent?.trim();
+      const name = label || marker.closest(".gen-field")?.textContent?.trim() || "";
+      let field: HTMLInputElement | HTMLTextAreaElement;
+      if (marker.classList.contains("gen-check")) {
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "gen-field-check";
+        box.checked = value === "1";
+        box.addEventListener("change", () => keep(tag, box.checked ? "1" : "0", 0));
+        field = box;
+      } else if (marker.classList.contains("gen-line")) {
+        const line = document.createElement("input");
+        line.type = "text";
+        line.className = "gen-field-line";
+        line.value = value;
+        line.addEventListener("input", () => keep(tag, line.value, 600));
+        field = line;
+      } else {
+        const box = document.createElement("textarea");
+        box.className = "gen-field-input";
+        box.rows = 3;
+        box.value = value;
+        box.addEventListener("input", () => keep(tag, box.value, 600));
+        field = box;
+      }
+      field.id = tag;
+      if (name) field.setAttribute("aria-label", name);
+      // A pending save goes out when the field is left.
+      field.addEventListener("blur", () => {
+        const pending = timers.get(tag);
+        if (pending === undefined) return;
+        window.clearTimeout(pending);
+        timers.delete(tag);
+        api.saveAnswer(target, tag, answers.current[tag] ?? "").catch((e) => toast(String(e)));
+      });
+      marker.replaceWith(field);
+    });
+    // Older publications have no field inside: the whole block becomes one text box, kept on this computer.
     root.querySelectorAll<HTMLElement>("div.gen-field[id]").forEach((el) => {
-      const tag = el.querySelector(".gen-tag")?.id;
+      if (el.querySelector("input, textarea")) return;
       const legacy = `${JSON.stringify(target)}#${el.id}`;
       const box = document.createElement("textarea");
       box.className = "gen-field-input";
       box.rows = 3;
       box.setAttribute("aria-label", el.textContent?.trim() ?? "");
-      box.value = tag ? (answers.current[tag] ?? user.answers[tag] ?? "") : loadAnswer(legacy);
-      let timer: number | undefined;
-      const save = () => {
-        window.clearTimeout(timer);
-        if (!tag) return saveAnswer(legacy, box.value);
-        answers.current[tag] = box.value;
-        api.saveAnswer(target, tag, box.value).catch((e) => toast(String(e)));
-      };
-      box.addEventListener("input", () => {
-        window.clearTimeout(timer);
-        if (!tag) return saveAnswer(legacy, box.value);
-        answers.current[tag] = box.value;
-        timer = window.setTimeout(save, 600);
-      });
-      box.addEventListener("blur", () => timer !== undefined && save());
+      box.value = loadAnswer(legacy);
+      box.addEventListener("input", () => saveAnswer(legacy, box.value));
       el.replaceWith(box);
     });
     hydrateMedia(root);

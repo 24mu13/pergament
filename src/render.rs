@@ -382,18 +382,20 @@ impl<'a> Renderer<'a> {
         let out = rewrite_str(
             html,
             RewriteStrSettings::new()
-                // The text area of an answer field is dropped by the sanitizer; its id
-                // (`TextTag` in user data) stays on an empty marker.
+                // Answer fields are dropped by the sanitizer; each one's id (`TextTag` in
+                // user data) stays on an empty marker that says which kind it was.
                 .append_element_content_handler(element!("textarea[id]", |el| {
-                    el.set_tag_name("span")?;
-                    let id = el.get_attribute("id").unwrap_or_default();
-                    let attrs: Vec<String> = el.attributes().iter().map(|a| a.name()).collect();
-                    for a in attrs {
-                        el.remove_attribute(&a);
+                    to_field_marker(el, "gen-tag")
+                }))
+                .append_element_content_handler(element!("input[id]", |el| {
+                    match el.get_attribute("type").as_deref() {
+                        Some("checkbox") => to_field_marker(el, "gen-tag gen-check"),
+                        Some("text") | None => to_field_marker(el, "gen-tag gen-line"),
+                        _ => {
+                            el.remove();
+                            Ok(())
+                        }
                     }
-                    el.set_attribute("class", "gen-tag")?;
-                    el.set_attribute("id", &id)?;
-                    Ok(())
                 }))
                 // Empty tooltip anchors and print page markers.
                 .append_element_content_handler(element!("span.tt, span.pageNum", |el| {
@@ -448,6 +450,15 @@ impl<'a> Renderer<'a> {
         .map_err(|e| Error::Decode(format!("HTML rewrite: {e}")))?;
         Ok((out, markers.into_inner()))
     }
+}
+
+fn to_field_marker(el: &mut Element<'_, '_>, class: &str) -> lol_html::HandlerResult {
+    let id = el.get_attribute("id").unwrap_or_default();
+    el.replace(
+        &format!("<span class=\"{class}\" id=\"{}\"></span>", escape(&id)),
+        lol_html::html_content::ContentType::Html,
+    );
+    Ok(())
 }
 
 fn to_marker_link(
@@ -632,6 +643,8 @@ fn sanitizer() -> ammonia::Builder<'static> {
         "nav",
         "section",
     ])
+    .add_tags(["fieldset", "label", "legend"])
+    .add_tag_attributes("label", ["for"])
     .add_generic_attributes(["id", "class"])
     // `jwmedia` is the app's image scheme (MEDIA_SCHEME in src-tauri).
     .add_url_schemes(["pergament", "file", "jwmedia"]);

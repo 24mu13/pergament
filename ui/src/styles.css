@@ -587,6 +587,47 @@ body {
   -webkit-mask: var(--glyph) center / contain no-repeat;
 }
 
+/* ---------- Publication classes ---------- */
+/* Classes the publications name but do not style. */
+.dc-screenReaderText {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Answer fields: a checkbox or a line for a date sits in the text next to its label. */
+.reader input.gen-field-check {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0 0.5em 0 0;
+  vertical-align: -0.15em;
+  accent-color: var(--accent);
+}
+.reader input.gen-field-line {
+  min-width: 10em;
+  padding: 0.15em 0.4em;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.reader input.gen-field-line:focus {
+  border-bottom-color: var(--accent);
+  outline: none;
+}
+.reader fieldset {
+  margin: 1em 0;
+  padding: 0;
+  border: 0;
+}
+.reader legend {
+  font-size: 1.1em;
+  margin-bottom: 0.4em;
+}
+
 /* ---------- Accessibility ---------- */
 /* Whatever has no focus style of its own gets the same outline, and nothing is left without one. */
 @layer base {
