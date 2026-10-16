@@ -43,18 +43,20 @@ enum Layout {
     /// A file of ours.
     File,
     /// A directory in which only the files whose names pass the check are
-    /// ours; anything else found in it is left alone.
+    /// ours; anything else found in it, subfolders included, is left alone.
     Dir(fn(&str) -> bool),
+    /// Like [`Layout::Dir`], but the files in its subfolders are checked too.
+    Tree(fn(&str) -> bool),
 }
 
 /// What a top-level cache entry is, or `None` if Pergament did not create it.
 /// Keep in sync with the writers: `catalog.rs` (catalog files), `api.rs`
 /// (`catalog-images`, `cms-images`), `languages.rs`, `mediator.rs`, the
-/// download commands (`downloads`) and older versions (`view`).
+/// download commands (`downloads`).
 fn kind_of(name: &str) -> Option<(Kind, Layout)> {
     let catalog = name.strip_suffix(".part").unwrap_or(name);
     if name == "catalog-images" || name == "cms-images" {
-        Some((Kind::Covers, Layout::Dir(is_image)))
+        Some((Kind::Covers, Layout::Tree(is_image)))
     } else if (catalog.starts_with("catalog-") && catalog.ends_with(".db"))
         || (catalog.starts_with("catalog-") && catalog.ends_with(".db.gz"))
         || (name.starts_with(".catalog-") && name.ends_with(".tmp"))
@@ -65,7 +67,6 @@ fn kind_of(name: &str) -> Option<(Kind, Layout)> {
             "languages.json" => Some((Kind::Other, Layout::File)),
             "downloads" => Some((Kind::Other, Layout::Dir(is_publication_part))),
             "mediator" => Some((Kind::Other, Layout::Dir(is_category))),
-            "view" => Some((Kind::Other, Layout::Dir(is_page))),
             _ => None,
         }
     }
@@ -101,11 +102,6 @@ fn is_category(name: &str) -> bool {
         .is_some_and(|(lang, key)| {
             crate::mediator::valid_key(lang) && crate::mediator::valid_key(key)
         })
-}
-
-/// A page rendered to a file by the GTK reader of older versions.
-fn is_page(name: &str) -> bool {
-    name.ends_with(".html")
 }
 
 /// Fail unless `cache` can be emptied without touching the library at
@@ -190,7 +186,8 @@ fn size_of(path: &Path, layout: &Layout, partial: &mut u64) -> Result<u64> {
     };
     match layout {
         Layout::File if meta.is_file() => Ok(file_size(path, meta.len(), partial)),
-        Layout::Dir(is_ours) if meta.is_dir() => dir_size(path, *is_ours, partial),
+        Layout::Dir(is_ours) if meta.is_dir() => dir_size(path, *is_ours, false, partial),
+        Layout::Tree(is_ours) if meta.is_dir() => dir_size(path, *is_ours, true, partial),
         _ => Ok(0),
     }
 }
@@ -204,7 +201,9 @@ fn file_size(path: &Path, len: u64, partial: &mut u64) -> u64 {
     }
 }
 
-fn dir_size(dir: &Path, is_ours: fn(&str) -> bool, partial: &mut u64) -> Result<u64> {
+/// Bytes of the files in `dir` that `is_ours` accepts, and with `deep` also
+/// of those in its subfolders.
+fn dir_size(dir: &Path, is_ours: fn(&str) -> bool, deep: bool, partial: &mut u64) -> Result<u64> {
     let Some(entries) = unless_gone(fs::read_dir(dir))? else {
         return Ok(0);
     };
@@ -216,7 +215,9 @@ fn dir_size(dir: &Path, is_ours: fn(&str) -> bool, partial: &mut u64) -> Result<
             continue;
         };
         if meta.is_dir() {
-            n += dir_size(&path, is_ours, partial)?;
+            if deep {
+                n += dir_size(&path, is_ours, deep, partial)?;
+            }
         } else if meta.is_file() && is_ours(&e.file_name().to_string_lossy()) {
             n += file_size(&path, meta.len(), partial);
         }
@@ -259,14 +260,16 @@ fn remove(path: &Path, layout: &Layout) -> io::Result<()> {
     };
     match layout {
         Layout::File if meta.is_file() => unless_gone(fs::remove_file(path)).map(drop),
-        Layout::Dir(is_ours) if meta.is_dir() => clear_dir(path, *is_ours).map(drop),
+        Layout::Dir(is_ours) if meta.is_dir() => clear_dir(path, *is_ours, false).map(drop),
+        Layout::Tree(is_ours) if meta.is_dir() => clear_dir(path, *is_ours, true).map(drop),
         _ => Ok(()),
     }
 }
 
-/// Remove the files below `dir` that `is_ours` accepts, then `dir` itself if
-/// that emptied it. Returns whether `dir` is gone.
-fn clear_dir(dir: &Path, is_ours: fn(&str) -> bool) -> io::Result<bool> {
+/// Remove the files in `dir` that `is_ours` accepts (with `deep` also those
+/// in its subfolders), then `dir` itself if that emptied it. Returns whether
+/// `dir` is gone.
+fn clear_dir(dir: &Path, is_ours: fn(&str) -> bool, deep: bool) -> io::Result<bool> {
     let Some(entries) = unless_gone(fs::read_dir(dir))? else {
         return Ok(true);
     };
@@ -278,7 +281,9 @@ fn clear_dir(dir: &Path, is_ours: fn(&str) -> bool) -> io::Result<bool> {
             continue;
         };
         if meta.is_dir() {
-            removed |= clear_dir(&path, is_ours)?;
+            if deep {
+                removed |= clear_dir(&path, is_ours, deep)?;
+            }
         } else if meta.is_file() && is_ours(&e.file_name().to_string_lossy()) {
             unless_gone(fs::remove_file(&path))?;
             removed = true;
@@ -334,13 +339,12 @@ mod tests {
         write(d.path(), "downloads/w_E.jwpub.part", 7);
         write(d.path(), "languages.json", 2);
         write(d.path(), "mediator/E_x_1.json", 4);
-        write(d.path(), "view/1.html", 3);
         let u = usage(d.path()).unwrap();
         assert_eq!(
             (u.catalog, u.covers, u.partial, u.other),
-            (1100, 15, 27, 2 + 4 + 3)
+            (1100, 15, 27, 2 + 4)
         );
-        assert_eq!(u.total(), 1100 + 15 + 27 + 9);
+        assert_eq!(u.total(), 1100 + 15 + 27 + 6);
     }
 
     #[test]
@@ -384,18 +388,40 @@ mod tests {
     fn clear_leaves_unknown_entries_alone() {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "catalog-abc.db", 10);
-        write(d.path(), "view/x.html", 10);
         write(d.path(), "keep.txt", 3);
         write(d.path(), "Documents/thesis.odt", 4);
         write(d.path(), "catalog-notes.txt", 5);
         let u = usage(d.path()).unwrap();
-        assert_eq!(u.total(), 20, "only what clear removes is counted");
+        assert_eq!(u.total(), 10, "only what clear removes is counted");
         clear(d.path()).unwrap();
         assert!(d.path().join("keep.txt").is_file());
         assert!(d.path().join("Documents/thesis.odt").is_file());
         assert!(d.path().join("catalog-notes.txt").is_file());
         assert!(!d.path().join("catalog-abc.db").exists());
-        assert!(!d.path().join("view").exists());
+        assert_eq!(usage(d.path()).unwrap().total(), 0);
+    }
+
+    #[test]
+    fn clear_keeps_pages_and_files_in_subfolders_of_flat_folders() {
+        // A shared folder with a saved website in `view` and our file names
+        // in subfolders of `downloads` and `mediator`, which Pergament never makes.
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "view/index.html", 3);
+        write(d.path(), "view/pages/1.html", 4);
+        write(d.path(), "downloads/old/w_E_0.jwpub.part", 5);
+        write(d.path(), "mediator/backup/E_x_0.json", 6);
+        write(d.path(), "mediator/E_x_0.json", 10);
+        assert_eq!(usage(d.path()).unwrap().total(), 10);
+        clear(d.path()).unwrap();
+        for kept in [
+            "view/index.html",
+            "view/pages/1.html",
+            "downloads/old/w_E_0.jwpub.part",
+            "mediator/backup/E_x_0.json",
+        ] {
+            assert!(d.path().join(kept).is_file(), "{kept}");
+        }
+        assert!(!d.path().join("mediator/E_x_0.json").exists());
         assert_eq!(usage(d.path()).unwrap().total(), 0);
     }
 
