@@ -79,6 +79,8 @@ body {
 /* ---------- Reading text ---------- */
 
 .reader {
+  /* Publications switch between their narrow and wide layouts by the reader's width (lib/design-classes.ts). */
+  container: reader / inline-size;
   font-size: calc(1.15rem * var(--font-scale, 1));
   line-height: 1.75;
   user-select: text;
@@ -596,6 +598,11 @@ body {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+/* The base styles give every element a solid border of no width; a publication that sets a width draws only the
+   sides whose style it names. */
+.reader :where([class*="du-border"]) {
+  border-style: none;
 }
 /* Answer fields: a checkbox or a line for a date sits in the text next to its label. */
 .reader input.gen-field-check {

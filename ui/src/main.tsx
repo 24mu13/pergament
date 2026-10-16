@@ -21,6 +21,7 @@ import { ReaderView } from "./views/reader";
 import { SettingsView } from "./views/settings";
 import { t } from "./lib/i18n";
 import { installFocusModality } from "./lib/focus";
+import { watchDesignClasses } from "./lib/design-classes";
 import { restoreScroll, scroller } from "./lib/scroll";
 import "./styles.css";
 
@@ -96,6 +97,7 @@ function Shell() {
 }
 
 installFocusModality();
+watchDesignClasses();
 
 // The second display and the note window are the same page in other windows; each shows only what the app sends.
 createRoot(document.getElementById("root")!).render(
