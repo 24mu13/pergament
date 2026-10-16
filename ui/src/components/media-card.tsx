@@ -5,7 +5,7 @@ import { useApp } from "@/app";
 import { api, type Media, type MediaDownload, type Progress } from "@/lib/api";
 import { formatDuration, sizeMb } from "@/lib/player";
 import { cn } from "@/lib/utils";
-import { Menu, menuItem } from "@/components/menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { TileMenu } from "@/components/tile-menu";
 import { MediaImg } from "@/components/media-img";
 import { Progress as ProgressBar } from "@/components/ui/progress";
@@ -115,8 +115,6 @@ export function DownloadButton({
   store: MediaDownloads;
   className?: string;
 }) {
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const close = useCallback(() => setAnchor(null), []);
   const saved = store.downloaded.get(media.key);
   const running = store.progress[media.key];
   const icon = "text-fg";
@@ -132,55 +130,34 @@ export function DownloadButton({
   const size = (bytes: number | null) => (bytes ? sizeMb(bytes) : "?");
   return (
     <div className={className}>
-      <button
-        className="inline-flex size-[26px] items-center justify-center rounded-md border border-line bg-surface hover:bg-bar focus-visible:outline-2 focus-visible:outline-accent"
-        aria-label={saved ? t("Downloaded") : t("Download")}
-        aria-haspopup="menu"
-        aria-expanded={anchor !== null}
-        title={saved ? t("Downloaded") : t("Download")}
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          setAnchor((a) => (a ? null : rect));
-        }}
-      >
-        {saved ? (
-          <Check size={14} strokeWidth={1.8} className={icon} />
-        ) : (
-          <CloudDownload size={14} strokeWidth={1.6} className={icon} />
-        )}
-      </button>
-      {anchor && (
-        <Menu anchor={anchor} onClose={close}>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="inline-flex size-[26px] items-center justify-center rounded-md border border-line bg-surface hover:bg-bar focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label={saved ? t("Downloaded") : t("Download")}
+            title={saved ? t("Downloaded") : t("Download")}
+          >
+            {saved ? (
+              <Check size={14} strokeWidth={1.8} className={icon} />
+            ) : (
+              <CloudDownload size={14} strokeWidth={1.6} className={icon} />
+            )}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[200px]">
           {saved ? (
-            <button
-              role="menuitem"
-              className={menuItem}
-              onClick={() => {
-                close();
-                void store.remove(saved);
-              }}
-            >
-              {t("Remove download")}
-            </button>
+            <DropdownMenuItem onSelect={() => void store.remove(saved)}>{t("Remove download")}</DropdownMenuItem>
           ) : (
             options.map((f) => (
-              <button
-                key={f.label}
-                role="menuitem"
-                className={menuItem}
-                onClick={() => {
-                  close();
-                  void store.download(media, f.label, from);
-                }}
-              >
+              <DropdownMenuItem key={f.label} onSelect={() => void store.download(media, f.label, from)}>
                 {f.label
                   ? t("Download {label} ({size})", { label: f.label, size: size(f.size) })
                   : t("Download ({size})", { size: size(f.size) })}
-              </button>
+              </DropdownMenuItem>
             ))
           )}
-        </Menu>
-      )}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

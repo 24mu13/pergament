@@ -82,7 +82,8 @@ const renderIn = (ui: React.ReactNode) =>
     </StrictMode>,
   );
 const tile = async (title: string) => (await screen.findByText(title)).closest(".group") as HTMLElement;
-const openMenu = (t: HTMLElement) => fireEvent.click(within(t).getByLabelText("More"));
+// Radix opens a menu on a pointer press, not on a click.
+const openMenu = (t: HTMLElement) => fireEvent.pointerDown(within(t).getByLabelText("More"), { button: 0, ctrlKey: false });
 
 describe("Search", () => {
   it("gives result cards a menu, and Remove only for downloaded ones", async () => {

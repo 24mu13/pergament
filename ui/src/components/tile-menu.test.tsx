@@ -21,17 +21,20 @@ import { TileMenu } from "@/components/tile-menu";
 
 const target = { kind: "pub", symbol: "lff", issueTag: 0, mepsLanguage: 2, langCode: "X", local: null, title: "Glücklich" } as const;
 
+// Radix opens a menu on a pointer press, not on a click.
+const openMenu = () => fireEvent.pointerDown(screen.getByLabelText("More"), { button: 0, ctrlKey: false });
+
 describe("TileMenu", () => {
   it("opens its menu on click", () => {
     render(<StrictMode><div className="group relative"><TileMenu target={target} /></div></StrictMode>);
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     expect(screen.getByText("Share Link")).toBeTruthy();
     expect(screen.getByText("Add to Favorites")).toBeTruthy();
   });
 
   it("lists languages", async () => {
     render(<StrictMode><div className="group relative"><TileMenu target={target} /></div></StrictMode>);
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     fireEvent.click(screen.getByText("More Languages"));
     await waitFor(() => expect(screen.getByText("Deutsch")).toBeTruthy());
   });
@@ -39,7 +42,7 @@ describe("TileMenu", () => {
   it("shares", async () => {
     Object.assign(navigator, { clipboard: { writeText: vi.fn(async () => undefined) } });
     render(<StrictMode><div className="group relative"><TileMenu target={target} /></div></StrictMode>);
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     fireEvent.click(screen.getByText("Share Link"));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://www.jw.org/finder?pub=lff&wtlocale=X"));
   });
@@ -48,7 +51,7 @@ describe("TileMenu", () => {
 describe("Remove", () => {
   it("is only offered for a downloaded publication", () => {
     render(<StrictMode><div className="group relative"><TileMenu target={target} /></div></StrictMode>);
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     expect(screen.queryByText("Remove")).toBeNull();
   });
 
@@ -59,7 +62,7 @@ describe("Remove", () => {
         <div className="group relative"><TileMenu target={{ ...target, local: "lff_2" }} /></div>
       </StrictMode>,
     );
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     fireEvent.click(screen.getByText("Remove"));
     expect(removePublication).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
@@ -73,7 +76,7 @@ describe("Remove", () => {
         <div className="group relative"><TileMenu target={{ ...target, local: "lff_2" }} /></div>
       </StrictMode>,
     );
-    fireEvent.click(screen.getByLabelText("More"));
+    openMenu();
     fireEvent.click(screen.getByText("Remove"));
     fireEvent.click(screen.getByText("Cancel"));
     expect(removePublication).not.toHaveBeenCalled();

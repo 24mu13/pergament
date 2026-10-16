@@ -3,7 +3,6 @@ import { Check, MoreHorizontal } from "lucide-react";
 import { useApp } from "@/app";
 import { api, type CatalogEntry, type Language, type LanguageEntry, type PubCard } from "@/lib/api";
 import { loadLanguages } from "@/components/language-menu";
-import { Menu, menuItem } from "@/components/menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { mediaLink, pubKey, publicationLink } from "@/lib/share";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
@@ -152,15 +152,12 @@ export function TileMenu({
   className?: string;
 }) {
   const { toast, favorites, toggleFavorite, removePublication } = useApp();
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [picking, setPicking] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const close = useCallback(() => setAnchor(null), []);
   const key = target.kind === "pub" ? pubKey(target.symbol, target.mepsLanguage, target.issueTag) : null;
   const favorite = key != null && favorites.includes(key);
 
   const share = async () => {
-    close();
     const link =
       target.kind === "pub"
         ? publicationLink(target.symbol, target.issueTag, target.langCode)
@@ -175,63 +172,32 @@ export function TileMenu({
 
   return (
     <>
-      <button
-        aria-label={t("More")}
-        aria-haspopup="menu"
-        aria-expanded={anchor !== null}
-        title={t("More")}
-        onClick={(e) => {
-          e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          setAnchor((a) => (a ? null : rect));
-        }}
-        className={cn(coverControl, "absolute right-1.5 top-1.5", className)}
-      >
-        <MoreHorizontal size={14} strokeWidth={1.8} />
-      </button>
-      {anchor && (
-        <Menu anchor={anchor} onClose={close}>
-          <button role="menuitem" className={menuItem} onClick={() => void share()}>
-            {t("Share Link")}
+      {/* Not modal, so a dialog opened from it gets the pointer and the focus. */}
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label={t("More")}
+            title={t("More")}
+            // The tile under it opens on click.
+            onClick={(e) => e.stopPropagation()}
+            className={cn(coverControl, "absolute right-1.5 top-1.5", className)}
+          >
+            <MoreHorizontal size={14} strokeWidth={1.8} />
           </button>
-          {target.kind === "pub" && (
-            <button
-              role="menuitem"
-              className={menuItem}
-              onClick={() => {
-                close();
-                setPicking(true);
-              }}
-            >
-              {t("More Languages")}
-            </button>
-          )}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[200px]" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenuItem onSelect={() => void share()}>{t("Share Link")}</DropdownMenuItem>
+          {target.kind === "pub" && <DropdownMenuItem onSelect={() => setPicking(true)}>{t("More Languages")}</DropdownMenuItem>}
           {key != null && (
-            <button
-              role="menuitem"
-              className={menuItem}
-              onClick={() => {
-                close();
-                toggleFavorite(key);
-              }}
-            >
+            <DropdownMenuItem onSelect={() => toggleFavorite(key)}>
               {favorite ? t("Remove from Favorites") : t("Add to Favorites")}
-            </button>
+            </DropdownMenuItem>
           )}
           {target.kind === "pub" && target.local && (
-            <button
-              role="menuitem"
-              className={menuItem}
-              onClick={() => {
-                close();
-                setConfirming(true);
-              }}
-            >
-              {t("Remove")}
-            </button>
+            <DropdownMenuItem onSelect={() => setConfirming(true)}>{t("Remove")}</DropdownMenuItem>
           )}
-        </Menu>
-      )}
+        </DropdownMenuContent>
+      </DropdownMenu>
       {picking && target.kind === "pub" && <LanguagePicker target={target} onClose={() => setPicking(false)} />}
       {confirming && target.kind === "pub" && target.local && (
         <RemoveConfirm
