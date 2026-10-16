@@ -1,5 +1,5 @@
 import { useApp } from "@/app";
-import { Segmented } from "@/components/segmented";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Slider } from "@/components/ui/slider";
 import type { ReadingFont } from "@/lib/settings";
 import { t } from "@/lib/i18n";
@@ -15,12 +15,14 @@ export function ReadingTab() {
     <div className="space-y-10">
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Reading font")}</h2>
-        <Segmented
-          label={t("Reading font")}
-          value={readingFont}
-          options={fonts.map((x) => ({ ...x, label: t(x.label) }))}
-          onChange={setReadingFont}
-        />
+        {/* A click on the chosen one would turn it off; one always stays chosen. */}
+        <ToggleGroup type="single" aria-label={t("Reading font")} value={readingFont} onValueChange={(v) => v && setReadingFont(v as typeof readingFont)}>
+          {fonts.map((x) => (
+            <ToggleGroupItem key={x.value} value={x.value}>
+              {t(x.label)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
         <p className="mt-2 max-w-xl text-sm text-muted">
           {t("Atkinson Hyperlegible Next was designed so that letters are easy to tell apart. It replaces the font everywhere, the Bible text included.")}
         </p>

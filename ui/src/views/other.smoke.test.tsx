@@ -148,10 +148,10 @@ describe("Settings", () => {
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("880px");
     // The selected tab outlives the view, so pick it explicitly.
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "Interface" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Full width" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Full width" }));
     expect(localStorage.getItem("layout")).toBe("wide");
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("100000px");
-    expect(screen.getByRole("button", { name: "Full width" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Full width" }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("picks the interface language from a list", async () => {
@@ -172,7 +172,7 @@ describe("Settings", () => {
     renderIn(<SettingsView />);
     expect(document.documentElement.dataset.font).toBe("standard");
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "Reading" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Easy to read" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Easy to read" }));
     expect(localStorage.getItem("readingFont")).toBe("legible");
     expect(document.documentElement.dataset.font).toBe("legible");
   });
