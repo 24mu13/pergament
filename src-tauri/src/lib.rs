@@ -69,11 +69,12 @@ impl AppState {
             .map_err(|_| "user data lock poisoned".to_owned())
     }
 
-    /// Use the cached catalog until the guard drops; clearing the cache waits for it.
+    /// Count a running job until the guard drops; an app update waits for it before restarting.
     fn job(&self) -> JobGuard<'_> {
         JobGuard::new(&self.jobs)
     }
 
+    /// Use the cached catalog until the guard drops; clearing the cache waits for it.
     fn cache_use(&self) -> ApiResult<RwLockReadGuard<'_, ()>> {
         self.cache_gate
             .read()
@@ -420,6 +421,7 @@ fn catalog_unguarded(app: &AppHandle) -> ApiResult<Arc<Mutex<Catalog>>> {
     if let Some(c) = state.catalog.lock().map_err(|e| e.to_string())?.clone() {
         return Ok(c);
     }
+    let _job = state.job();
     let client = Client::new(HttpConfig::default());
     let catalog = Catalog::load(
         &client,
@@ -829,7 +831,9 @@ fn open_location(state: State<'_, AppState>, loc: Loc) -> ApiResult<Option<Targe
 #[tauri::command]
 async fn export_backup(app: AppHandle, path: String) -> ApiResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<AppState>()
+        let state = app.state::<AppState>();
+        let _job = state.job();
+        state
             .user()?
             .export_backup(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
@@ -842,7 +846,9 @@ async fn export_backup(app: AppHandle, path: String) -> ApiResult<()> {
 #[tauri::command]
 async fn restore_backup(app: AppHandle, path: String) -> ApiResult<pergament::userdata::Summary> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<AppState>()
+        let state = app.state::<AppState>();
+        let _job = state.job();
+        state
             .user()?
             .restore_backup(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
@@ -855,7 +861,9 @@ async fn restore_backup(app: AppHandle, path: String) -> ApiResult<pergament::us
 #[tauri::command]
 async fn merge_backup(app: AppHandle, path: String) -> ApiResult<pergament::userdata::MergeReport> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<AppState>()
+        let state = app.state::<AppState>();
+        let _job = state.job();
+        state
             .user()?
             .merge_backup(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
