@@ -234,7 +234,7 @@ async fn download_media(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn media_downloads(state: State<'_, AppState>) -> ApiResult<Vec<api::MediaDownload>> {
     let lib = state.lib()?;
     let list = lib.list_media().map_err(|e| e.to_string())?;
@@ -244,7 +244,7 @@ fn media_downloads(state: State<'_, AppState>) -> ApiResult<Vec<api::MediaDownlo
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_media(state: State<'_, AppState>, id: i64) -> ApiResult<()> {
     state.lib()?.remove_media(id).map_err(|e| e.to_string())?;
     Ok(())
@@ -254,7 +254,7 @@ fn remove_media(state: State<'_, AppState>, id: i64) -> ApiResult<()> {
 const DISPLAY: &str = "display";
 
 /// The year text for the display's idle screen.
-#[tauri::command]
+#[tauri::command(async)]
 fn year_text(
     state: State<'_, AppState>,
     lang: String,
@@ -453,7 +453,7 @@ fn with_catalog_unguarded<T>(
     f(&catalog, meps, &lib).map(Some)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn book_abbreviations(
     state: State<'_, AppState>,
     dir: String,
@@ -461,12 +461,12 @@ fn book_abbreviations(
     api::book_abbreviations(&*state.lib()?, &dir)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn last_verse(state: State<'_, AppState>, dir: String, book: i64, chapter: i64) -> ApiResult<i64> {
     api::last_verse(&*state.lib()?, &dir, book, chapter)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn research_verses(
     state: State<'_, AppState>,
     dir: String,
@@ -476,7 +476,7 @@ fn research_verses(
     api::research_verses(&*state.lib()?, &dir, book, chapter)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn research_guide(
     state: State<'_, AppState>,
     dir: String,
@@ -497,7 +497,7 @@ fn chapter_study(
     api::chapter_study(&*state.lib()?, &dir, book, chapter)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn book_overview(
     state: State<'_, AppState>,
     dir: String,
