@@ -27,6 +27,9 @@ function Viewer({ src, caption }: { src: string; caption: string }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Typing over the picture (the "go to" box) and shortcuts with modifiers are not for it.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target instanceof Element && e.target.closest("input, select, textarea, [contenteditable]")) return;
       if (e.key === "Escape") closeImage();
       else if (e.key === "+" || e.key === "=") zoomBy(1.25);
       else if (e.key === "-") zoomBy(1 / 1.25);
