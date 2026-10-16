@@ -78,7 +78,10 @@ describe("settings", () => {
   it("maps locales to catalog codes", () => {
     expect(defaultLangCode("de-DE")).toBe("X");
     expect(defaultLangCode("en-US")).toBe("E");
-    expect(defaultLangCode("pt-BR")).toBe("E");
+    expect(defaultLangCode("pt-BR")).toBe("T");
+    expect(defaultLangCode("pt")).toBe("T");
+    expect(defaultLangCode("pt-PT")).toBe("TPO");
+    expect(defaultLangCode("zz-ZZ")).toBe("E");
   });
 });
 

@@ -74,10 +74,14 @@ export function saveLayout(layout: Layout) {
   write("layout", layout);
 }
 
-/** Catalog language code for a browser locale (codes verified in docs/FORMAT.md). */
+/**
+ * Catalog language code for a browser locale (codes verified in docs/FORMAT.md and the jw.org language list, where
+ * `T` is Portuguese (Brazil) and `TPO` Portuguese (Portugal)).
+ */
 export function defaultLangCode(locale: string): string {
-  const map: Record<string, string> = { de: "X", en: "E", es: "S", fr: "F", it: "I" };
-  return map[locale.slice(0, 2).toLowerCase()] ?? "E";
+  const map: Record<string, string> = { de: "X", en: "E", es: "S", fr: "F", it: "I", pt: "T", "pt-pt": "TPO" };
+  const tag = locale.toLowerCase();
+  return map[tag] ?? map[tag.slice(0, 2)] ?? "E";
 }
 
 export function loadLang(): string {
