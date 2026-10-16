@@ -34,6 +34,11 @@
         ];
 
         version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+        # Flake builds carry the commit as semver build metadata (1.6.0+abc1234), so
+        # a build from main shows which commit it is. The release workflow does not
+        # build through the flake, so released binaries keep the plain version.
+        rev = self.shortRev or self.dirtyShortRev or "unknown";
+        buildVersion = "${version}+${rev}";
         src = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
@@ -58,7 +63,8 @@
 
         pergament = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
           pname = "pergament";
-          inherit version src;
+          version = buildVersion;
+          inherit src;
           cargoLock.lockFile = ./Cargo.lock;
 
           # React frontend, built into dist/ and embedded into pergament-app.
@@ -124,6 +130,12 @@
               gst-plugins-bad
               gst-libav
             ]);
+
+          # The About page shows the version from tauri.conf.json.
+          postPatch = ''
+            substituteInPlace src-tauri/tauri.conf.json \
+              --replace-fail '"version": "${version}"' '"version": "${buildVersion}"'
+          '';
 
           preBuild = ''
             cp -r ${finalAttrs.nodeModules} node_modules
