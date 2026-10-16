@@ -2,6 +2,7 @@
 //! Logic lives in [`api`] and the `pergament` crate.
 
 pub mod api;
+pub mod app_update;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
