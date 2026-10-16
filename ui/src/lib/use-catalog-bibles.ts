@@ -8,6 +8,8 @@ export const BIBLE_CATEGORY = 1;
 const loaded = new Map<string, { version: number; entries: CatalogEntry[] }>();
 /** Requests under way, `version:code`, so a second hook does not ask again. */
 const pending = new Set<string>();
+/** The mounted hooks, all told when a list arrives, not only the one that asked for it. */
+const listeners = new Set<() => void>();
 
 /**
  * The Bibles the catalog offers in each of `codes`, read again whenever the catalog version changes. A language keeps its
@@ -18,8 +20,14 @@ export function useCatalogBibles(codes: string[], enabled: boolean, catalogVersi
   const [, bump] = useState(0);
   const wanted = [...new Set(codes)].filter(Boolean).join(",");
   useEffect(() => {
+    const listener = () => bump((n) => n + 1);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
+  useEffect(() => {
     if (!enabled) return;
-    let live = true;
     for (const code of wanted.split(",").filter(Boolean)) {
       const key = `${catalogVersion}:${code}`;
       if (loaded.get(code)?.version === catalogVersion || pending.has(key)) continue;
@@ -30,14 +38,11 @@ export function useCatalogBibles(codes: string[], enabled: boolean, catalogVersi
           const now = loaded.get(code);
           // A slower answer for an older version must not replace a newer one.
           if (!now || now.version <= catalogVersion) loaded.set(code, { version: catalogVersion, entries: entries ?? [] });
-          if (live) bump((n) => n + 1);
+          for (const listener of listeners) listener();
         })
         .catch(() => undefined)
         .finally(() => pending.delete(key));
     }
-    return () => {
-      live = false;
-    };
   }, [enabled, wanted, catalogVersion]);
   return Object.fromEntries(
     wanted
