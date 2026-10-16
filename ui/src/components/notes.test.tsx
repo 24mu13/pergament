@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), convertFileSrc: (p: string) => p }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emitTo: vi.fn(async () => undefined) }));
@@ -52,6 +52,30 @@ describe("NoteCard", () => {
     clip(true);
     render(<NoteCard note={note} onClick={() => undefined} onToggle={() => undefined} />);
     expect(screen.getByRole("button", { name: "Show whole note" })).toBeTruthy();
+  });
+
+  it("measures again when the card changes size", () => {
+    const resized: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          resized.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      clip(false);
+      render(<NoteCard note={note} onClick={() => undefined} onToggle={() => undefined} />);
+      expect(screen.queryByRole("button", { name: "Show whole note" })).toBeNull();
+      clip(true);
+      act(() => resized.forEach((f) => f()));
+      expect(screen.getByRole("button", { name: "Show whole note" })).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("toggles without editing, and opens links of the whole note in the browser", () => {
