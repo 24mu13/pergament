@@ -194,4 +194,15 @@ describe("Reader", () => {
     ]);
     await backToNote("Unsaved thoughts");
   });
+
+  it("opens a link the note window linked and opened in the reference pane too", async () => {
+    backend.link_action = elsewhere;
+    render(reader(chapterTarget("nwtsty_E", 43, 3)));
+    await screen.findByText("Loved the world");
+    const where = screen.getByTestId("where").textContent;
+    await waitFor(() => expect(listeners["note-show-link"]).toBeTruthy());
+    await act(async () => listeners["note-show-link"]({ payload: "pergament://bible/43:4:1-43:4:1" }));
+    expect(await screen.findByText("John 4")).toBeTruthy();
+    expect(screen.getByTestId("where").textContent).toBe(where);
+  });
 });

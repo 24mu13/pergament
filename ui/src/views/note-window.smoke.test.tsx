@@ -16,7 +16,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
     calls.push({ cmd, args });
     if (cmd === "save_note") return "n1";
-    if (cmd === "list_publications") return [];
+    if (cmd === "list_publications") return [{ dir: "nwtsty_E", symbol: "nwtsty", langCode: "E", isBible: true }];
+    if (cmd === "publication") return { toc: [], books: [{ number: 43, title: "John", chapters: 21 }] };
+    if (cmd === "book_abbreviations") return { 43: "Joh" };
     return undefined;
   }),
   convertFileSrc: (p: string) => p,
@@ -93,6 +95,23 @@ describe("Note window", () => {
       expect(emitted).toContainEqual({ to: "main", event: "note-link", payload: "pergament://bible/43:3:16-43:3:16" }),
     );
     expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("links a reference with Ctrl+P and has the app show it, staying in front", async () => {
+    await waitFor(() => expect(handlers["note-open"]).toBeTruthy());
+    await open(1, { title: "Loved the world", content: "Joh 3:16, 18", tags: "" });
+    expect(screen.getByText("Ctrl+P: link and open a Bible reference")).toBeTruthy();
+    const area = screen.getByPlaceholderText<HTMLTextAreaElement>("Note");
+    await waitFor(() => expect(calls.some((c) => c.cmd === "book_abbreviations")).toBe(true));
+    await act(async () => undefined);
+    area.focus();
+    area.setSelectionRange(0, area.value.length);
+    fireEvent.keyDown(area, { key: "p", ctrlKey: true });
+    expect(area.value).toBe("[Joh 3:16](pergament://bible/43:3:16-43:3:16), [18](pergament://bible/43:3:18-43:3:18)");
+    await waitFor(() =>
+      expect(emitted).toContainEqual({ to: "main", event: "note-show-link", payload: "pergament://bible/43:3:16-43:3:16" }),
+    );
+    expect(emitted.some((e) => e.event === "note-link")).toBe(false);
   });
 
   it("asks once while notes keep coming in, then takes the newest", async () => {

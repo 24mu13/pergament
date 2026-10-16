@@ -1012,6 +1012,27 @@ describe("Links from the note window", () => {
     await act(async () => listeners["note-link"]({ payload: 42 }));
     expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(2);
   });
+
+  it("shows those opened while writing without taking the note window's place in front", async () => {
+    backend.list_publications = () => [card({ dir: "nwtsty_2", symbol: "nwtsty", title: "Bible", isBible: true, langCode: "X" })];
+    backend.link_action = () => ({
+      kind: "open",
+      target: { publication: "nwtsty_2", kind: { chapter: { book: 40, chapter: 24, verse: 14 } } },
+      studyNote: false,
+    });
+    function View() {
+      return <span data-testid="view">{useApp().view.name}</span>;
+    }
+    renderIn(<View />);
+    await waitFor(() => expect(calls.some((c) => c.cmd === "list_publications")).toBe(true));
+    await waitFor(() => expect(listeners["note-show-link"]).toBeTruthy());
+    setFocus.mockClear();
+    await act(async () => listeners["note-show-link"]({ payload: "pergament://bible/40:24:14-40:24:14" }));
+    await waitFor(() => expect(screen.getByTestId("view").textContent).toBe("reader"));
+    expect(setFocus).not.toHaveBeenCalled();
+    await act(async () => listeners["note-show-link"]({ payload: "https://example.org/" }));
+    expect(calls.filter((c) => c.cmd === "link_action")).toHaveLength(1);
+  });
 });
 
 describe("Coming back to a page", () => {
