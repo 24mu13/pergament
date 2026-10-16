@@ -10,6 +10,7 @@ export const fr: Record<string, string> = {
   "More": "Plus",
   "Back": "Retour",
   "Dismiss": "Ignorer",
+  "Notifications": "Notifications",
   "Close": "Fermer",
   "Search and download": "Rechercher et télécharger",
   "Import .jwpub…": "Importer un .jwpub…",

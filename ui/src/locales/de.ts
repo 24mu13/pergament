@@ -11,6 +11,7 @@ export const de: Record<string, string> = {
   More: "Mehr",
   Back: "Zurück",
   Dismiss: "Schließen",
+  Notifications: "Benachrichtigungen",
   Close: "Schließen",
   "Search and download": "Suchen und herunterladen",
   "Import .jwpub…": ".jwpub importieren…",

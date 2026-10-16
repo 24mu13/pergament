@@ -35,13 +35,16 @@ import {
 import { loadAutoQuality, loadMediaQuality, saveAutoQuality, saveMediaQuality } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 
 /** Height of the window in device pixels, which is what a recording can use at most. */
 const windowHeight = () => Math.round(window.innerHeight * (window.devicePixelRatio || 1));
 
 const iconButton = "flex h-8 w-8 items-center justify-center rounded-md hover:bg-bar";
 const chip = "flex items-center gap-1 rounded-md px-2 py-1 hover:bg-bar aria-pressed:bg-bar aria-pressed:font-medium";
-const select = "rounded-md border border-line bg-surface px-2 py-1 text-fg";
+const select = "h-8 min-w-28 px-2";
 
 function Control({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return (
@@ -176,7 +179,8 @@ function Player({ item }: { item: PlayerItem }) {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       // Typing, and keys in the floating note editor, are not for the player.
-      if (target?.closest("input, select, textarea, [data-note-editor]")) return;
+      // Nor are keys in a list, slider or settings box, which use the arrows and Space themselves.
+      if (target?.closest("input, select, textarea, [data-note-editor], [role=combobox], [role=listbox], [role=slider], [role=dialog]")) return;
       if (e.key === "Escape") {
         if (menu) setMenu(false);
         else if (!document.fullscreenElement) setFull(false);
@@ -276,39 +280,48 @@ function Player({ item }: { item: PlayerItem }) {
   const label = `${remote ? t("Streaming") : t("Playing")} · ${item.title}`;
 
   const settings = (
-    <div
-      role="dialog"
+    <PopoverContent
+      container={root.current}
+      side="top"
+      align="end"
       aria-label={t("Settings")}
-      className="absolute bottom-full right-2 z-10 mb-1 flex min-w-[240px] flex-col gap-3 rounded-md border border-line bg-surface p-4 text-sm shadow-sm"
+      className="flex min-w-[240px] flex-col gap-3"
     >
       {item.sources.length > 1 && (
         <label className="flex items-center justify-between gap-3">
           {t("Quality")}
-          <select
+          <Select
             value={auto ? "auto" : (source?.url ?? "")}
-            onChange={(e) =>
-              e.target.value === "auto" ? chooseAuto() : choose(item.sources.find((s) => s.url === e.target.value)!)
-            }
-            className={select}
+            onValueChange={(v) => (v === "auto" ? chooseAuto() : choose(item.sources.find((s) => s.url === v)!))}
           >
-            <option value="auto">{[t("Auto"), auto ? source?.label : ""].filter(Boolean).join(" · ")}</option>
-            {item.sources.map((s) => (
-              <option key={s.url} value={s.url}>
-                {[s.label, s.size ? sizeMb(s.size) : ""].filter(Boolean).join(" · ")}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label={t("Quality")} className={select}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent container={root.current}>
+              <SelectItem value="auto">{[t("Auto"), auto ? source?.label : ""].filter(Boolean).join(" · ")}</SelectItem>
+              {item.sources.map((s) => (
+                <SelectItem key={s.url} value={s.url}>
+                  {[s.label, s.size ? sizeMb(s.size) : ""].filter(Boolean).join(" · ")}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
       )}
       <label className="flex items-center justify-between gap-3">
         {t("Speed")}
-        <select value={speed} onChange={(e) => changeSpeed(Number(e.target.value))} className={select}>
-          {SPEEDS.map((v) => (
-            <option key={v} value={v}>
-              {v === 1 ? t("Normal") : `${v}×`}
-            </option>
-          ))}
-        </select>
+        <Select value={String(speed)} onValueChange={(v) => changeSpeed(Number(v))}>
+          <SelectTrigger aria-label={t("Speed")} className={select}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent container={root.current}>
+            {SPEEDS.map((v) => (
+              <SelectItem key={v} value={String(v)}>
+                {v === 1 ? t("Normal") : `${v}×`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       <div className="flex flex-wrap gap-1">
         <button aria-pressed={repeat} className={chip} onClick={() => setRepeat((r) => !r)}>
@@ -328,25 +341,24 @@ function Player({ item }: { item: PlayerItem }) {
           </button>
         )}
       </div>
-    </div>
+    </PopoverContent>
   );
 
   const controls = (
     <div className="relative shrink-0 border-t border-line bg-surface px-3 pb-2 pt-1">
-      {menu && settings}
-      <input
-        type="range"
-        aria-label={t("Position")}
+      <Slider
+        label={t("Position")}
         min={0}
-        max={duration || 0}
+        // A slider needs a range, so it waits for the length.
+        max={duration || 1}
+        disabled={!duration}
         step={0.1}
-        value={Math.min(time, duration || 0)}
-        onChange={(e) => {
-          const v = Number(e.target.value);
+        value={[Math.min(time, duration || 0)]}
+        onValueChange={([v]) => {
           setTime(v);
           if (media.current) media.current.currentTime = v;
         }}
-        className="block h-3 w-full cursor-pointer accent-accent"
+        className="w-full cursor-pointer"
       />
       <div className="mt-1 flex items-center justify-between gap-3 text-[13px]">
         {full ? (
@@ -389,26 +401,24 @@ function Player({ item }: { item: PlayerItem }) {
         <Control label={muted ? t("Unmute") : t("Mute")} onClick={toggleMute}>
           {muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </Control>
-        <input
-          type="range"
-          aria-label={t("Volume")}
+        <Slider
+          label={t("Volume")}
           min={0}
           max={1}
           step={0.05}
-          value={muted ? 0 : volume}
-          onChange={(e) => changeVolume(Number(e.target.value))}
-          className="ml-1 hidden h-3 w-24 cursor-pointer accent-accent sm:block"
+          value={[muted ? 0 : volume]}
+          onValueChange={([v]) => changeVolume(v)}
+          className="ml-1 hidden w-24 cursor-pointer sm:flex"
         />
         <span className="ml-auto flex items-center">
-          <button
-            aria-label={t("Settings")}
-            title={t("Settings")}
-            aria-expanded={menu}
-            className={cn(iconButton, menu && "bg-bar")}
-            onClick={() => setMenu((m) => !m)}
-          >
-            <Settings size={19} />
-          </button>
+          <Popover open={menu} onOpenChange={setMenu}>
+            <PopoverTrigger asChild>
+              <button aria-label={t("Settings")} title={t("Settings")} className={cn(iconButton, menu && "bg-bar")}>
+                <Settings size={19} />
+              </button>
+            </PopoverTrigger>
+            {settings}
+          </Popover>
           {full ? (
             <Control label={screen ? t("Exit full screen") : t("Full screen")} onClick={toggleScreen}>
               {screen ? <Minimize size={19} /> : <Maximize size={19} />}

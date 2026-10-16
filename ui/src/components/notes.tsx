@@ -9,6 +9,9 @@ import type { Book } from "@/lib/bible";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { sendNoteLink } from "@/lib/note-window";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { t } from "@/lib/i18n";
 
 /** Color swatches plus note and delete actions, shown at a selection or highlight. */
@@ -300,13 +303,13 @@ export function NoteForm({
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <input
+      <Input
         id="note-title"
         ref={titleRef}
         placeholder={t("Title")}
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        className="rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+        className="h-auto py-2 text-base"
       />
       <div role="group" aria-label={t("Note")} className="-mb-1.5 flex items-center justify-end gap-1 text-xs">
         {!preview && (
@@ -342,7 +345,7 @@ export function NoteForm({
           }}
         />
       ) : (
-        <textarea
+        <Textarea
           id="note-content"
           ref={contentRef}
           placeholder={t("Note")}
@@ -350,33 +353,32 @@ export function NoteForm({
           value={content}
           onChange={(e) => setContent(e.target.value)}
           onKeyDown={onContentKey}
-          className="min-h-0 flex-1 resize-none rounded-md border border-line bg-surface px-3 py-2 focus:border-accent"
+          className="min-h-0 flex-1 resize-none text-base"
         />
       )}
-      <input
+      <Input
         id="note-tags"
         placeholder={t("Tags, separated by commas")}
         value={tags}
         onChange={(e) => setTags(e.target.value)}
-        className="rounded-md border border-line bg-surface px-3 py-2 text-sm focus:border-accent"
+        className="h-auto py-2"
       />
       <div className="flex items-center gap-2">
         {onDelete && (
-          <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-muted hover:text-fg">
+          <Button variant="ghost" onClick={onDelete} className="px-3 text-muted hover:text-fg">
             <Trash2 size={16} /> {t("Delete")}
-          </button>
+          </Button>
         )}
         <span className="flex-1" />
-        <button onClick={onCancel} className="px-4 py-2 text-sm hover:bg-bar">
+        <Button variant="ghost" onClick={onCancel}>
           {t("Cancel")}
-        </button>
-        <button
+        </Button>
+        <Button
           disabled={!title.trim() && !content.trim()}
           onClick={() => onSave({ title: title.trim(), content, tags: parseTags(tags) })}
-          className="rounded-md bg-brand px-4 py-2 text-sm text-brand-fg hover:opacity-90 dark:bg-fg dark:text-surface disabled:opacity-50"
         >
           {t("Save")}
-        </button>
+        </Button>
       </div>
     </div>
   );

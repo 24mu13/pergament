@@ -17,7 +17,6 @@ import {
   Settings,
   Sun,
   Users,
-  X,
 } from "lucide-react";
 import { api, type CatalogEntry, type Language, type Progress, type PubCard, type Target, type UpdateInfo } from "@/lib/api";
 import type { MediaRef } from "@/lib/api";
@@ -75,6 +74,8 @@ import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu, type Translations } from "@/components/language-menu";
 import { useCatalogBibles } from "@/lib/use-catalog-bibles";
 import { bibleChoices, bibleFor, bibleStackFor, pickBible } from "@/lib/bible";
+import { toast as showToast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 
 /** The note written in the reader's study pane. */
 export interface InlineNote {
@@ -89,7 +90,6 @@ export interface InlineNote {
 }
 
 interface Toast {
-  id: number;
   text: string;
   action?: { label: string; run: () => void };
 }
@@ -224,7 +224,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [nav, dispatch] = useReducer(navReducer, initialNav);
   const [publications, setPublications] = useState<PubCard[]>([]);
   const [libraryReady, setLibraryReady] = useState(false);
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const [theme, setThemeState] = useState<Theme>(loadTheme);
   const [fontScale, setFontScaleState] = useState(loadFontScale);
   const [layout, setLayoutState] = useState<Layout>(loadLayout);
@@ -282,10 +281,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // A toast with an action stays longer, to give time to use it.
   const toast = useCallback((text: string, action?: Toast["action"]) => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, text, action }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 9000 : 5000);
+    showToast(text, {
+      duration: action ? 9000 : 5000,
+      action: action && { label: action.label, onClick: action.run },
+    });
   }, []);
 
   const refreshPublications = useCallback(async () => {
@@ -948,32 +949,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <AppContext.Provider value={value}>
       {children}
-      <div
-        role="status"
-        aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex flex-col items-center gap-2"
-      >
-        {toasts.map((item) => (
-          <div
-            key={item.id}
-            className="pointer-events-auto flex max-w-xl items-center gap-3 rounded-md border border-line bg-surface px-4 py-2.5 text-sm text-fg shadow-sm"
-          >
-            <span>{item.text}</span>
-            {item.action && (
-              <button className="font-semibold text-accent hover:underline" onClick={item.action.run}>
-                {item.action.label}
-              </button>
-            )}
-            <button
-              aria-label={t("Dismiss")}
-              className="text-muted hover:text-fg"
-              onClick={() => setToasts((all) => all.filter((x) => x.id !== item.id))}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
+      <Toaster />
     </AppContext.Provider>
   );
 }

@@ -78,7 +78,8 @@ const renderHome = () =>
 
 /** The tile whose caption is `title`, as the element that holds both the tile button and its menu button. */
 const tile = async (title: string) => (await screen.findByText(title)).closest(".group") as HTMLElement;
-const openMenu = (t: HTMLElement) => fireEvent.click(within(t).getByLabelText("More"));
+// Radix opens a menu on a pointer press, not on a click.
+const openMenu = (t: HTMLElement) => fireEvent.pointerDown(within(t).getByLabelText("More"), { button: 0, ctrlKey: false });
 
 describe("Home with tile menus", () => {
   it("renders the toolbox in two rows without the hidden publications", async () => {

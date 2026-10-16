@@ -82,7 +82,8 @@ const renderIn = (ui: React.ReactNode) =>
     </StrictMode>,
   );
 const tile = async (title: string) => (await screen.findByText(title)).closest(".group") as HTMLElement;
-const openMenu = (t: HTMLElement) => fireEvent.click(within(t).getByLabelText("More"));
+// Radix opens a menu on a pointer press, not on a click.
+const openMenu = (t: HTMLElement) => fireEvent.pointerDown(within(t).getByLabelText("More"), { button: 0, ctrlKey: false });
 
 describe("Search", () => {
   it("gives result cards a menu, and Remove only for downloaded ones", async () => {
@@ -147,10 +148,10 @@ describe("Settings", () => {
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("880px");
     // The selected tab outlives the view, so pick it explicitly.
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "Interface" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Full width" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Full width" }));
     expect(localStorage.getItem("layout")).toBe("wide");
     expect(document.documentElement.style.getPropertyValue("--page-max")).toBe("100000px");
-    expect(screen.getByRole("button", { name: "Full width" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("radio", { name: "Full width" }).getAttribute("aria-checked")).toBe("true");
   });
 
   it("picks the interface language from a list", async () => {
@@ -171,7 +172,7 @@ describe("Settings", () => {
     renderIn(<SettingsView />);
     expect(document.documentElement.dataset.font).toBe("standard");
     fireEvent.mouseDown(await screen.findByRole("tab", { name: "Reading" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Easy to read" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Easy to read" }));
     expect(localStorage.getItem("readingFont")).toBe("legible");
     expect(document.documentElement.dataset.font).toBe("legible");
   });
@@ -278,7 +279,8 @@ describe("Personal Study", () => {
     const titles = () => screen.getAllByText(/Dusk visits|Patient listening/).map((e) => e.textContent);
     await screen.findByText("Dusk visits");
     expect(titles()).toEqual(["Patient listening", "Dusk visits"]);
-    fireEvent.change(screen.getByLabelText("Sort notes"), { target: { value: "oldest" } });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Sort notes" }), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Oldest first" }));
     expect(titles()).toEqual(["Dusk visits", "Patient listening"]);
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "patient" } });
     expect(titles()).toEqual(["Patient listening"]);
@@ -848,11 +850,11 @@ describe("Merging backups", () => {
 
   it("is off by default and the checkbox is remembered", async () => {
     await dataTab();
-    const box = (await screen.findByLabelText("Merge backups instead of replacing")) as HTMLInputElement;
-    expect(box.checked).toBe(false);
+    const box = await screen.findByRole("switch", { name: "Merge backups instead of replacing" });
+    expect(box.getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("button", { name: "Restore backup…" })).toBeTruthy();
     fireEvent.click(box);
-    expect(box.checked).toBe(true);
+    expect(box.getAttribute("aria-checked")).toBe("true");
     expect(localStorage.getItem("mergeBackups")).toBe("true");
     expect(screen.getByRole("button", { name: "Merge backup…" })).toBeTruthy();
   });
@@ -986,7 +988,7 @@ describe("Go to", () => {
     go.focus();
     fireEvent.keyDown(go, { key: "Tab" });
     expect(document.activeElement).toBe(box);
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.keyDown(window, { key: "g", ctrlKey: true });
     const again = await screen.findByLabelText("Reference, for example Heb 10:24");

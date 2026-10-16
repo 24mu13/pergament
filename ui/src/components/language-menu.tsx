@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Download, Languages } from "lucide-react";
 import { api, type Language } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
+import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/app";
 import type { BibleChoice } from "@/lib/bible";
@@ -28,6 +29,9 @@ export interface Translations {
   progress: (choice: BibleChoice) => { done: number; total: number | null } | undefined;
 }
 
+/** The box of a language list: as tall as fits, at most 70% of the window. */
+const listBox = "flex max-h-[min(70vh,var(--radix-popover-content-available-height))] w-80 flex-col overflow-hidden p-0";
+
 /** Percent done of a download; null while its size is unknown. */
 export const percent = (p: { done: number; total: number | null }) => (p.total ? Math.min(100, (p.done / p.total) * 100) : null);
 
@@ -47,27 +51,12 @@ export function LanguageMenu({
   const [query, setQuery] = useState("");
   const [languages, setLanguages] = useState<Language[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadLanguages()
       .then(setLanguages)
       .catch((e) => setError(String(e)));
   }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   // A download picked here keeps the menu open to show its progress and closes it once it is over, however it ended.
   const [picked, setPicked] = useState<BibleChoice | null>(null);
@@ -112,16 +101,17 @@ export function LanguageMenu({
         const active = l.code === value && c.symbol === translations!.current;
         const running = translations!.progress(c);
         return (
-          <button
+          <CommandItem
             key={c.symbol}
+            value={`${l.code}/${c.symbol}`}
             disabled={!!running}
-            onClick={() => {
+            onSelect={() => {
               translations!.onPick(c);
               if (c.dir) setOpen(false);
               else setPicked(c);
               setQuery("");
             }}
-            className={cn("flex w-full items-center gap-3 py-2 pl-7 pr-4 text-left hover:bg-bar", active && "text-accent")}
+            className={cn("pl-7", active && "text-accent")}
           >
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">{c.title}</span>
@@ -133,24 +123,22 @@ export function LanguageMenu({
               !c.dir && <Download size={15} aria-label={t("Not downloaded")} className="text-muted" />
             )}
             {active && <Check size={16} />}
-          </button>
+          </CommandItem>
         );
       })}
     </div>
   );
 
   const languageRow = (l: Language) => (
-    <button
+    <CommandItem
       key={l.code}
-      onClick={() => {
+      value={l.code}
+      onSelect={() => {
         onChange(l.code);
         setOpen(false);
         setQuery("");
       }}
-      className={cn(
-        "flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-bar",
-        l.code === value && "text-accent",
-      )}
+      className={cn(l.code === value && "text-accent")}
     >
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium" dir={l.rtl ? "rtl" : undefined}>
@@ -161,50 +149,38 @@ export function LanguageMenu({
         </span>
       </span>
       {l.code === value && <Check size={16} />}
-    </button>
+    </CommandItem>
   );
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        title={t("Language: {name}", { name: current?.vernacular ?? value })}
-        aria-label={t("Language")}
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-8 items-center gap-1.5 rounded-md px-2 text-muted hover:bg-bar hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        <Languages size={18} strokeWidth={1.6} />
-        <span className="text-[13px] font-medium">{value}</span>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-10 z-40 flex max-h-[70vh] w-80 flex-col overflow-hidden rounded-md border border-line bg-surface shadow-sm">
-          <div className="border-b border-line p-3">
-            <Input
-              autoFocus
-              placeholder={t("Search languages")}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full"
-            />
-          </div>
-          <div className="flex-1 overflow-y-auto py-1">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          title={t("Language: {name}", { name: current?.vernacular ?? value })}
+          aria-label={t("Language")}
+          className="flex h-8 items-center gap-1.5 rounded-md px-2 text-muted hover:bg-bar hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <Languages size={18} strokeWidth={1.6} />
+          <span className="text-[13px] font-medium">{value}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className={listBox}>
+        {/* Filtered here rather than by cmdk, so a language is found by its code, English name or own name. */}
+        <Command shouldFilter={false} label={t("Language")}>
+          <CommandInput autoFocus placeholder={t("Search languages")} value={query} onValueChange={setQuery} />
+          <CommandList>
             {inLibrary.filter(matches).length > 0 && (
-              <>
-                <div className="px-4 pb-1 pt-2 text-[13px] font-semibold text-muted">
-                  {t("In your library")}
-                </div>
-                {inLibrary.filter(matches).map(row)}
-              </>
+              <CommandGroup heading={t("In your library")}>{inLibrary.filter(matches).map(row)}</CommandGroup>
             )}
-            <div className="px-4 pb-1 pt-3 text-[13px] font-semibold text-muted">
-              {t("All languages")}
-            </div>
-            {error && <p className="px-4 py-2 text-sm text-muted">{t("Language list unavailable: {error}", { error })}</p>}
-            {!languages && !error && <p className="px-4 py-2 text-sm text-muted">{t("Loading…")}</p>}
-            {all.filter(matches).map(row)}
-          </div>
-        </div>
-      )}
-    </div>
+            <CommandGroup heading={t("All languages")}>
+              {error && <p className="px-4 py-2 text-sm text-muted">{t("Language list unavailable: {error}", { error })}</p>}
+              {!languages && !error && <p className="px-4 py-2 text-sm text-muted">{t("Loading…")}</p>}
+              {all.filter(matches).map(row)}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -226,7 +202,6 @@ export function SectionLanguagePicker({
   const [query, setQuery] = useState("");
   const [languages, setLanguages] = useState<Language[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
 
   // The list is read again for every view that mounts the picker: the catalog can add languages,
   // and the session cache of loadLanguages would keep showing the list of the very first read.
@@ -241,20 +216,6 @@ export function SectionLanguagePicker({
     };
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const byCode = useMemo(() => new Map(languages?.map((l) => [l.code, l]) ?? []), [languages]);
   const q = query.trim().toLowerCase();
   const matches = (l: Language) =>
@@ -265,17 +226,15 @@ export function SectionLanguagePicker({
   const all = (languages ?? []).filter((l) => !libraryCodes.includes(l.code));
 
   const row = (l: Language) => (
-    <button
+    <CommandItem
       key={l.code}
-      onClick={() => {
+      value={l.code}
+      onSelect={() => {
         onChange(l.code);
         setOpen(false);
         setQuery("");
       }}
-      className={cn(
-        "flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-bar",
-        l.code === value && "text-accent",
-      )}
+      className={cn(l.code === value && "text-accent")}
     >
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium" dir={l.rtl ? "rtl" : undefined}>
@@ -286,60 +245,48 @@ export function SectionLanguagePicker({
         </span>
       </span>
       {l.code === value && <Check size={16} />}
-    </button>
+    </CommandItem>
   );
 
   const name = languageName(value ?? fallback);
   return (
-    <div ref={ref} className="relative">
-      <button
-        title={t("Toolbox language: {name}", { name })}
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-0.5 text-[13px] text-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
-      >
-        {name}
-        <ChevronDown size={13} strokeWidth={1.6} />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-8 z-40 flex max-h-[70vh] w-80 flex-col overflow-hidden rounded-md border border-line bg-surface shadow-sm">
-          <div className="border-b border-line p-3">
-            <Input
-              autoFocus
-              placeholder={t("Search languages")}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full"
-            />
-          </div>
-          <div className="flex-1 overflow-y-auto py-1">
-            <button
-              onClick={() => {
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          title={t("Toolbox language: {name}", { name })}
+          className="flex items-center gap-0.5 text-[13px] text-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          {name}
+          <ChevronDown size={13} strokeWidth={1.6} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className={listBox}>
+        <Command shouldFilter={false} label={t("Toolbox language: {name}", { name })}>
+          <CommandInput autoFocus placeholder={t("Search languages")} value={query} onValueChange={setQuery} />
+          <CommandList>
+            <CommandItem
+              value="(app)"
+              onSelect={() => {
                 onChange(null);
                 setOpen(false);
                 setQuery("");
               }}
-              className={cn("flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-bar", value == null && "text-accent")}
+              className={cn(value == null && "text-accent")}
             >
               <span className="min-w-0 flex-1 truncate font-medium">{t("Same as app language")}</span>
               {value == null && <Check size={16} />}
-            </button>
+            </CommandItem>
             {inLibrary.filter(matches).length > 0 && (
-              <>
-                <div className="px-4 pb-1 pt-2 text-[13px] font-semibold text-muted">
-                  {t("In your library")}
-                </div>
-                {inLibrary.filter(matches).map(row)}
-              </>
+              <CommandGroup heading={t("In your library")}>{inLibrary.filter(matches).map(row)}</CommandGroup>
             )}
-            <div className="px-4 pb-1 pt-3 text-[13px] font-semibold text-muted">
-              {t("All languages")}
-            </div>
-            {error && <p className="px-4 py-2 text-sm text-muted">{t("Language list unavailable: {error}", { error })}</p>}
-            {!languages && !error && <p className="px-4 py-2 text-sm text-muted">{t("Loading…")}</p>}
-            {all.filter(matches).map(row)}
-          </div>
-        </div>
-      )}
-    </div>
+            <CommandGroup heading={t("All languages")}>
+              {error && <p className="px-4 py-2 text-sm text-muted">{t("Language list unavailable: {error}", { error })}</p>}
+              {!languages && !error && <p className="px-4 py-2 text-sm text-muted">{t("Loading…")}</p>}
+              {all.filter(matches).map(row)}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }

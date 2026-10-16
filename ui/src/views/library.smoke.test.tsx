@@ -91,7 +91,8 @@ const renderIn = (ui: React.ReactNode) =>
     </StrictMode>,
   );
 const tile = async (title: string) => (await screen.findByText(title)).closest(".group") as HTMLElement;
-const openMenu = (t: HTMLElement) => fireEvent.click(within(t).getByLabelText("More"));
+// Radix opens a menu on a pointer press, not on a click.
+const openMenu = (t: HTMLElement) => fireEvent.pointerDown(within(t).getByLabelText("More"), { button: 0, ctrlKey: false });
 
 describe("Category page", () => {
   it("gives every grid card a menu, with Remove only for downloaded ones", async () => {
@@ -188,7 +189,7 @@ describe("Recording pages", () => {
     expect(screen.queryByText("More Languages")).toBeNull();
     fireEvent.keyDown(window, { key: "Escape" });
     const cloud = within(await tile("Another video")).getByLabelText("Download");
-    fireEvent.click(cloud);
+    fireEvent.pointerDown(cloud, { button: 0, ctrlKey: false });
     expect(screen.getByText(/Download 480p/)).toBeTruthy();
   });
 

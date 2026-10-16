@@ -95,7 +95,7 @@
             '';
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-dc8Z1aEMhwvHYa8YCbwxTguyvppRsadxYxBJt1Jb7/Y=";
+            outputHash = "sha256-Hd1wZJaxCugLARxEAA+ddDU/QKpqajLXB0brpwCQmEI=";
           };
 
           cargoBuildFlags = [

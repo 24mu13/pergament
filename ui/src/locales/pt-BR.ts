@@ -11,6 +11,7 @@ export const ptBR: Record<string, string> = {
   "More": "Mais",
   "Back": "Voltar",
   "Dismiss": "Dispensar",
+  "Notifications": "Notificações",
   "Close": "Fechar",
   "Search and download": "Buscar e baixar",
   "Import .jwpub…": "Importar .jwpub…",

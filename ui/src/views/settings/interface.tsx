@@ -1,6 +1,6 @@
 import { useApp } from "@/app";
 import { ChevronDown } from "lucide-react";
-import { Segmented } from "@/components/segmented";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -59,21 +59,25 @@ export function InterfaceTab() {
       </section>
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Appearance")}</h2>
-        <Segmented
-          label={t("Appearance")}
-          value={theme}
-          options={themes.map((x) => ({ ...x, label: t(x.label) }))}
-          onChange={setTheme}
-        />
+        {/* A click on the chosen one would turn it off; one always stays chosen. */}
+        <ToggleGroup type="single" aria-label={t("Appearance")} value={theme} onValueChange={(v) => v && setTheme(v as typeof theme)}>
+          {themes.map((x) => (
+            <ToggleGroupItem key={x.value} value={x.value}>
+              {t(x.label)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       </section>
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Content width")}</h2>
-        <Segmented
-          label={t("Content width")}
-          value={layout}
-          options={layouts.map((x) => ({ ...x, label: t(x.label) }))}
-          onChange={setLayout}
-        />
+        {/* A click on the chosen one would turn it off; one always stays chosen. */}
+        <ToggleGroup type="single" aria-label={t("Content width")} value={layout} onValueChange={(v) => v && setLayout(v as typeof layout)}>
+          {layouts.map((x) => (
+            <ToggleGroupItem key={x.value} value={x.value}>
+              {t(x.label)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
         <p className="mt-2 max-w-xl text-sm text-muted">
           {t("A centered column is easier to read; full width uses the whole window for lists, covers and the reader.")}
         </p>
