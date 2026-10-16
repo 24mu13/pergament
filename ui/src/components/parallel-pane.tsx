@@ -3,6 +3,8 @@ import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleMinu
 import { useApp } from "@/app";
 import { api, chapterTarget, type Mark, type PubCard } from "@/lib/api";
 import { applyMarks } from "@/lib/marks";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { t } from "@/lib/i18n";
 import { extractVerses, rangeText, type BibleRange } from "@/lib/parallel";
 import { loadParallel, saveParallel } from "@/lib/settings";
@@ -224,28 +226,27 @@ function CustomizeDialog({
   );
   const out = bibles.filter((b) => !included.includes(b.dir));
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("Customize")}
-        onMouseDown={(e) => e.stopPropagation()}
-        className="flex w-[min(90vw,420px)] flex-col gap-3 rounded-md border border-line bg-surface p-5 shadow-sm"
-      >
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent aria-describedby={undefined}>
+        <DialogTitle className="sr-only">{t("Customize")}</DialogTitle>
         <p className="text-center text-sm text-muted">{t("Import or download more Bibles to add translations.")}</p>
-        <div>{included.flatMap((d) => bibles.find((b) => b.dir === d) ?? []).map((b, i) => row(b, i))}</div>
-        {out.length > 0 && (
-          <div>
-            <h3 className="mb-1 text-sm font-semibold">{t("Not Included")}</h3>
-            {out.map((b) => row(b, null))}
-          </div>
-        )}
-        <div className="flex justify-end">
-          <button onClick={onClose} className="rounded-md border border-line bg-surface px-6 py-2 text-sm hover:bg-bar">
-            {t("Done")}
-          </button>
+        <div className="overflow-y-auto">
+          {included.flatMap((d) => bibles.find((b) => b.dir === d) ?? []).map((b, i) => row(b, i))}
+          {out.length > 0 && (
+            <div className="mt-3">
+              <h3 className="mb-1 text-sm font-semibold">{t("Not Included")}</h3>
+              {out.map((b) => row(b, null))}
+            </div>
+          )}
         </div>
-      </div>
-    </div>
+        <div className="flex justify-end">
+          <DialogClose asChild>
+            <Button variant="outline" className="px-6">
+              {t("Done")}
+            </Button>
+          </DialogClose>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
