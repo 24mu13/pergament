@@ -340,9 +340,15 @@ const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 /// cached copy only once it parses, and it is fetched into a file of its own,
 /// so concurrent refreshes do not share a partial download. When the refresh
 /// fails, a stale copy is used and kept for [`RETRY_AFTER`] before the next try.
+/// A fresh copy that does not parse (saved by an older version, or damaged)
+/// is fetched again.
 fn cached(client: &Client, url: &str, file: &Path, ttl: Duration) -> Result<Category> {
-    if fresh(file, ttl) {
-        return parse(BufReader::new(File::open(file)?), client);
+    if fresh(file, ttl)
+        && let Ok(category) = File::open(file)
+            .map_err(Error::from)
+            .and_then(|f| parse(BufReader::new(f), client))
+    {
+        return Ok(category);
     }
     let fetched = (|| {
         let dir = file.parent().unwrap_or(Path::new("."));
@@ -484,6 +490,17 @@ mod tests {
         assert!(fresh(&file, TTL));
         assert!(age(&file) >= TTL - RETRY_AFTER);
         assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_fresh_copy_that_does_not_parse_is_fetched_again() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("X_VODBible_1.json");
+        fs::write(&file, "<html>maintenance</html>").unwrap();
+        assert!(fresh(&file, TTL));
+        let c = cached(&local_client(), &serve(SAMPLE), &file, TTL).unwrap();
+        assert_eq!(c.key, "VODBible");
+        assert_eq!(fs::read_to_string(&file).unwrap(), SAMPLE);
     }
 
     #[test]
