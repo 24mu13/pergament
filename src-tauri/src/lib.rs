@@ -935,7 +935,11 @@ async fn download_publication(
             Some(&item),
             &mut progress(
                 &app,
-                &format!("download:{}:{}", item.symbol, item.issue_tag),
+                // The same key as `taskKey` in the UI.
+                &format!(
+                    "download:{}:{}:{}",
+                    item.meps_language, item.symbol, item.issue_tag
+                ),
             ),
         )
         .map_err(|e| e.to_string())?;

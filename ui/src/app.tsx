@@ -207,7 +207,8 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 
-export const taskKey = (e: CatalogEntry) => `download:${e.item.symbol}:${e.item.issue_tag}`;
+/** Progress key of a publication download; the same as the backend's (`download_publication`), language included. */
+export const taskKey = (e: CatalogEntry) => `download:${e.item.meps_language}:${e.item.symbol}:${e.item.issue_tag}`;
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [nav, dispatch] = useReducer(navReducer, initialNav);

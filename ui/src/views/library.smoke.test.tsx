@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () =>
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn(), save: vi.fn() }));
 
-import { AppProvider } from "@/app";
+import { AppProvider, taskKey } from "@/app";
 import { BibleView } from "@/views/bible";
 import { ChaptersView } from "@/views/chapters";
 import { CategoryView, LibraryView } from "@/views/library";
@@ -343,5 +343,14 @@ describe("Chapters of a Bible book", () => {
     renderIn(<ChaptersView dir="nwtsty_2" book={66} />);
     expect(await screen.findByText("22")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Introduction video/ })).toBeNull();
+  });
+});
+
+describe("download progress", () => {
+  it("keeps the same publication in two languages apart", () => {
+    const de = entry("Rbi8", "Bible", null);
+    const en = { ...de, item: { ...de.item, meps_language: 0 } };
+    expect(taskKey(en)).not.toBe(taskKey(de));
+    expect(taskKey(de)).toBe("download:2:Rbi8:0");
   });
 });
