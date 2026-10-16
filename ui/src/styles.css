@@ -79,6 +79,8 @@ body {
 /* ---------- Reading text ---------- */
 
 .reader {
+  /* Publications switch between their narrow and wide layouts by the reader's width (lib/design-classes.ts). */
+  container: reader / inline-size;
   font-size: calc(1.15rem * var(--font-scale, 1));
   line-height: 1.75;
   user-select: text;
@@ -585,6 +587,199 @@ body {
   background: var(--muted);
   mask: var(--glyph) center / contain no-repeat;
   -webkit-mask: var(--glyph) center / contain no-repeat;
+}
+
+/* ---------- Publication classes ---------- */
+/* Classes of the publications' own paragraph and box styles, which the files name but do not style. How they
+   look follows the official app; the design classes (`du-`, `dc-`) are made in lib/design-classes.ts. */
+.dc-screenReaderText {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The base styles give every element a solid border of no width; a publication that sets a width draws only the
+   sides whose style it names. */
+.reader :where([class*="du-border"]) {
+  border-style: none;
+}
+/* Indented paragraphs: sub-items (s5, one level; s6, two), schedule entries (si), index sub-entries (sk). */
+.reader .s5 {
+  margin-inline-start: 2.2em;
+}
+.reader .s6 {
+  margin-inline-start: 4.4em;
+}
+.reader .si,
+.reader .sa {
+  margin-inline-start: 2.8em;
+}
+.reader .sk {
+  margin-inline-start: 1.7em;
+}
+/* The question above a paragraph, a picture's caption and a group of footnotes are smaller and muted. */
+.reader .qu,
+.reader figcaption,
+.reader .groupFootnote {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.reader .groupFootnote {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid var(--border);
+}
+/* The kicker above a title, such as LEKTION 01 or LEBENSBERICHT. */
+.reader .contextTtl,
+.reader .featureTtl {
+  color: var(--muted);
+}
+.reader p:is(.contextTtl, .featureTtl) {
+  font-size: 0.85em;
+  margin-bottom: 0.2em;
+}
+/* An article's opening paragraph is larger and muted; the signature under a letter starts right of the middle. */
+.reader .openingContent {
+  font-size: 1.2em;
+  color: var(--muted);
+}
+.reader .sj {
+  margin-inline-start: 40%;
+}
+/* Lettered items (a, b, c) carry their letter in the text, so the list adds no marker of its own. */
+.reader ol.source,
+.reader ul.noMarker {
+  list-style: none;
+  margin-left: 0;
+  padding-left: 0;
+}
+.reader .txtSrcBullet {
+  display: inline-block;
+  min-width: 1.6em;
+  text-indent: 0;
+}
+/* Songs: the first line of a verse hangs its number in the margin, then the lines alternate between two indents
+   (sp, sz). The refrain's label is muted. */
+.reader :is(.sl, .sp, .sz) {
+  margin-top: 0;
+  margin-bottom: 0.35em;
+}
+.reader .sl {
+  padding-inline-start: 1.6em;
+  text-indent: -1.6em;
+}
+.reader .sp {
+  margin-inline-start: 1.6em;
+}
+.reader .sz {
+  margin-inline-start: 3.2em;
+}
+.reader ol.source > li + li,
+.reader .chorus {
+  margin-top: 1em;
+}
+.reader .chorus .se {
+  margin: 0 0 0.35em 1.6em;
+  color: var(--muted);
+}
+/* Boxes: a frame when the box has a rule, a filled background when only its title has one. */
+.reader :is(.boxSupplement, .blockTeach) > aside {
+  display: flow-root;
+  margin: 1.5em 0;
+  padding: 0;
+  border-left: 0;
+}
+.reader .rule > aside {
+  border: 1px solid var(--border);
+}
+.reader .boxSupplement:not(.rule) > aside {
+  background: var(--bar);
+}
+.reader aside .boxTtl {
+  font-weight: 700;
+}
+.reader :is(.rule, .boxSupplement:not(.rule)) > aside .boxTtl {
+  padding: 0.6em 1em;
+}
+.reader :is(.rule, .boxSupplement:not(.rule)) > aside .boxTtl > * {
+  margin: 0;
+}
+.reader aside .boxTtl.emphasized {
+  background: var(--tile);
+}
+.reader aside .boxTtl.rule {
+  border-bottom: 1px solid var(--border);
+}
+.reader aside .boxContent {
+  border-left: 0;
+  padding: 0;
+}
+.reader :is(.rule, .boxSupplement:not(.rule)) > aside .boxContent {
+  padding: 0.9em 1em 0.2em;
+}
+/* Pictures beside the text: east on the right, west on the left, at the width the class names. In a narrow reader
+   they stay above the text. */
+.reader :is(div, figure).east_right,
+.reader :is(div, figure).east_left,
+.reader :is(div, figure).west_left,
+.reader :is(div, figure).west_right {
+  margin: 0.3em 0 1em;
+}
+.reader :is(div, figure):is(.east_right, .east_left, .west_left, .west_right) figure {
+  margin: 0;
+}
+@container reader (min-width: 30rem) {
+  .reader :is(div, figure):is(.east_right, .east_left) {
+    float: right;
+    width: 40%;
+    margin-left: 1.2em;
+  }
+  .reader :is(div, figure):is(.west_left, .west_right) {
+    float: left;
+    width: 40%;
+    margin-right: 1.2em;
+  }
+  .reader :is(div, figure).half {
+    width: 48%;
+  }
+  .reader :is(div, figure).quarter {
+    width: 25%;
+  }
+  .reader :is(div, figure).eighth {
+    width: 15%;
+  }
+}
+/* Answer fields: a checkbox or a line for a date sits in the text next to its label. */
+.reader input.gen-field-check {
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0 0.5em 0 0;
+  vertical-align: -0.15em;
+  accent-color: var(--accent);
+}
+.reader input.gen-field-line {
+  min-width: 10em;
+  padding: 0.15em 0.4em;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.reader input.gen-field-line:focus {
+  border-bottom-color: var(--accent);
+  outline: none;
+}
+.reader fieldset {
+  margin: 1em 0;
+  padding: 0;
+  border: 0;
+}
+.reader legend {
+  font-size: 1.1em;
+  margin-bottom: 0.4em;
 }
 
 /* ---------- Accessibility ---------- */

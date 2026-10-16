@@ -105,3 +105,41 @@ fn answer_field_keeps_the_id_of_its_text_area() {
     );
     assert!(!out.contains("<textarea"), "{out}");
 }
+
+#[test]
+fn goal_fields_keep_their_kind_and_label() {
+    let out = render(
+        r#"<fieldset><legend>Ziel</legend><div class="gen-field" id="p43"><input type="checkbox" id="tt62" class="du-borderStyle--none" name="goal-checkbox-1"/><label for="tt62" id="tt64">Den ersten Teil lesen</label></div></fieldset><label for="tt56" id="tt55">Abgeschlossen am: </label><input type="text" id="tt56" name="text-1"/><input type="submit" id="tt9"/>"#,
+        RenderOptions::default(),
+    );
+    assert!(
+        out.contains(r#"<span class="gen-tag gen-check" id="tt62"></span>"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<span class="gen-tag gen-line" id="tt56"></span>"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<label for="tt62" id="tt64">Den ersten Teil lesen</label>"#),
+        "{out}"
+    );
+    assert!(out.contains("<fieldset><legend>Ziel</legend>"), "{out}");
+    assert!(!out.contains("<input") && !out.contains("tt9"), "{out}");
+}
+
+#[test]
+fn background_pictures_point_at_the_publication() {
+    let out = render(
+        r#"<div class="dc-bgImageLayout--matchContainerWidth-top" style="background-image: url('jwpub-media://1102021201_univ_cbg_02.jpg'); position: fixed">x</div>"#,
+        RenderOptions {
+            media_base: Some("jwmedia://localhost/lff_X/".into()),
+            standalone: false,
+        },
+    );
+    assert!(
+        out.contains("jwmedia://localhost/lff_X/1102021201_univ_cbg_02.jpg"),
+        "{out}"
+    );
+    assert!(!out.contains("position"), "{out}");
+}

@@ -40,7 +40,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), message: vi.fn(), op
 
 import { AppProvider, useApp } from "@/app";
 import { ReaderView } from "@/views/reader";
-import { chapterTarget } from "@/lib/api";
+import { chapterTarget, documentTarget } from "@/lib/api";
 import { emitTo } from "@tauri-apps/api/event";
 
 const note: Note = {
@@ -106,6 +106,37 @@ const reader = (target: Target) => (
 );
 
 describe("Reader", () => {
+  it("turns a lesson's goals into checkboxes, a date line and a text box that keep their answers", async () => {
+    // A lesson's goal box, as the backend sends it: each field is a marker that names its kind.
+    backend.render_page = () => ({
+      title: "Lesson 1",
+      html: `<label for="tt56" id="tt55">Lesson finished on: </label><span class="gen-tag gen-line" id="tt56"></span>
+        <fieldset><legend>Goal</legend>
+        <div class="gen-field" id="p43"><span class="gen-tag gen-check" id="tt62"></span><label for="tt62">Read the next lesson</label></div>
+        <div class="gen-field" id="p44"><span class="gen-tag gen-check" id="tt66"></span><label for="tt66">Something else: </label>
+        <div class="gen-field"><label for="tt71" class="dc-screenReaderText">Another goal</label><span class="gen-tag" id="tt71"></span></div></div>
+        </fieldset>`,
+      fragment: null,
+      name: "",
+    });
+    backend.page_user_data = () => ({ marks: [], notes: [], answers: { tt56: "7 December", tt62: "1", tt71: "Visit" } });
+    backend.save_answer = () => undefined;
+    render(reader(documentTarget("lff_E", 3)));
+
+    const done = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Read the next lesson" });
+    expect(done.checked).toBe(true);
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "Something else:" }).checked).toBe(false);
+    // The labels stay in the text next to their boxes.
+    expect(screen.getByText("Read the next lesson").tagName).toBe("LABEL");
+    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Lesson finished on:" }).value).toBe("7 December");
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Another goal" }).value).toBe("Visit");
+
+    fireEvent.click(done);
+    await waitFor(() =>
+      expect(calls).toContainEqual({ cmd: "save_answer", args: expect.objectContaining({ tag: "tt62", value: "0" }) }),
+    );
+  });
+
   it("edits a note in the study pane and moves its unsaved text to the note window when the chapter changes", async () => {
     const view = render(reader(chapterTarget("nwtsty_E", 43, 3)));
     fireEvent.click(await screen.findByText("Loved the world"));

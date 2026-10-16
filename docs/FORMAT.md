@@ -379,7 +379,9 @@ Checked against one backup made by JW Library on iOS (schema version 16,
   a note, a location or a playlist item, with a `Position` per tag.
 - `Bookmark` (`Slot`, `Title`, `Snippet`, block), `InputField` (answers
   typed into workbook and study article fields: `TextTag` = the `id` of the
-  field's `<textarea>`, e.g. `tt47`, not the `id` of its `div.gen-field`),
+  field's `<textarea>` or `<input>`, e.g. `tt47`, not the `id` of its
+  `div.gen-field`; a checkbox's `Value` is `1` or `0`, a text line's the text,
+  as in a JW Library backup with checked goals and dates from `lff`),
   playlists and `IndependentMedia` (not used here yet).
 - `LastModified` holds one timestamp that the app's triggers update.
 
