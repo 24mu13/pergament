@@ -41,10 +41,12 @@ fn strips_active_content() {
         "passwd",
         "tracker",
         "<iframe",
-        "<style",
     ] {
         assert!(!out.contains(bad), "{bad:?} survived: {out}");
     }
+    // The stylesheet stays, but only for the page's own box.
+    assert_eq!(out.matches("<style>").count(), 1, "{out}");
+    assert!(out.contains("<style>@scope (.pub-sheet-"), "{out}");
     assert!(
         out.contains(r#"src="file:///lib/tst_0/img_1.jpg""#),
         "{out}"
@@ -142,4 +144,25 @@ fn background_pictures_point_at_the_publication() {
         "{out}"
     );
     assert!(!out.contains("position"), "{out}");
+}
+
+#[test]
+fn a_publications_stylesheet_applies_to_its_page_only() {
+    let out = render(
+        r#"<style>.custom { color: teal }</style><p class="custom">x</p><style>.other { font-weight: bold }</style>"#,
+        RenderOptions::default(),
+    );
+    assert!(out.starts_with(r#"<div class="pub-sheet" style="contain:layout paint;overflow:clip"><style>@scope (.pub-sheet-"#), "{out}");
+    assert!(
+        out.contains(".custom { color: teal }") && out.contains(".other { font-weight: bold }"),
+        "{out}"
+    );
+    assert!(out.contains(r#"<p class="custom">x</p>"#), "{out}");
+    assert_eq!(out.matches("<style>").count(), 1, "{out}");
+}
+
+#[test]
+fn a_page_without_a_stylesheet_stays_as_it_is() {
+    let out = render(r#"<p class="sb">x</p>"#, RenderOptions::default());
+    assert!(!out.contains("pub-sheet"), "{out}");
 }

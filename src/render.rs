@@ -3,6 +3,8 @@
 //! Decoded content is untrusted. It is first rewritten (links, images,
 //! footnote and cross-reference markers) and then passed through an
 //! allow-list sanitizer, as is everything else that ends up in the output.
+//! A publication's own `<style>` elements are cleaned separately and scoped to
+//! the page they came with (`scope_stylesheet`).
 //!
 //! Links are rewritten to the `pergament:` scheme so a viewer can route them:
 //! - `pergament://bible/{book}:{ch}:{v}-{book}:{ch}:{v}` for Bible references,
@@ -96,6 +98,8 @@ pub struct StudyRef {
 struct Markers {
     footnotes: Vec<(i64, String)>,
     citations: Vec<(i64, String)>,
+    /// The text of each `<style>` element, which the sanitizer would drop.
+    styles: Vec<String>,
 }
 
 impl<'a> Renderer<'a> {
@@ -130,7 +134,7 @@ impl<'a> Renderer<'a> {
             .cloned()
             .collect();
         body.push_str(&self.footnotes_section(id, &missing)?);
-        Ok(self.finish(&info.title, &body))
+        Ok(self.finish_styled(&info.title, &body, &markers.styles))
     }
 
     /// Render the `DatedText` entry covering `date` (`YYYYMMDD`), e.g. one day
@@ -140,8 +144,8 @@ impl<'a> Renderer<'a> {
             .publication
             .dated_text(date)?
             .ok_or_else(|| Error::NotFound(format!("no dated text for {date}")))?;
-        let (body, _) = self.rewrite(&dated.content)?;
-        Ok(self.finish("", &body))
+        let (body, markers) = self.rewrite(&dated.content)?;
+        Ok(self.finish_styled("", &body, &markers.styles))
     }
 
     /// Render one Bible chapter with footnotes, cross references and study notes.
@@ -169,7 +173,20 @@ impl<'a> Renderer<'a> {
     }
 
     fn finish(&self, title: &str, body: &str) -> String {
-        let clean = self.sanitizer.clean(body).to_string();
+        self.finish_styled(title, body, &[])
+    }
+
+    /// Like `finish`, with the publication's own stylesheets applied to this page only.
+    fn finish_styled(&self, title: &str, body: &str, styles: &[String]) -> String {
+        let mut clean = self.sanitizer.clean(body).to_string();
+        let sheet = scope_stylesheet(&styles.join("\n"), self.options.media_base.as_deref());
+        if let Some((scope, css)) = sheet {
+            // The outer box keeps whatever the stylesheet positions or enlarges inside the page; the
+            // stylesheet cannot select it, since its rules reach only the inner box and what is in it.
+            clean = format!(
+                "<div class=\"pub-sheet\" style=\"contain:layout paint;overflow:clip\"><style>{css}</style><div class=\"{scope}\">{clean}</div></div>"
+            );
+        }
         if self.options.standalone {
             page(title, &clean)
         } else {
@@ -443,6 +460,18 @@ impl<'a> Renderer<'a> {
                     el.set_attribute("style", &rewrite_style(&style, media_base))?;
                     Ok(())
                 }))
+                // A publication's own stylesheet, applied to its page by `finish_styled`.
+                .append_element_content_handler(element!("style", |el| {
+                    markers.borrow_mut().styles.push(String::new());
+                    el.remove();
+                    Ok(())
+                }))
+                .append_element_content_handler(text!("style", |t: &mut TextChunk| {
+                    if let Some(last) = markers.borrow_mut().styles.last_mut() {
+                        last.push_str(t.as_str());
+                    }
+                    Ok(())
+                }))
                 .append_element_content_handler(element!("img", |el| {
                     let src = el.get_attribute("src");
                     match (media_base, src.as_deref().and_then(media_name)) {
@@ -497,6 +526,133 @@ fn rewrite_style(style: &str, media_base: Option<&str>) -> String {
         ));
     }
     out.join("; ")
+}
+
+/// A publication's stylesheet, made safe to put into the app's page: comments, `@import`,
+/// `@charset`, `@namespace` and `@font-face` are dropped, each `url()` points at the
+/// publication's pictures or is dropped, and `<` is escaped so it cannot end the `<style>`
+/// element. The rules are wrapped in `@scope`, so they reach only the page's own box; a
+/// stylesheet whose braces do not balance could close that scope, so it is refused.
+/// Returns the scope's class and the CSS.
+fn scope_stylesheet(css: &str, media_base: Option<&str>) -> Option<(String, String)> {
+    let chars: Vec<char> = css.chars().collect();
+    let mut out = String::with_capacity(css.len());
+    let mut depth = 0usize;
+    let mut i = 0;
+    // Skips a string starting at `i`, returning the index after it.
+    let string_end = |i: usize| -> usize {
+        let quote = chars[i];
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != quote && chars[j] != '\n' {
+            j += if chars[j] == '\\' { 2 } else { 1 };
+        }
+        (j + 1).min(chars.len())
+    };
+    let starts = |i: usize, word: &str| -> bool {
+        let w: Vec<char> = word.chars().collect();
+        chars.len() >= i + w.len()
+            && chars[i..i + w.len()]
+                .iter()
+                .zip(&w)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            let end = (i + 2..chars.len().saturating_sub(1))
+                .find(|&j| chars[j] == '*' && chars[j + 1] == '/');
+            i = end.map_or(chars.len(), |j| j + 2);
+            out.push(' ');
+        } else if c == '"' || c == '\'' {
+            let end = string_end(i);
+            out.extend(
+                chars[i..end]
+                    .iter()
+                    .map(|&c| if c == '<' { '\u{fffd}' } else { c }),
+            );
+            i = end;
+        } else if c == '\\' {
+            out.extend(&chars[i..(i + 2).min(chars.len())]);
+            i += 2;
+        } else if c == '{' {
+            depth += 1;
+            out.push(c);
+            i += 1;
+        } else if c == '}' {
+            depth = depth.checked_sub(1)?;
+            out.push(c);
+            i += 1;
+        } else if c == '<' {
+            out.push_str("\\3c ");
+            i += 1;
+        } else if c == '@'
+            && ["@import", "@charset", "@namespace"]
+                .iter()
+                .any(|w| starts(i, w))
+        {
+            // A statement up to its semicolon.
+            while i < chars.len() && chars[i] != ';' && chars[i] != '{' && chars[i] != '}' {
+                i = if chars[i] == '"' || chars[i] == '\'' {
+                    string_end(i)
+                } else {
+                    i + 1
+                };
+            }
+            if chars.get(i) == Some(&';') {
+                i += 1;
+            }
+        } else if c == '@' && starts(i, "@font-face") {
+            // A block, with any braces inside it.
+            let mut d = 0usize;
+            while i < chars.len() {
+                match chars[i] {
+                    '"' | '\'' => i = string_end(i),
+                    '{' => {
+                        d += 1;
+                        i += 1;
+                    }
+                    '}' => {
+                        i += 1;
+                        d = d.checked_sub(1)?;
+                        if d == 0 {
+                            break;
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+        } else if starts(i, "url(") {
+            let mut j = i + 4;
+            let mut inner = String::new();
+            while j < chars.len() && chars[j] != ')' {
+                if chars[j] == '"' || chars[j] == '\'' {
+                    let end = string_end(j);
+                    inner.extend(&chars[j + 1..end.saturating_sub(1).max(j + 1)]);
+                    j = end;
+                } else {
+                    inner.push(chars[j]);
+                    j += 1;
+                }
+            }
+            i = (j + 1).min(chars.len());
+            match (media_base, media_name(inner.trim())) {
+                (Some(base), Some(name)) => {
+                    let _ = write!(out, "url(\"{base}{name}\")");
+                }
+                _ => out.push_str("none"),
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    if depth != 0 || out.trim().is_empty() {
+        return None;
+    }
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&out, &mut hasher);
+    let scope = format!("pub-sheet-{:x}", std::hash::Hasher::finish(&hasher));
+    Some((scope.clone(), format!("@scope (.{scope}) {{\n{out}\n}}")))
 }
 
 fn to_marker_link(
@@ -884,6 +1040,57 @@ mod tests {
             rewrite_style("background-image: url(jwpub-media://a.jpg)", None),
             ""
         );
+    }
+
+    #[test]
+    fn stylesheets_reach_only_their_page() {
+        let (scope, css) = scope_stylesheet(
+            ".note { color: teal; background: url('jwpub-media://a.jpg') }",
+            Some("jwmedia://localhost/d/"),
+        )
+        .unwrap();
+        assert!(scope.starts_with("pub-sheet-"));
+        assert!(css.starts_with(&format!("@scope (.{scope}) {{")), "{css}");
+        assert!(
+            css.contains(r#"background: url("jwmedia://localhost/d/a.jpg")"#),
+            "{css}"
+        );
+        assert!(css.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn stylesheets_lose_what_could_load_or_escape() {
+        let css = scope_stylesheet(
+            r#"@import url("https://x.org/a.css"); @charset "utf-8"; /* } */ @font-face { font-family: F; src: url(https://x.org/f.woff) } p { background: url(https://x.org/t.png); content: "</style><b>" } a:after { content: "}" }"#,
+            None,
+        )
+        .unwrap()
+        .1;
+        for bad in ["@import", "@charset", "@font-face", "x.org", "</style"] {
+            assert!(!css.contains(bad), "{bad} in {css}");
+        }
+        assert!(css.contains("background: none"), "{css}");
+        // A brace in a string or a comment is not a brace of the stylesheet.
+        assert!(css.contains(r#"content: "}""#), "{css}");
+        assert!(
+            scope_stylesheet("p { color: red } </style><script>x</script>", None)
+                .unwrap()
+                .1
+                .contains("\\3c /style")
+        );
+    }
+
+    #[test]
+    fn stylesheets_that_could_close_the_scope_are_refused() {
+        for css in [
+            "p { color: red } } body { display: none }",
+            "p { color: red",
+            "} p {",
+            "",
+            "/* only */",
+        ] {
+            assert_eq!(scope_stylesheet(css, None), None, "{css}");
+        }
     }
 
     #[test]
