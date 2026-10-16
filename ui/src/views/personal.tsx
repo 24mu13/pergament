@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { filterNotes, type NoteSort } from "@/lib/notes";
 import { t } from "@/lib/i18n";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /** Notes, tags and bookmarks from user data, plus backups. */
 interface Loaded {
@@ -121,16 +122,16 @@ export function PersonalView() {
                   />
                 ))}
               </div>
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as NoteSort)}
-                aria-label={t("Sort notes")}
-                className="h-9 rounded-md border border-line bg-surface px-2 text-sm text-fg focus-visible:outline-2 focus-visible:outline-accent"
-              >
-                <option value="newest">{t("Newest first")}</option>
-                <option value="oldest">{t("Oldest first")}</option>
-                <option value="publication">{t("By publication")}</option>
-              </select>
+              <Select value={sort} onValueChange={(v) => setSort(v as NoteSort)}>
+                <SelectTrigger aria-label={t("Sort notes")} className="min-w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="newest">{t("Newest first")}</SelectItem>
+                  <SelectItem value="oldest">{t("Oldest first")}</SelectItem>
+                  <SelectItem value="publication">{t("By publication")}</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           )}
           {notes.length === 0 ? (

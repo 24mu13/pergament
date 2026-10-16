@@ -1,5 +1,6 @@
 import { useApp } from "@/app";
 import { Segmented } from "@/components/segmented";
+import { Slider } from "@/components/ui/slider";
 import type { ReadingFont } from "@/lib/settings";
 import { t } from "@/lib/i18n";
 
@@ -27,14 +28,14 @@ export function ReadingTab() {
       <section>
         <h2 className="mb-3 text-sm font-semibold">{t("Text size")}</h2>
         <div className="flex items-center gap-4">
-          <input
-            type="range"
+          <Slider
+            label={t("Text size")}
             min={0.8}
             max={1.6}
             step={0.05}
-            value={fontScale}
-            onChange={(e) => setFontScale(Number(e.target.value))}
-            className="w-72 accent-[var(--accent)]"
+            value={[fontScale]}
+            onValueChange={([v]) => setFontScale(v)}
+            className="w-72"
           />
           <span className="w-12 text-sm text-muted">{Math.round(fontScale * 100)} %</span>
         </div>

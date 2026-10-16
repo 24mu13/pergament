@@ -279,7 +279,8 @@ describe("Personal Study", () => {
     const titles = () => screen.getAllByText(/Dusk visits|Patient listening/).map((e) => e.textContent);
     await screen.findByText("Dusk visits");
     expect(titles()).toEqual(["Patient listening", "Dusk visits"]);
-    fireEvent.change(screen.getByLabelText("Sort notes"), { target: { value: "oldest" } });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Sort notes" }), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("option", { name: "Oldest first" }));
     expect(titles()).toEqual(["Dusk visits", "Patient listening"]);
     fireEvent.change(screen.getByLabelText("Search notes"), { target: { value: "patient" } });
     expect(titles()).toEqual(["Patient listening"]);
