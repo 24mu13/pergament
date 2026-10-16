@@ -37,7 +37,7 @@ describe("whats new languages picker", () => {
     fireEvent.click(screen.getByLabelText("What's New languages"));
     // "German" is the English name under the vernacular "Deutsch"; only the row has it.
     const row = await screen.findByText("German");
-    expect(row.closest("button")?.disabled).toBe(true);
+    expect(row.closest("[role=option]")?.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(row);
     expect(onChange).not.toHaveBeenCalled();
   });

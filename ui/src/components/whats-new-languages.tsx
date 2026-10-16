@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Languages } from "lucide-react";
 import { type Language } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
+import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { t } from "@/lib/i18n";
 import { loadLanguages } from "@/components/language-menu";
@@ -13,7 +14,6 @@ export function WhatsNewLanguages({ value, onChange }: { value: string[]; onChan
   const [query, setQuery] = useState("");
   const [languages, setLanguages] = useState<Language[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadLanguages()
@@ -32,21 +32,6 @@ export function WhatsNewLanguages({ value, onChange }: { value: string[]; onChan
     if (live.length !== value.length) onChange(live);
   }, [languages, value, onChange]);
 
-  // Outside clicks and Escape close the dropdown; picking a language keeps it open.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const byCode = useMemo(() => new Map(languages?.map((l) => [l.code, l]) ?? []), [languages]);
   const q = query.trim().toLowerCase();
   const matches = (l: Language) =>
@@ -60,17 +45,12 @@ export function WhatsNewLanguages({ value, onChange }: { value: string[]; onChan
   const row = (l: Language) => {
     const active = value.includes(l.code);
     return (
-      <button
+      <CommandItem
         key={l.code}
+        value={l.code}
         disabled={l.code === only}
-        onClick={() => {
-          if (l.code === only) return;
-          onChange(active ? value.filter((c) => c !== l.code) : [...value, l.code]);
-        }}
-        className={cn(
-          "flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-bar",
-          active && "text-accent",
-        )}
+        onSelect={() => onChange(active ? value.filter((c) => c !== l.code) : [...value, l.code])}
+        className={cn(active && "text-accent")}
       >
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium" dir={l.rtl ? "rtl" : undefined}>
@@ -81,43 +61,40 @@ export function WhatsNewLanguages({ value, onChange }: { value: string[]; onChan
           </span>
         </span>
         {active && <Check size={16} />}
-      </button>
+      </CommandItem>
     );
   };
 
+  // Picking a language keeps the list open, to pick several.
   return (
-    <div ref={ref} className="relative">
-      <button
-        aria-label={t("What's New languages")}
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-8 items-center gap-1.5 rounded-md px-2 text-muted hover:bg-bar hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label={t("What's New languages")}
+          className="flex h-8 items-center gap-1.5 rounded-md px-2 text-muted hover:bg-bar hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <Languages size={18} strokeWidth={1.6} />
+          <span className="text-[13px] font-medium">{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="flex max-h-[min(70vh,var(--radix-popover-content-available-height))] w-80 flex-col overflow-hidden p-0"
       >
-        <Languages size={18} strokeWidth={1.6} />
-        <span className="text-[13px] font-medium">{label}</span>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-10 z-40 flex max-h-[70vh] w-80 flex-col overflow-hidden rounded-md border border-line bg-surface shadow-sm">
-          <div className="border-b border-line p-3">
-            <Input
-              autoFocus
-              placeholder={t("Search languages")}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="w-full"
-            />
-          </div>
-          <div className="flex-1 overflow-y-auto py-1">
+        <Command shouldFilter={false} label={t("What's New languages")}>
+          <CommandInput autoFocus placeholder={t("Search languages")} value={query} onValueChange={setQuery} />
+          <CommandList>
             {error && <p className="px-4 py-2 text-sm text-muted">{t("Language list unavailable: {error}", { error })}</p>}
             {!languages && !error && <p className="px-4 py-2 text-sm text-muted">{t("Loading…")}</p>}
             {(languages ?? []).filter(matches).map(row)}
-          </div>
-          <div className="border-t border-line p-2">
-            <Button variant="outline" className="w-full" onClick={() => setOpen(false)}>
-              {t("Done")}
-            </Button>
-          </div>
+          </CommandList>
+        </Command>
+        <div className="border-t border-line p-2">
+          <Button variant="outline" className="w-full" onClick={() => setOpen(false)}>
+            {t("Done")}
+          </Button>
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
