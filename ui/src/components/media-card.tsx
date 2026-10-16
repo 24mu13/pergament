@@ -17,6 +17,10 @@ export interface MediaSource {
   detailed: boolean;
 }
 
+/** The mounted lists of downloads, all read again when one changes; a view opened during a download hears of it too. */
+const lists = new Set<() => Promise<void>>();
+const refreshAll = () => Promise.all([...lists].map((refresh) => refresh()));
+
 /** Downloaded recordings, the downloads in flight, and the actions on them. */
 export function useMediaDownloads() {
   const { toast, lang } = useApp();
@@ -33,6 +37,10 @@ export function useMediaDownloads() {
 
   useEffect(() => {
     void refresh();
+    lists.add(refresh);
+    return () => {
+      lists.delete(refresh);
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -60,7 +68,7 @@ export function useMediaDownloads() {
       try {
         await api.downloadMedia(lang, from.category, from.detailed, media.key, label);
         toast(t("Downloaded {title}", { title: media.title }));
-        await refresh();
+        await refreshAll();
       } catch (e) {
         toast(t("Download failed: {error}", { error: String(e) }));
       } finally {
@@ -70,7 +78,7 @@ export function useMediaDownloads() {
         });
       }
     },
-    [lang, refresh, toast],
+    [lang, toast],
   );
 
   const remove = useCallback(
@@ -81,9 +89,9 @@ export function useMediaDownloads() {
       } catch (e) {
         toast(t("Remove failed: {error}", { error: String(e) }));
       }
-      await refresh();
+      await refreshAll();
     },
-    [refresh, toast],
+    [toast],
   );
 
   const downloaded = useMemo(
