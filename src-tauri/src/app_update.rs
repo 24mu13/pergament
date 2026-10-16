@@ -1,9 +1,16 @@
 //! Updating the app itself from its GitHub releases: finding a newer signed
-//! release for the way the app was installed.
+//! release for the way the app was installed, checking its signature and
+//! putting it in place.
 
 use std::env;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 
 /// The minisign key the release workflow signs updates with (base64, as Tauri writes it).
@@ -152,11 +159,97 @@ pub fn available(
     })
 }
 
+/// Base64 of minisign text, as Tauri writes keys and `.sig` files.
+fn decode_text(b64: &str, what: &str) -> Result<String, String> {
+    let bytes = STANDARD
+        .decode(b64.trim())
+        .map_err(|e| format!("{what} is not base64: {e}"))?;
+    String::from_utf8(bytes).map_err(|_| format!("{what} is not text"))
+}
+
+/// Check `path` against a signature made with the key `public_key_b64`.
+pub fn verify_file(path: &Path, sig_b64: &str, public_key_b64: &str) -> Result<(), String> {
+    let key = PublicKey::decode(&decode_text(public_key_b64, "the public key")?)
+        .map_err(|e| format!("bad public key: {e}"))?;
+    let sig = Signature::decode(&decode_text(sig_b64, "the signature")?)
+        .map_err(|e| format!("bad signature: {e}"))?;
+    let mut verifier = key
+        .verify_stream(&sig)
+        .map_err(|e| format!("signature does not match: {e}"))?;
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        verifier.update(&buf[..n]);
+    }
+    verifier
+        .finalize()
+        .map_err(|e| format!("signature does not match: {e}"))
+}
+
+/// Write `contents` to a temp file next to `dest` and rename it over `dest`,
+/// so `dest` is always either the old or the whole new file. Replacing a
+/// running binary this way is safe on Linux.
+pub fn replace_file(dest: &Path, contents: &mut dyn Read) -> io::Result<()> {
+    let dir = dest
+        .parent()
+        .ok_or_else(|| io::Error::other("no parent directory"))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    io::copy(contents, &mut tmp)?;
+    tmp.flush()?;
+    tmp.as_file().sync_all()?;
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755))?;
+    tmp.persist(dest).map_err(|e| e.error)?;
+    Ok(())
+}
+
+/// The bytes of `<dir>/bin/<name>` in the release zip.
+fn zip_binary(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>, String> {
+    let suffix = format!("/bin/{name}");
+    let index = (0..archive.len())
+        .find(|&i| {
+            archive
+                .name_for_index(i)
+                .is_some_and(|n| n.ends_with(&suffix))
+        })
+        .ok_or_else(|| format!("the download has no bin/{name}"))?;
+    let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+/// Put a verified download in place of the installed files.
+pub fn install(kind: &InstallKind, download: &Path) -> Result<(), String> {
+    match kind {
+        InstallKind::Zip { bin_dir } => {
+            let file = File::open(download).map_err(|e| e.to_string())?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            // Both are read before anything is written, so a broken zip changes nothing.
+            let cli = zip_binary(&mut archive, "pergament")?;
+            let app = zip_binary(&mut archive, "pergament-app")?;
+            // The app last: if the first replacement fails, the old app still runs.
+            replace_file(&bin_dir.join("pergament"), &mut cli.as_slice())
+                .map_err(|e| e.to_string())?;
+            replace_file(&bin_dir.join("pergament-app"), &mut app.as_slice())
+                .map_err(|e| e.to_string())
+        }
+        InstallKind::AppImage(image) => {
+            let mut file = File::open(download).map_err(|e| e.to_string())?;
+            replace_file(image, &mut file).map_err(|e| e.to_string())
+        }
+        InstallKind::Nix | InstallKind::Manual => {
+            Err("this installation cannot be updated from the app".to_owned())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     fn asset(name: &str) -> Asset {
         Asset {
@@ -272,5 +365,110 @@ mod tests {
                 .installable
         );
         assert!(available(&r, "1.7.0", &zip_kind(), "x86_64").is_none());
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/update")
+            .join(name)
+    }
+
+    fn read(name: &str) -> String {
+        fs::read_to_string(fixture(name)).unwrap()
+    }
+
+    /// A zip install with the old binaries.
+    fn old_install() -> (tempfile::TempDir, InstallKind) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pergament"), "old-cli").unwrap();
+        fs::write(dir.path().join("pergament-app"), "old-app").unwrap();
+        let kind = InstallKind::Zip {
+            bin_dir: dir.path().to_owned(),
+        };
+        (dir, kind)
+    }
+
+    #[test]
+    fn accepts_a_good_signature() {
+        let r = verify_file(
+            &fixture("update.zip"),
+            &read("update.zip.sig"),
+            &read("test.key.pub"),
+        );
+        assert_eq!(r, Ok(()));
+    }
+
+    #[test]
+    fn rejects_a_tampered_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = fs::read(fixture("update.zip")).unwrap();
+        bytes[100] ^= 1;
+        let path = dir.path().join("update.zip");
+        fs::write(&path, bytes).unwrap();
+        assert!(verify_file(&path, &read("update.zip.sig"), &read("test.key.pub")).is_err());
+    }
+
+    #[test]
+    fn rejects_another_key() {
+        assert!(verify_file(&fixture("update.zip"), &read("update.zip.sig"), PUBLIC_KEY).is_err());
+    }
+
+    #[test]
+    fn replaces_both_binaries_in_a_zip_install() {
+        let (dir, kind) = old_install();
+        install(&kind, &fixture("update.zip")).unwrap();
+        for (name, text) in [("pergament", "new-cli"), ("pergament-app", "new-app")] {
+            let path = dir.path().join(name);
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "temp files left behind"
+        );
+    }
+
+    #[test]
+    fn leaves_the_install_alone_when_the_zip_lacks_a_binary() {
+        let (dir, kind) = old_install();
+        assert!(install(&kind, &fixture("missing-app.zip")).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("pergament")).unwrap(),
+            "old-cli"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("pergament-app")).unwrap(),
+            "old-app"
+        );
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "temp files left behind"
+        );
+    }
+
+    #[test]
+    fn replaces_an_appimage() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Pergament.AppImage");
+        fs::write(&image, "old").unwrap();
+        let download = dir.path().join("download");
+        fs::write(&download, "new image").unwrap();
+        install(&InstallKind::AppImage(image.clone()), &download).unwrap();
+        assert_eq!(fs::read_to_string(&image).unwrap(), "new image");
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn does_not_install_what_it_cannot_update() {
+        assert!(install(&InstallKind::Manual, &fixture("update.zip")).is_err());
+        assert!(install(&InstallKind::Nix, &fixture("update.zip")).is_err());
     }
 }
