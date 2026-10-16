@@ -1143,6 +1143,11 @@ async fn media(app: AppHandle, url: String) -> ApiResult<tauri::ipc::Response> {
 }
 
 pub fn run() {
+    // Tauri restarts `$APPIMAGE` when it is set; one inherited from another AppImage is not this app.
+    if app_update::stray_appimage() {
+        // SAFETY: no other threads exist yet.
+        unsafe { std::env::remove_var("APPIMAGE") };
+    }
     let root = std::env::var_os("PERGAMENT_LIBRARY")
         .map(PathBuf::from)
         .or_else(|| dirs::data_dir().map(|d| pergament::library::app_dir(&d)))

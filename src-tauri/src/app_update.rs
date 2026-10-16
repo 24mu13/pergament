@@ -34,18 +34,33 @@ pub enum InstallKind {
     Manual,
 }
 
-pub fn install_kind(nix: bool, appimage: Option<&Path>, exe: &Path) -> InstallKind {
+/// `appimage` and `appdir` are `$APPIMAGE` and `$APPDIR`. Both are inherited by
+/// child processes, so the AppImage only counts when the app runs from inside its mount.
+pub fn install_kind(
+    nix: bool,
+    appimage: Option<&Path>,
+    appdir: Option<&Path>,
+    exe: &Path,
+) -> InstallKind {
     if nix {
         return InstallKind::Nix;
     }
-    if let Some(image) = appimage {
-        return InstallKind::AppImage(image.to_owned());
+    if let (Some(image), Some(appdir)) = (appimage, appdir)
+        && exe.starts_with(appdir)
+    {
+        return match image.parent() {
+            Some(dir) if image.is_file() && writable(dir) => {
+                InstallKind::AppImage(image.to_owned())
+            }
+            _ => InstallKind::Manual,
+        };
     }
     let Some(bin_dir) = exe.parent() else {
         return InstallKind::Manual;
     };
     if exe.file_name().is_some_and(|n| n == "pergament-app")
         && bin_dir.join("pergament").is_file()
+        && !cargo_output(bin_dir)
         && writable(bin_dir)
     {
         InstallKind::Zip {
@@ -56,6 +71,17 @@ pub fn install_kind(nix: bool, appimage: Option<&Path>, exe: &Path) -> InstallKi
     }
 }
 
+/// `target/debug`, `target/release` or `target/<triple>/release`: a build, not an install.
+fn cargo_output(dir: &Path) -> bool {
+    dir.file_name()
+        .is_some_and(|n| n == "debug" || n == "release")
+        && dir
+            .ancestors()
+            .skip(1)
+            .take(2)
+            .any(|a| a.file_name().is_some_and(|n| n == "target"))
+}
+
 /// Tried rather than read from the mode bits, which miss ACLs, read-only mounts and root.
 fn writable(dir: &Path) -> bool {
     tempfile::NamedTempFile::new_in(dir).is_ok()
@@ -63,15 +89,26 @@ fn writable(dir: &Path) -> bool {
 
 pub fn current_install_kind() -> InstallKind {
     let appimage = env::var_os("APPIMAGE").map(PathBuf::from);
+    let appdir = env::var_os("APPDIR").map(PathBuf::from);
     // Cached before `main`, so it still names the installed file after an update replaced it.
     match tauri::utils::platform::current_exe() {
         Ok(exe) => install_kind(
             option_env!("PERGAMENT_UPDATER") == Some("nix"),
             appimage.as_deref(),
+            appdir.as_deref(),
             &exe,
         ),
         Err(_) => InstallKind::Manual,
     }
+}
+
+/// `$APPIMAGE` inherited from another AppImage (an editor or a terminal) that started this app.
+pub fn stray_appimage() -> bool {
+    let Some(appdir) = env::var_os("APPDIR") else {
+        return env::var_os("APPIMAGE").is_some();
+    };
+    env::var_os("APPIMAGE").is_some()
+        && !tauri::utils::platform::current_exe().is_ok_and(|exe| exe.starts_with(appdir))
 }
 
 /// `v1.2.3`, `1.2.3+build` or `1.2.3-rc1` as numbers; the suffix is ignored.
@@ -311,27 +348,100 @@ mod tests {
         fs::write(&exe, "app").unwrap();
         // Without the command line tool next to it, it is not the zip install.
         assert!(matches!(
-            install_kind(false, None, &exe),
+            install_kind(false, None, None, &exe),
             InstallKind::Manual
         ));
         fs::write(bin.join("pergament"), "cli").unwrap();
         assert!(
-            matches!(install_kind(false, None, &exe), InstallKind::Zip { bin_dir } if bin_dir == bin)
+            matches!(install_kind(false, None, None, &exe), InstallKind::Zip { bin_dir } if bin_dir == bin)
         );
-        assert!(matches!(install_kind(true, None, &exe), InstallKind::Nix));
-        let image = dir.path().join("Pergament.AppImage");
-        assert!(
-            matches!(install_kind(false, Some(&image), &exe), InstallKind::AppImage(p) if p == image)
-        );
+        assert!(matches!(
+            install_kind(true, None, None, &exe),
+            InstallKind::Nix
+        ));
         let other = dir.path().join("app");
         assert!(matches!(
-            install_kind(false, None, &other),
+            install_kind(false, None, None, &other),
             InstallKind::Manual
         ));
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o555)).unwrap();
-        let kind = install_kind(false, None, &exe);
+        let kind = install_kind(false, None, None, &exe);
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(kind, InstallKind::Manual));
+    }
+
+    /// An AppImage at `<dir>/apps/Pergament.AppImage`, mounted at `<dir>/.mount_x` with the app inside.
+    fn appimage_setup(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let apps = dir.join("apps");
+        fs::create_dir(&apps).unwrap();
+        let image = apps.join("Pergament.AppImage");
+        fs::write(&image, "image").unwrap();
+        let appdir = dir.join(".mount_x");
+        fs::create_dir_all(appdir.join("usr/bin")).unwrap();
+        let exe = appdir.join("usr/bin/pergament-app");
+        fs::write(&exe, "app").unwrap();
+        (image, appdir, exe)
+    }
+
+    #[test]
+    fn detects_a_running_appimage() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, appdir, exe) = appimage_setup(dir.path());
+        assert_eq!(
+            install_kind(false, Some(&image), Some(&appdir), &exe),
+            InstallKind::AppImage(image.clone())
+        );
+    }
+
+    /// `APPIMAGE` is inherited, so an app started from another AppImage (an editor, a terminal) sees that one's.
+    #[test]
+    fn ignores_an_appimage_it_is_not_running_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, appdir, _) = appimage_setup(dir.path());
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let exe = bin.join("pergament-app");
+        fs::write(&exe, "app").unwrap();
+        fs::write(bin.join("pergament"), "cli").unwrap();
+        assert_eq!(
+            install_kind(false, Some(&image), Some(&appdir), &exe),
+            InstallKind::Zip {
+                bin_dir: bin.clone()
+            }
+        );
+        assert_eq!(
+            install_kind(false, Some(&image), None, &exe),
+            InstallKind::Zip { bin_dir: bin }
+        );
+    }
+
+    #[test]
+    fn leaves_an_appimage_in_a_read_only_directory_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, appdir, exe) = appimage_setup(dir.path());
+        let apps = image.parent().unwrap();
+        fs::set_permissions(apps, fs::Permissions::from_mode(0o555)).unwrap();
+        let kind = install_kind(false, Some(&image), Some(&appdir), &exe);
+        fs::set_permissions(apps, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(kind, InstallKind::Manual);
+    }
+
+    /// `cargo build` puts both binaries next to each other too; those are not an install.
+    #[test]
+    fn does_not_update_a_cargo_build() {
+        let dir = tempfile::tempdir().unwrap();
+        for profile in ["debug", "release"] {
+            let bin = dir.path().join("target").join(profile);
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("pergament"), "cli").unwrap();
+            let exe = bin.join("pergament-app");
+            fs::write(&exe, "app").unwrap();
+            assert_eq!(
+                install_kind(false, None, None, &exe),
+                InstallKind::Manual,
+                "{profile}"
+            );
+        }
     }
 
     #[test]
