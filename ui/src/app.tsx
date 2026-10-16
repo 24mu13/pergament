@@ -725,11 +725,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           case "media":
             await playRecording(action.media);
             break;
+          // Only the reader shows excerpts; elsewhere the quoted publication is simply missing.
           case "missing":
+          case "extract":
             toast(t("Not in your library: {link}", { link: action.url ?? href }));
             break;
           case "ignore":
             break;
+          default:
+            action satisfies never;
         }
       } catch (e) {
         toast(t("Cannot follow link: {error}", { error: String(e) }));
