@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod app_update;
+pub mod auto;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,6 +39,8 @@ pub struct AppState {
     image_client: Mutex<Client>,
     /// Downloads and imports running now; an app update waits for them before it restarts.
     jobs: AtomicUsize,
+    /// Automatic backup settings and state.
+    auto: auto::Auto,
 }
 
 /// Counts a running job in [`AppState::jobs`] until it drops.
@@ -191,6 +194,9 @@ async fn media_links(media: MediaRef) -> ApiResult<Vec<remote::MediaFile>> {
 }
 
 /// How long a cached media category is used before it is fetched again.
+/// Wait before the first due-backup check, so it does not compete with loading the UI.
+const FIRST_BACKUP_CHECK_DELAY: Duration = Duration::from_secs(120);
+
 const MEDIA_CATEGORY_TTL: Duration = Duration::from_secs(6 * 3600);
 
 /// A video or audio category in a language, with thumbnails as `jwmedia:` URLs.
@@ -1083,7 +1089,8 @@ fn running_jobs(state: State<'_, AppState>) -> usize {
 /// Start the installed (possibly just replaced) app again.
 #[tauri::command]
 fn restart_app(app: AppHandle) {
-    app.restart();
+    // Goes through the exit events, so the close backup runs before the restart.
+    app.request_restart();
 }
 
 /// Whether serving `path` requires a network fetch (an uncached remote image).
@@ -1150,6 +1157,59 @@ async fn media(app: AppHandle, url: String) -> ApiResult<tauri::ipc::Response> {
     .map_err(|e| e.to_string())?
 }
 
+/// Back up the data as the app closes. Runs at most once, whichever exit path gets here first.
+fn backup_on_close(app: &AppHandle) {
+    if app.state::<AppState>().auto.claim_close_backup() {
+        backup_rolling(app, false);
+    }
+}
+
+/// Write a rolling backup; with `only_if_due` only when a day has passed since the last one.
+/// Errors are logged, never shown.
+fn backup_rolling(app: &AppHandle, only_if_due: bool) {
+    let state = app.state::<AppState>();
+    if only_if_due {
+        if !state.auto.rolling_due(auto::unix_now()) {
+            return;
+        }
+    } else if !state.auto.settings().rolling.enabled {
+        return;
+    }
+    let _job = state.job();
+    let user = match state.user() {
+        Ok(user) => user,
+        Err(e) => return eprintln!("rolling backup failed: {e}"),
+    };
+    if let Err(e) = state.auto.write_rolling_now(&user) {
+        eprintln!("rolling backup failed: {e}");
+    }
+}
+
+#[tauri::command]
+fn auto_settings(state: State<'_, AppState>) -> auto::AutoSettings {
+    state.auto.settings()
+}
+
+#[tauri::command]
+fn set_rolling(
+    state: State<'_, AppState>,
+    enabled: bool,
+    keep: usize,
+) -> ApiResult<auto::AutoSettings> {
+    state
+        .auto
+        .set_rolling(enabled, keep)
+        .map_err(|e| e.to_string())
+}
+
+/// Show the rolling backups folder in the file manager.
+#[tauri::command]
+fn open_backups_folder(state: State<'_, AppState>) -> ApiResult<()> {
+    let dir = state.auto.rolling_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    open::that_detached(&dir).map_err(|e| e.to_string())
+}
+
 pub fn run() {
     // Tauri restarts `$APPIMAGE` when it is set; one inherited from another AppImage is not this app.
     if app_update::stray_appimage() {
@@ -1168,6 +1228,7 @@ pub fn run() {
     std::fs::create_dir_all(library.media_dir()).expect("cannot create media directory");
     let media_dir = library.media_dir();
     let user = UserData::open(root.join(userdata::DB_NAME)).expect("cannot open user data");
+    let auto = auto::Auto::load(&root);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1184,6 +1245,7 @@ pub fn run() {
                 ..HttpConfig::default()
             })),
             jobs: AtomicUsize::new(0),
+            auto,
         })
         .on_window_event(|window, event| {
             if !matches!(event, WindowEvent::Destroyed) {
@@ -1208,6 +1270,8 @@ pub fn run() {
                     if let Some(note) = app.get_webview_window(NOTE) {
                         let _ = note.destroy();
                     }
+                    // Back up the data on the way out; it is quick and errors only get logged.
+                    backup_on_close(app);
                 }
                 _ => {}
             }
@@ -1217,6 +1281,16 @@ pub fn run() {
             // supports range requests; only the media folder is reachable.
             app.asset_protocol_scope()
                 .allow_directory(&media_dir, true)?;
+            // Once an hour, write the daily rolling backup when it is due.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // Stay out of the way while the window loads the user data.
+                std::thread::sleep(FIRST_BACKUP_CHECK_DELAY);
+                loop {
+                    backup_rolling(&handle, true);
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            });
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol(api::MEDIA_SCHEME, |ctx, request, responder| {
@@ -1290,9 +1364,18 @@ pub fn run() {
             export_backup,
             restore_backup,
             merge_backup,
+            auto_settings,
+            set_rolling,
+            open_backups_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Pergament");
+        .build(tauri::generate_context!())
+        .expect("error while building Pergament")
+        .run(|app, event| {
+            // Cmd+Q on macOS and restarts skip the window events; Exit is always sent.
+            if matches!(event, tauri::RunEvent::Exit) {
+                backup_on_close(app);
+            }
+        });
 }
 
 #[cfg(test)]
