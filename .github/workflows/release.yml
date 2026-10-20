@@ -117,7 +117,7 @@ jobs:
         run: |
           dpkg-deb --info target/release/bundle/deb/*.deb | grep -E 'Depends:.*(libwebkit2gtk-4\.1-0|gstreamer1\.0-libav)'
           appstreamcli validate src-tauri/io.github.v3rm1n.pergament.metainfo.xml
-          dpkg-deb --contents target/release/bundle/deb/*.deb | grep -q '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml$'
+          dpkg-deb --contents target/release/bundle/deb/*.deb | grep -Eq ' (\./)?usr/share/metainfo/io\.github\.v3rm1n\.pergament\.metainfo\.xml$'
           rpm -qlp target/release/bundle/rpm/*.rpm | grep -qx '/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml'
           scripts/test-deb-apt-files.sh target/release/bundle/deb/*.deb
 
