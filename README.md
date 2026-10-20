@@ -30,7 +30,9 @@ More in [docs/screenshots](docs/screenshots). All content shown is invented.
   bookmarks, all searchable. Notes can move to their own window. There,
   `Ctrl+L` links a Bible reference and `Ctrl+P` also opens it.
 - **Backups:** `.jwlibrary` files, the same format JW Library uses. Restore
-  one, or merge it with your data.
+  one, or merge it with your data. Pergament also writes a rolling backup to
+  the `backups` folder in the library folder when you close it and once a day,
+  and keeps the newest ones.
 - **Settings:** English, German, Portuguese (Brazil) or French; light or dark; a
   centered or full-width layout; an easy-to-read font; and a second display for
   the year text, recordings and pictures.
