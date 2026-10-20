@@ -22,6 +22,18 @@ pub const SCHEMA_VERSION: i64 = 16;
 /// Device name written into backups.
 pub const DEVICE_NAME: &str = "Pergament";
 
+/// Tables whose rows make up the content fingerprint.
+const FINGERPRINT_TABLES: [&str; 8] = [
+    "Location",
+    "UserMark",
+    "BlockRange",
+    "Note",
+    "Tag",
+    "TagMap",
+    "Bookmark",
+    "InputField",
+];
+
 const MANIFEST: &str = "manifest.json";
 const THUMBNAIL: &str = "default_thumbnail.png";
 const THUMBNAIL_PNG: &[u8] = include_bytes!("../assets/backup_thumbnail.png");
@@ -716,8 +728,65 @@ impl UserData {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Hash of the user's content: every row of the data tables, but not the
+    /// database-wide `LastModified` clock, playlists or media. A merge keeps
+    /// the later clock, so only the rows tell whether anything changed.
+    pub fn fingerprint(&self) -> Result<String> {
+        use rusqlite::types::ValueRef;
+
+        fn put(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
+            hasher.update([tag]);
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        }
+
+        let mut hasher = Sha256::new();
+        for table in FINGERPRINT_TABLES {
+            put(&mut hasher, b'T', table.as_bytes());
+            let columns = self
+                .conn
+                .prepare(&format!("SELECT * FROM {table}"))?
+                .column_count();
+            let order = (1..=columns)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut stmt = self
+                .conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                hasher.update(*b"R");
+                for i in 0..columns {
+                    match row.get_ref(i)? {
+                        ValueRef::Null => put(&mut hasher, b'N', &[]),
+                        ValueRef::Integer(v) => put(&mut hasher, b'I', &v.to_le_bytes()),
+                        ValueRef::Real(v) => put(&mut hasher, b'F', &v.to_le_bytes()),
+                        ValueRef::Text(v) => put(&mut hasher, b'S', v),
+                        ValueRef::Blob(v) => put(&mut hasher, b'B', v),
+                    }
+                }
+            }
+        }
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    /// Local time as `YYYY-MM-DD-HHMMSS`, for file names.
+    pub fn local_stamp(&self) -> Result<String> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%Y-%m-%d-%H%M%S', 'now', 'localtime')",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Write a `.jwlibrary` backup of the current data to `dest`.
     pub fn export_backup(&self, dest: &Path) -> Result<()> {
+        self.export_backup_as(dest, DEVICE_NAME)
+    }
+
+    /// Like `export_backup`, with `device_name` in the manifest.
+    pub fn export_backup_as(&self, dest: &Path, device_name: &str) -> Result<()> {
         let dir = tempfile::tempdir()?;
         let copy = dir.path().join(DB_NAME);
         self.conn
@@ -749,7 +818,7 @@ impl UserData {
                 last_modified_date: last_modified,
                 hash,
                 database_name: DB_NAME.into(),
-                device_name: DEVICE_NAME.into(),
+                device_name: device_name.into(),
                 schema_version: if version > 0 { version } else { SCHEMA_VERSION },
             },
         };
@@ -1630,17 +1699,7 @@ fn merge_bookmarks(
 /// Copy the database out of a backup into `dest` and return the manifest.
 fn unpack_backup(src: &Path, dest: &Path) -> Result<BackupManifest> {
     let mut zip = ZipArchive::new(File::open(src)?)?;
-    let manifest: BackupManifest = {
-        let entry = zip
-            .by_name(MANIFEST)
-            .map_err(|_| Error::MissingEntry(MANIFEST.into()))?;
-        let mut buf = Vec::new();
-        entry.take(MAX_MANIFEST + 1).read_to_end(&mut buf)?;
-        if buf.len() as u64 > MAX_MANIFEST {
-            return Err(Error::TooLarge(MANIFEST.into()));
-        }
-        serde_json::from_slice(&buf)?
-    };
+    let manifest = read_manifest(&mut zip)?;
     let name = &manifest.user_data_backup.database_name;
     if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
         return Err(Error::UnsafePath(name.clone()));
@@ -1655,6 +1714,24 @@ fn unpack_backup(src: &Path, dest: &Path) -> Result<BackupManifest> {
     }
     out.sync_all()?;
     Ok(manifest)
+}
+
+fn read_manifest(zip: &mut ZipArchive<File>) -> Result<BackupManifest> {
+    let entry = zip
+        .by_name(MANIFEST)
+        .map_err(|_| Error::MissingEntry(MANIFEST.into()))?;
+    let mut buf = Vec::new();
+    entry.take(MAX_MANIFEST + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_MANIFEST {
+        return Err(Error::TooLarge(MANIFEST.into()));
+    }
+    Ok(serde_json::from_slice(&buf)?)
+}
+
+/// The device name in the manifest of the backup at `path`; nothing else is read.
+pub fn backup_device_name(path: &Path) -> Result<String> {
+    let mut zip = ZipArchive::new(File::open(path)?)?;
+    Ok(read_manifest(&mut zip)?.user_data_backup.device_name)
 }
 
 /// Accept only an intact SQLite database with the user data tables.
@@ -3640,5 +3717,75 @@ mod tests {
             )
             .unwrap();
         assert!(!extra);
+    }
+
+    #[test]
+    fn fingerprint_stable_without_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let before = ud.fingerprint().unwrap();
+        assert_eq!(before.len(), 64);
+        ud.summary().unwrap();
+        ud.export_backup(&tmp.path().join("b.jwlibrary")).unwrap();
+        assert_eq!(ud.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn fingerprint_changes_on_edit_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let empty = ud.fingerprint().unwrap();
+        let guid = ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let added = ud.fingerprint().unwrap();
+        assert_ne!(added, empty);
+        ud.delete_mark(&guid).unwrap();
+        let deleted = ud.fingerprint().unwrap();
+        assert_ne!(deleted, added);
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        assert_ne!(ud.fingerprint().unwrap(), empty);
+    }
+
+    #[test]
+    fn fingerprint_ignores_last_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let before = ud.fingerprint().unwrap();
+        set_db_time(&ud, "2001-01-01T00:00:00Z");
+        assert_eq!(ud.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn fingerprint_changes_on_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .save_note(Some(&bible(3)), None, &note_input("Old", "Text", &[]))
+            .unwrap();
+        // The backup is older than the local database.
+        set_db_time(&remote, "2001-01-01T00:00:00Z");
+        set_db_time(&local, "2030-01-01T00:00:00Z");
+        let backup = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let before = local.fingerprint().unwrap();
+        local.merge_backup(&backup).unwrap();
+        assert_eq!(db_time(&local), "2030-01-01T00:00:00Z");
+        assert_ne!(local.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn export_backup_as_sets_device_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join("a").join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 6, &[verse(1, 0, 3)]).unwrap();
+        let backup = tmp.path().join("b.jwlibrary");
+        ud.export_backup_as(&backup, "Pergament (laptop)").unwrap();
+        assert_eq!(backup_device_name(&backup).unwrap(), "Pergament (laptop)");
+        let mut other = UserData::open(tmp.path().join("c").join(DB_NAME)).unwrap();
+        let summary = other.restore_backup(&backup).unwrap();
+        assert_eq!(summary.device.as_deref(), Some("Pergament (laptop)"));
+        let stamp = ud.local_stamp().unwrap();
+        assert_eq!(stamp.len(), "2026-10-20-123456".len());
     }
 }
