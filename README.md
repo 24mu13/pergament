@@ -49,6 +49,12 @@ sudo dnf install ./Pergament-X.Y.Z-linux-x86_64.rpm     # Fedora
 flatpak install --user Pergament-X.Y.Z-linux-x86_64.flatpak
 ```
 
+Installing the `.deb` also adds the Pergament apt repository
+(`https://v3rm1n0.github.io/pergament/apt/`), so later versions arrive with the
+normal system update. The repository is signed with the key
+`71162C8E5F5EFABAA6ECB400A8001EBD72C3A8BF`. `sudo apt remove pergament` removes
+the repository again; so does `apt purge`.
+
 **Linux zip:** unpack it and run `./install.sh`. It needs WebKitGTK 4.1, GTK 3,
 libsoup 3, OpenSSL and SQLite. Video needs `gst-libav` (`gstreamer1-libav` on
 Fedora); the packages above already include it.
