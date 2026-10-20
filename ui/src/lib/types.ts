@@ -1,6 +1,19 @@
 import type { CatalogEntry, Category, PubCard } from "@/lib/api";
 import { t } from "@/lib/i18n";
 
+export interface RollingSettings {
+  enabled: boolean;
+  keep: number;
+}
+export interface SyncSettings {
+  folder: string | null;
+  deviceId: string | null;
+}
+export interface AutoSettings {
+  rolling: RollingSettings;
+  sync: SyncSettings;
+}
+
 /**
  * Library category of a manifest `publicationType`. Ids 1–31 are the catalog's
  * `PublicationTypeId` (CATEGORIES in src/catalog.rs); negative ids are

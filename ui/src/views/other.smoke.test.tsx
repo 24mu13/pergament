@@ -1221,3 +1221,60 @@ describe("Settings app update", () => {
     expect(ran("restart_app")).toBe(false);
   });
 });
+
+describe("rolling backup settings", () => {
+  beforeEach(() => {
+    backend.cache_usage = () => ({ catalog: 0, covers: 0, partial: 0, other: 0, total: 0 });
+    backend.auto_settings = () => ({ rolling: { enabled: true, keep: 10 }, sync: { folder: null, deviceId: null } });
+    backend.set_rolling = ({ enabled, keep }) => ({ rolling: { enabled, keep }, sync: { folder: null, deviceId: null } });
+    backend.open_backups_folder = () => undefined;
+  });
+  const openData = async () => {
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+  };
+
+  it("reflects the setting, saves changes and opens the folder", async () => {
+    await openData();
+    const sw = await screen.findByRole("switch", { name: "Write backups automatically" });
+    await waitFor(() => expect(sw.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(sw);
+    await waitFor(() => expect(calls.find((c) => c.cmd === "set_rolling")?.args).toEqual({ enabled: false, keep: 10 }));
+    fireEvent.change(screen.getByLabelText("Keep the last … backups"), { target: { value: "5" } });
+    fireEvent.blur(screen.getByLabelText("Keep the last … backups"));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "set_rolling").at(-1)?.args).toEqual({ enabled: false, keep: 5 }));
+    fireEvent.click(screen.getByRole("button", { name: "Open backups folder" }));
+    await waitFor(() => expect(calls.some((c) => c.cmd === "open_backups_folder")).toBe(true));
+  });
+
+  const setCalls = () => calls.filter((c) => c.cmd === "set_rolling");
+
+  it("shows the error when the settings cannot be loaded", async () => {
+    backend.auto_settings = () => {
+      throw new Error("boom");
+    };
+    await openData();
+    expect(await screen.findByText(/Could not load the backup settings: .*boom/)).toBeTruthy();
+  });
+
+  it("saves the count only on blur or Enter, and only when valid", async () => {
+    await openData();
+    const input = (await screen.findByLabelText("Keep the last … backups")) as HTMLInputElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    fireEvent.change(input, { target: { value: "1" } });
+    fireEvent.change(input, { target: { value: "" } });
+    expect(setCalls()).toHaveLength(0);
+    fireEvent.blur(input);
+    expect(setCalls()).toHaveLength(0);
+    await waitFor(() => expect(input.value).toBe("10"));
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(setCalls()).toHaveLength(0);
+    fireEvent.blur(input);
+    await waitFor(() => expect(setCalls()).toHaveLength(1));
+    expect(setCalls()[0].args).toEqual({ enabled: true, keep: 5 });
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(setCalls()).toHaveLength(2));
+    expect(setCalls()[1].args).toEqual({ enabled: true, keep: 7 });
+  });
+});

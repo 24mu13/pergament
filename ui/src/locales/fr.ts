@@ -345,4 +345,12 @@ export const fr: Record<string, string> = {
   "Waiting for {n} downloads or imports to finish…": "En attente de la fin de {n} téléchargements ou importations…",
   "Save or close your note to restart.": "Enregistrez ou fermez votre note pour redémarrer.",
   "Restart now": "Redémarrer maintenant",
+  "Automatic backups and sync": "Sauvegardes automatiques et synchronisation",
+  "Write backups automatically": "Écrire les sauvegardes automatiquement",
+  "Keep the last … backups": "Conserver les … dernières sauvegardes",
+  "Open backups folder": "Ouvrir le dossier des sauvegardes",
+  "A backup is written to the backups folder in the library folder when you close Pergament and once a day, if something changed. Older ones are deleted.":
+    "Une sauvegarde est écrite dans le dossier « backups » du dossier de la bibliothèque à la fermeture de Pergament et une fois par jour, si quelque chose a changé. Les plus anciennes sont supprimées.",
+  "Could not load the backup settings: {error}":
+    "Impossible de charger les réglages de sauvegarde : {error}",
 };

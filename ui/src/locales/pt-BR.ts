@@ -387,4 +387,12 @@ export const ptBR: Record<string, string> = {
   "Waiting for {n} downloads or imports to finish…": "Aguardando {n} downloads ou importações terminarem…",
   "Save or close your note to restart.": "Salve ou feche sua nota para reiniciar.",
   "Restart now": "Reiniciar agora",
+  "Automatic backups and sync": "Backups automáticos e sincronização",
+  "Write backups automatically": "Gravar backups automaticamente",
+  "Keep the last … backups": "Manter os últimos … backups",
+  "Open backups folder": "Abrir a pasta de backups",
+  "A backup is written to the backups folder in the library folder when you close Pergament and once a day, if something changed. Older ones are deleted.":
+    "Um backup é gravado na pasta “backups” dentro da pasta da biblioteca quando você fecha o Pergament e uma vez por dia, se algo mudou. Os mais antigos são excluídos.",
+  "Could not load the backup settings: {error}":
+    "Não foi possível carregar as configurações de backup: {error}",
 };

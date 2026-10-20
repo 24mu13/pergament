@@ -1,5 +1,6 @@
 // Typed wrappers around the Tauri commands in src-tauri/src/lib.rs.
 import { invoke } from "@tauri-apps/api/core";
+import type { AutoSettings } from "@/lib/types";
 
 export interface CacheUsage {
   catalog: number;
@@ -466,6 +467,9 @@ export const api = {
   exportBackup: (path: string) => invoke<void>("export_backup", { path }),
   restoreBackup: (path: string) => invoke<UserDataSummary>("restore_backup", { path }),
   mergeBackup: (path: string) => invoke<MergeReport>("merge_backup", { path }),
+  autoSettings: () => invoke<AutoSettings>("auto_settings"),
+  setRolling: (enabled: boolean, keep: number) => invoke<AutoSettings>("set_rolling", { enabled, keep }),
+  openBackupsFolder: () => invoke<void>("open_backups_folder"),
   media: (url: string) => invoke<ArrayBuffer>("media", { url }),
   cacheUsage: () => invoke<CacheUsage>("cache_usage"),
   clearCache: () => invoke<void>("clear_cache"),
