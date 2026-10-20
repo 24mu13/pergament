@@ -32,7 +32,11 @@
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libsoup-3.0-0", "libssl3", "libsqlite3-0", "gstreamer1.0-libav"],
         "desktopTemplate": "desktop.template",
-        "files": { "/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml": "io.github.v3rm1n.pergament.metainfo.xml" }
+        "files": {
+          "/usr/share/metainfo/io.github.v3rm1n.pergament.metainfo.xml": "io.github.v3rm1n.pergament.metainfo.xml",
+          "/etc/apt/sources.list.d/pergament.sources": "../packaging/apt/pergament.sources",
+          "/etc/apt/keyrings/pergament.gpg": "../packaging/apt/pergament.gpg"
+        }
       },
       "rpm": {
         "depends": ["webkit2gtk4.1", "gtk3", "libsoup3", "openssl-libs", "sqlite-libs"],
