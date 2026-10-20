@@ -6,7 +6,8 @@
 # the AppImage also get a .sig file, the minisign signature the in-app updater
 # checks against the public key in src-tauri/src/app_update.rs. The notes are
 # the ones GitHub generates from the merged pull requests, with the install
-# instructions in front.
+# instructions in front. The debs of the last three releases are also published
+# as a signed apt repository on GitHub Pages (scripts/package-apt.sh).
 name: Release
 
 on:
@@ -256,3 +257,89 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload --clobber "$GITHUB_REF_NAME" target/package/*.dmg target/package/*.dmg.sha256
+
+  # The signed apt repository (scripts/package-apt.sh) with the debs of the last
+  # three published releases, built after the deb of this one is on its release.
+  # Kept as a build artifact when started by hand.
+  apt-repo:
+    needs: linux-packages
+    if: ${{ !cancelled() && needs.linux-packages.result == 'success' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install apt-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils
+
+      - name: Import the signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          gnupg_home=$(mktemp -d "$RUNNER_TEMP/gnupg.XXXXXX")
+          chmod 700 "$gnupg_home"
+          printf '%s\n' "$APT_SIGNING_KEY" | GNUPGHOME=$gnupg_home gpg --batch --quiet --import
+          # A key with a passphrase: gpg reads it from a file instead of asking
+          # for it on a terminal, which the runner doesn't have.
+          if [[ -n $APT_SIGNING_KEY_PASSPHRASE ]]; then
+            (umask 077 && printf '%s' "$APT_SIGNING_KEY_PASSPHRASE" > "$gnupg_home/passphrase")
+            printf 'pinentry-mode loopback\npassphrase-file %s\n' "$gnupg_home/passphrase" > "$gnupg_home/gpg.conf"
+          fi
+          # The first fpr line after the sec line is the primary key's.
+          fingerprint=$(GNUPGHOME=$gnupg_home gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr:/ { print $10; exit }')
+          [[ $fingerprint =~ ^[0-9A-F]{40}$ ]]
+          echo "GNUPGHOME=$gnupg_home" >> "$GITHUB_ENV"
+          echo "APT_KEY_ID=$fingerprint" >> "$GITHUB_ENV"
+
+      # Fails when the secret is not the key behind packaging/apt/pergament.gpg,
+      # before collect-debs, which dies while no release has a .deb.
+      - name: Check the signing key against the committed public key
+        run: echo test | gpg --batch --local-user "$APT_KEY_ID" --clearsign | gpgv --keyring "$PWD/packaging/apt/pergament.gpg"
+
+      - name: Download the debs of the last releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/collect-debs.sh target/apt-debs
+
+      - name: Build and sign the repository
+        run: scripts/package-apt.sh target/apt-debs target/pages/apt
+
+      # Fails when the secret is not the key behind packaging/apt/pergament.gpg.
+      - name: Check the signature against the committed public key
+        run: gpgv --keyring "$PWD/packaging/apt/pergament.gpg" target/pages/apt/InRelease
+
+      - name: Keep it as a build artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: apt-repo
+          path: target/pages
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/pages
+
+  # Puts the repository on GitHub Pages. A separate job because the
+  # environment is set per job; only tags publish. To retry, re-run apt-repo
+  # (which re-runs this job), not apt-deploy alone: a lone re-run deploys that
+  # run's stored artifact and could replace a newer repository.
+  apt-deploy:
+    needs: apt-repo
+    if: ${{ !cancelled() && needs.apt-repo.result == 'success' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
