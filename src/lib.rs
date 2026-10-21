@@ -18,6 +18,7 @@ pub mod net;
 pub mod reader;
 pub mod remote;
 pub mod render;
+pub mod sync_snapshot;
 pub mod updates;
 pub mod userdata;
 pub mod yeartext;
