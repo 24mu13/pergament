@@ -394,4 +394,32 @@ export const de: Record<string, string> = {
     "Beim Schließen von Pergament und einmal am Tag wird eine Sicherung in den Ordner „backups“ im Bibliotheksordner geschrieben, wenn sich etwas geändert hat. Ältere werden gelöscht.",
   "Could not load the backup settings: {error}":
     "Die Sicherungseinstellungen konnten nicht geladen werden: {error}",
+  "Choose sync folder…":
+    "Sync-Ordner wählen…",
+  "Sync now":
+    "Jetzt synchronisieren",
+  "Stop syncing":
+    "Synchronisierung beenden",
+  "Last synced {time} with {device}":
+    "Zuletzt synchronisiert: {time} mit {device}",
+  "Last synced {time}":
+    "Zuletzt synchronisiert: {time}",
+  "{device} wants to delete {n} items. Open Settings to decide.":
+    "{device} möchte {n} Elemente löschen. Öffne die Einstellungen, um zu entscheiden.",
+  "Sync: {error}":
+    "Synchronisierung: {error}",
+  "The library folder and its backups folder cannot be the sync folder.":
+    "Der Bibliotheksordner und sein Sicherungsordner können nicht der Sync-Ordner sein.",
+  "{device} would delete {n} items.":
+    "{device} würde {n} Elemente löschen.",
+  "Apply deletions":
+    "Löschungen übernehmen",
+  "Keep my data":
+    "Meine Daten behalten",
+  "Show conflicts":
+    "Konflikte anzeigen",
+  "Choose a folder that Nextcloud, Syncthing, Dropbox or another sync app keeps in sync. Each computer writes its own file there and merges the others; deletions carry over.":
+    "Wähle einen Ordner, den Nextcloud, Syncthing, Dropbox oder eine andere Sync-App abgleicht. Jeder Computer schreibt dort seine eigene Datei und führt die der anderen zusammen; Löschungen werden übernommen.",
+  "Sync is on: this also changes your data on the other synced computers.":
+    "Die Synchronisierung ist aktiv: Dadurch ändern sich auch deine Daten auf den anderen synchronisierten Computern.",
 };

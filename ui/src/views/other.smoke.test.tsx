@@ -55,7 +55,7 @@ import { GoTo } from "@/components/go-to";
 import { InlineNoteEditor } from "@/components/notes";
 import { AppUpdate } from "@/components/app-update";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
-import { emitTo } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 
 beforeEach(() => {
   calls.length = 0;
@@ -1276,5 +1276,200 @@ describe("rolling backup settings", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(setCalls()).toHaveLength(2));
     expect(setCalls()[1].args).toEqual({ enabled: true, keep: 7 });
+  });
+});
+
+describe("folder sync", () => {
+  const rolling = { enabled: true, keep: 10 };
+  const noSync = { folder: null, deviceId: null };
+  const status = (over: object = {}) => ({ folder: null, lastSync: null, lastDevice: null, error: null, pending: [], conflicts: [], ...over });
+  beforeEach(() => {
+    vi.mocked(message).mockReset();
+    vi.mocked(ask).mockReset();
+    vi.mocked(open).mockReset();
+    backend.cache_usage = () => ({ catalog: 0, covers: 0, partial: 0, other: 0, total: 0 });
+    backend.auto_settings = () => ({ rolling, sync: noSync });
+    backend.sync_status = () => status();
+  });
+  const openData = async () => {
+    renderIn(<SettingsView />);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Library & data" }));
+  };
+
+  it("sync settings without folder", async () => {
+    await openData();
+    expect(await screen.findByRole("button", { name: "Choose sync folder…" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+    expect(screen.queryByText(/Last synced/)).toBeNull();
+  });
+
+  it("chooses a folder and shows the error the status reports", async () => {
+    vi.mocked(open).mockResolvedValue("/tmp/sync");
+    backend.set_sync_folder = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_status = () => status({ folder: "/tmp/sync", error: "cannot write" });
+    await openData();
+    fireEvent.click(await screen.findByRole("button", { name: "Choose sync folder…" }));
+    expect(await screen.findByText("cannot write")).toBeTruthy();
+    expect(calls.find((c) => c.cmd === "set_sync_folder")?.args).toEqual({ path: "/tmp/sync" });
+    expect(screen.getByText("/tmp/sync")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop syncing" })).toBeTruthy();
+  });
+
+  it("shows when it last synced", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_status = () => status({ folder: "/tmp/sync", lastSync: 1_700_000_000, lastDevice: "laptop" });
+    await openData();
+    expect(await screen.findByText(/Last synced .* with laptop/)).toBeTruthy();
+  });
+
+  it("sync settings with pending peer", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_status = () => status({ folder: "/tmp/sync", pending: [{ file: "a.json", device: "laptop", deletions: 7 }] });
+    backend.resolve_peer = () => status({ folder: "/tmp/sync", pending: [{ file: "a.json", device: "laptop", deletions: 7 }] });
+    await openData();
+    expect(await screen.findByText("laptop would delete 7 items.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Apply deletions" }));
+    await waitFor(() => expect(calls.find((c) => c.cmd === "resolve_peer")?.args).toEqual({ file: "a.json", apply: true }));
+    fireEvent.click(await screen.findByRole("button", { name: "Keep my data" }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "resolve_peer").at(-1)?.args).toEqual({ file: "a.json", apply: false }));
+  });
+
+  it("shows the conflicts in a dialog", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_status = () => status({ folder: "/tmp/sync", conflicts: [{ table: "Note", guid: "g", summary: "Dusk" }] });
+    vi.mocked(message).mockResolvedValue(undefined as never);
+    await openData();
+    fireEvent.click(await screen.findByRole("button", { name: "Show conflicts" }));
+    await waitFor(() => expect(vi.mocked(message).mock.calls[0][0]).toContain("Note: Dusk"));
+  });
+
+  it("surfaces a failing command", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_now = () => {
+      throw new Error("nope");
+    };
+    await openData();
+    fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+    expect(await screen.findByText(/nope/)).toBeTruthy();
+  });
+
+  it("clears a refresh error once a refresh succeeds", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    let fail = true;
+    backend.sync_status = () => {
+      if (fail) throw new Error("flaky");
+      return status({ folder: "/tmp/sync", lastSync: 1_700_000_000, lastDevice: "laptop" });
+    };
+    await openData();
+    expect(await screen.findByText(/flaky/)).toBeTruthy();
+    fail = false;
+    // The app and the settings tab both listen; fire every handler.
+    const handlers = vi.mocked(listen).mock.calls.filter((c) => c[0] === "user-data-changed").map((c) => c[1]);
+    expect(handlers.length).toBeGreaterThan(1);
+    act(() => handlers.forEach((h) => h({ payload: null } as never)));
+    expect(await screen.findByText(/Last synced .* with laptop/)).toBeTruthy();
+    expect(screen.queryByText(/flaky/)).toBeNull();
+  });
+
+  describe("sync toasts", () => {
+    const waiting = status({ folder: "/tmp/sync", pending: [{ file: "a.jwlibrary", device: "laptop", deletions: 7 }] });
+    const toastText = "laptop wants to delete 7 items. Open Settings to decide.";
+
+    it("tells once about a peer waiting for a choice", async () => {
+      backend.sync_status = () => waiting;
+      renderIn(<span />);
+      expect(await screen.findByText(toastText)).toBeTruthy();
+      await waitFor(() => expect(listeners["user-data-changed"]).toBeTruthy());
+      const before = calls.filter((c) => c.cmd === "sync_status").length;
+      act(() => listeners["user-data-changed"]({ payload: null }));
+      act(() => void window.dispatchEvent(new Event("focus")));
+      await waitFor(() => expect(calls.filter((c) => c.cmd === "sync_status").length).toBeGreaterThanOrEqual(before + 2));
+      await act(async () => undefined);
+      expect(screen.getAllByText(toastText)).toHaveLength(1);
+    });
+
+    it("tells once about a folder error that appears later", async () => {
+      let current = status({ folder: "/tmp/sync" });
+      backend.sync_status = () => current;
+      renderIn(<span />);
+      await waitFor(() => expect(calls.some((c) => c.cmd === "sync_status")).toBe(true));
+      current = status({ folder: "/tmp/sync", error: "cannot read the sync folder: gone" });
+      act(() => void window.dispatchEvent(new Event("focus")));
+      expect(await screen.findByText("Sync: cannot read the sync folder: gone")).toBeTruthy();
+      act(() => void window.dispatchEvent(new Event("focus")));
+      await act(async () => undefined);
+      expect(screen.getAllByText("Sync: cannot read the sync folder: gone")).toHaveLength(1);
+    });
+
+    it("says nothing while sync is off", async () => {
+      backend.sync_status = () => ({ ...waiting, folder: null });
+      renderIn(<span />);
+      await waitFor(() => expect(calls.some((c) => c.cmd === "sync_status")).toBe(true));
+      await act(async () => undefined);
+      expect(screen.queryByText(toastText)).toBeNull();
+    });
+  });
+
+  it("shows when it last synced without a device", async () => {
+    backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+    backend.sync_status = () => status({ folder: "/tmp/sync", lastSync: 1_700_000_000, lastDevice: null });
+    await openData();
+    const line = (await screen.findByText(/Last synced/)).textContent ?? "";
+    expect(line).not.toContain(" with ");
+    expect(line).not.toContain("?");
+  });
+
+  it("translates the refusal of the library folder", async () => {
+    vi.mocked(open).mockResolvedValue("/lib/backups");
+    backend.set_sync_folder = () => {
+      throw "The library folder and its backups folder cannot be the sync folder.";
+    };
+    await openData();
+    fireEvent.click(await screen.findByRole("button", { name: "Choose sync folder…" }));
+    expect(await screen.findByText("The library folder and its backups folder cannot be the sync folder.")).toBeTruthy();
+  });
+
+  it("user-data-changed reloads", async () => {
+    function Probe() {
+      const { userVersion } = useApp();
+      return <span data-testid="uv">{userVersion}</span>;
+    }
+    renderIn(<Probe />);
+    await waitFor(() => expect(listeners["user-data-changed"]).toBeTruthy());
+    expect(screen.getByTestId("uv").textContent).toBe("0");
+    // The sync toasts listen too; fire the handlers of the last mount.
+    const handlers = vi.mocked(listen).mock.calls.filter((c) => c[0] === "user-data-changed").map((c) => c[1]);
+    act(() => handlers.slice(-2).forEach((h) => h({ payload: null } as never)));
+    expect(screen.getByTestId("uv").textContent).toBe("1");
+  });
+
+  describe("restore warning", () => {
+    const sentence = "Sync is on: this also changes your data on the other synced computers.";
+    const restore = async () => {
+      vi.mocked(open).mockResolvedValue("/tmp/b.jwlibrary");
+      vi.mocked(ask).mockResolvedValue(false);
+      await openData();
+      fireEvent.click(await screen.findByRole("button", { name: "Restore backup…" }));
+      await waitFor(() => expect(ask).toHaveBeenCalled());
+      return vi.mocked(ask).mock.calls[0][0] as string;
+    };
+    it("restore warns when syncing", async () => {
+      backend.auto_settings = () => ({ rolling, sync: { folder: "/tmp/sync", deviceId: "d" } });
+      expect(await restore()).toContain(sentence);
+    });
+    it("warns when the settings cannot be read", async () => {
+      let calls = 0;
+      backend.auto_settings = () => {
+        // The settings tab loads them once; only the restore's own read fails.
+        if (++calls > 1) throw new Error("boom");
+        return { rolling, sync: noSync };
+      };
+      expect(await restore()).toContain(sentence);
+    });
+    it("does not warn without a folder", async () => {
+      const text = await restore();
+      expect(text).toContain("Restoring replaces");
+      expect(text).not.toContain(sentence);
+    });
   });
 });

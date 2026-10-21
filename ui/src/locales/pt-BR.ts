@@ -395,4 +395,32 @@ export const ptBR: Record<string, string> = {
     "Um backup é gravado na pasta “backups” dentro da pasta da biblioteca quando você fecha o Pergament e uma vez por dia, se algo mudou. Os mais antigos são excluídos.",
   "Could not load the backup settings: {error}":
     "Não foi possível carregar as configurações de backup: {error}",
+  "Choose sync folder…":
+    "Escolher a pasta de sincronização…",
+  "Sync now":
+    "Sincronizar agora",
+  "Stop syncing":
+    "Parar de sincronizar",
+  "Last synced {time} with {device}":
+    "Última sincronização: {time} com {device}",
+  "Last synced {time}":
+    "Última sincronização: {time}",
+  "{device} wants to delete {n} items. Open Settings to decide.":
+    "{device} quer excluir {n} itens. Abra as Configurações para decidir.",
+  "Sync: {error}":
+    "Sincronização: {error}",
+  "The library folder and its backups folder cannot be the sync folder.":
+    "A pasta da biblioteca e a pasta de backups dela não podem ser a pasta de sincronização.",
+  "{device} would delete {n} items.":
+    "{device} excluiria {n} itens.",
+  "Apply deletions":
+    "Aplicar exclusões",
+  "Keep my data":
+    "Manter meus dados",
+  "Show conflicts":
+    "Mostrar conflitos",
+  "Choose a folder that Nextcloud, Syncthing, Dropbox or another sync app keeps in sync. Each computer writes its own file there and merges the others; deletions carry over.":
+    "Escolha uma pasta que o Nextcloud, o Syncthing, o Dropbox ou outro aplicativo de sincronização mantém sincronizada. Cada computador grava ali o seu próprio arquivo e mescla os dos outros; as exclusões são aplicadas.",
+  "Sync is on: this also changes your data on the other synced computers.":
+    "A sincronização está ativada: isso também altera seus dados nos outros computadores sincronizados.",
 };
