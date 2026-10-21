@@ -1845,8 +1845,10 @@ fn cut_ranges(tx: &Transaction<'_>, location: i64, new: &Range) -> Result<()> {
     Ok(())
 }
 
+/// Give note `note` exactly the user tags `tags`. Tags it keeps stay where
+/// they are in their lists; a tag it gains puts it last in that list.
 fn set_note_tags(tx: &Transaction<'_>, note: i64, tags: &[String]) -> Result<()> {
-    tx.execute("DELETE FROM TagMap WHERE NoteId = ?1", [note])?;
+    let mut ids = Vec::new();
     for name in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
         tx.execute(
             "INSERT OR IGNORE INTO Tag (Type, Name) VALUES (?1, ?2)",
@@ -1857,6 +1859,15 @@ fn set_note_tags(tx: &Transaction<'_>, note: i64, tags: &[String]) -> Result<()>
             params![TAG_USER, name],
             |r| r.get(0),
         )?;
+        ids.push(tag);
+    }
+    let keep = serde_json::to_string(&ids)?;
+    tx.execute(
+        "DELETE FROM TagMap WHERE NoteId = ?1
+         AND TagId NOT IN (SELECT value FROM json_each(?2))",
+        params![note, keep],
+    )?;
+    for tag in ids {
         tx.execute(
             "INSERT OR IGNORE INTO TagMap (NoteId, TagId, Position)
              VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1 FROM TagMap WHERE TagId = ?2))",
@@ -2161,6 +2172,57 @@ mod tests {
         assert_eq!(ud.notes(&bible(23)).unwrap()[0].mark_guid, None);
         ud.delete_note(&guid).unwrap();
         assert!(ud.all_notes(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn saving_a_note_again_keeps_its_tag_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let first = ud
+            .save_note(
+                Some(&bible(1)),
+                None,
+                &note_input("One", "a", &["joy", "study"]),
+            )
+            .unwrap();
+        let second = ud
+            .save_note(Some(&bible(1)), None, &note_input("Two", "b", &["study"]))
+            .unwrap();
+        // (tag, note guid) by position within each tag.
+        let order = |ud: &UserData| -> Vec<(String, String)> {
+            let mut stmt = ud
+                .conn
+                .prepare(
+                    "SELECT t.Name, n.Guid FROM TagMap m JOIN Tag t ON t.TagId = m.TagId
+                     JOIN Note n ON n.NoteId = m.NoteId ORDER BY t.Name, m.Position",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let before = order(&ud);
+        edit_note(&mut ud, &first, "One", "edited", &["joy", "study"]);
+        assert_eq!(order(&ud), before);
+
+        // A removed tag goes, an added one comes last in its list.
+        edit_note(&mut ud, &first, "One", "edited", &["study", "zeal"]);
+        let s = |t: &str, g: &str| (t.to_string(), g.to_string());
+        assert_eq!(
+            order(&ud),
+            [s("study", &first), s("study", &second), s("zeal", &first)]
+        );
+        edit_note(&mut ud, &second, "Two", "b", &["joy", "zeal"]);
+        assert_eq!(
+            order(&ud),
+            [
+                s("joy", &second),
+                s("study", &first),
+                s("zeal", &first),
+                s("zeal", &second)
+            ]
+        );
     }
 
     #[test]
