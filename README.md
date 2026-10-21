@@ -57,6 +57,25 @@ normal system update. The repository is signed with the key
 `71162C8E5F5EFABAA6ECB400A8001EBD72C3A8BF`. `sudo apt remove pergament` removes
 the repository again; so does `apt purge`.
 
+To add the repository first and install from it instead:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/pergament.gpg \
+  https://raw.githubusercontent.com/v3rm1n0/pergament/main/packaging/apt/pergament.gpg
+gpg --show-keys /etc/apt/keyrings/pergament.gpg   # check the fingerprint above
+sudo tee /etc/apt/sources.list.d/pergament.sources > /dev/null <<'EOF'
+Types: deb
+URIs: https://v3rm1n0.github.io/pergament/apt/
+Suites: ./
+Signed-By: /etc/apt/keyrings/pergament.gpg
+EOF
+sudo apt update && sudo apt install pergament
+```
+
+These are the same two files the package installs, so the package takes them
+over and removing it removes the repository as well.
+
 **Linux zip:** unpack it and run `./install.sh`. It needs WebKitGTK 4.1, GTK 3,
 libsoup 3, OpenSSL and SQLite. Video needs `gst-libav` (`gstreamer1-libav` on
 Fedora); the packages above already include it.
