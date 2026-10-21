@@ -434,9 +434,119 @@ behavior. [own]
   `LastModified` becomes the later of the two databases' values; it is not set
   to the time of the merge, so merging an old backup does not make the data
   look newer than they are. A merge that changes nothing leaves it alone.
-- Deletions are not propagated: a row missing on one side stays, so an item
-  deleted on one side comes back when the other side's backup is merged.
+- Deletions are not propagated by a manual merge: a row missing on one side
+  stays, so an item deleted on one side comes back when the other side's
+  backup is merged. Folder sync does pass them on (see "Sync").
 - Playlists and `IndependentMedia` are not merged.
+
+#### Sync
+
+Folder sync merges another computer's file with the same steps, but
+three-way: against the *base*, a snapshot of that computer's file as it was
+at the last merge, kept in the app's data folder. [own]
+
+- A snapshot holds every highlight (with its ranges), note, user tag,
+  bookmark, answer field and note or location `TagMap` row under a key that
+  does not depend on database ids, with a hash of its content. The keys are
+  the merge's: `UserMarkGuid`, note `Guid`, tag (`Type`, `Name`), bookmark
+  publication location and `Slot`, answer page (without its language) and
+  `TextTag`, and for a `TagMap` row its tag and its note `Guid` or location.
+  Locations are compared normalized as above, so the same row has the same
+  key and hash in every database. The database-wide `LastModified` and a
+  note's `LastModified` are not part of the hash.
+- Each key is compared in the base (B), the incoming file (I) and the local
+  data (L):
+
+  | B | I | L | Result |
+  |---|---|---|---|
+  | – | present | – | added |
+  | – | – | present | kept |
+  | – | present | present | nothing to do when equal, otherwise see below, conflict |
+  | present | missing | unchanged | deleted here |
+  | present | missing | changed | kept, conflict |
+  | present | unchanged | missing | stays deleted |
+  | present | changed | missing | added back, conflict |
+  | present | unchanged | present | local row kept |
+  | present | changed | unchanged | incoming row taken |
+  | present | changed | changed the same way | local row kept |
+  | present | changed | changed differently | see below, conflict |
+
+  An edit wins over a deletion on either side. A row changed only here is
+  never replaced by an older copy from the other computer, whatever the
+  database-wide `LastModified` says.
+- A row changed differently on both sides, or new on both sides with
+  different content (e.g. the same bookmark slot), is settled the same way
+  on every computer: a note by its own `LastModified`, the later one kept; a row
+  without a clock of its own (highlight, bookmark, answer, tag), or a note
+  changed at the same time, by its snapshot hash, the version with the
+  greater hash (compared as text) kept. The database-wide `LastModified`
+  is not used, as each computer would see itself as newer and keep its own
+  version for good. The row is reported as a conflict.
+- A note's tags and a tag's notes are `TagMap` rows of their own. A note or
+  tag deleted on one side and given a new `TagMap` row on the other counts
+  as changed: it is kept (or added back) with all its `TagMap` rows, and
+  reported. A note or tag added back brings its `TagMap` rows with it.
+- The order of a tag's notes is not merged. A `TagMap` row's hash is its
+  rank in the tag, but the merge only asks whether the row is there, so
+  moving a note within a tag is neither a change nor a conflict, and two
+  computers can keep different orders. A row added to a tag goes to its end.
+- Deletions run first, in the merge's transaction, the way the editor
+  deletes: a highlight's notes stay without it and its ranges go with it; a
+  note's `TagMap` rows go with the note; a tag is deleted only when no
+  `TagMap` row refers to it any more, otherwise it is kept and reported; an
+  answer is deleted from every location of its page, as in the editor. A
+  deleted row is missing from the incoming file by definition, so the merge
+  that follows never adds it back or updates it.
+- Should two rows of one database share a key (e.g. two `Location` rows
+  that normalize to the same page), the snapshot holds the first by id.
+  Only that row is ever deleted (an answer with the field on the other
+  locations of its page), and only that row is merged by these
+  rules; the other is merged by the manual merge's rules. A row left over
+  this way shows up in the next snapshot as new here and is passed on, so it
+  is never lost.
+- A new incoming highlight that overlaps a local one still follows the
+  newer database, as in a manual merge.
+- Without a base (the first merge of a computer's file), the merge is a
+  manual merge: nothing is deleted.
+- The deletions are checked for each kind of row apart: highlights and
+  notes, answers, bookmarks, and tags with their `TagMap` rows. When in any
+  kind they are more than half of the local rows of that kind and more than
+  5 rows, the merge stops before writing anything, including the safety
+  copy, and asks, giving the deletions and local rows summed over all
+  kinds. "Apply deletions" runs it as
+  computed, after a rolling backup of the local data (written even when
+  rolling backups are off); if that backup fails, the deletions wait and
+  the sync status shows the error. "Keep my data" runs it without deletions, and
+  the merged file still becomes the new base. That protects only this
+  computer: the rows the other computer deleted stay deleted there, as this
+  computer's own file now holds them unchanged against its base on the
+  other side. To recover them on the other computer, restore a backup there.
+- A computer whose synced rows are all gone (no highlight, note, user tag,
+  bookmark or answer) while its bases still hold rows lost or reset its
+  database. It is treated as new: before merging, it drops its bases and
+  its sync state, so every merge only adds. Empty bases (two empty
+  computers) do not count, so nothing is merged again and again.
+- A computer never writes its own file while it has no synced rows: another
+  computer may hold a base for that file (also from before a "Stop
+  syncing", which keeps the device id), and an empty file would delete its
+  rows. It writes once it has rows, e.g. after a merge refilled it, so a
+  round in which the other files are missing or unreadable writes nothing.
+  Deleting every row on purpose is treated the same way: the file is not
+  written and the rows come back from the other computers.
+- "Stop syncing" drops the bases. Syncing again merges without a base,
+  which only adds: rows deleted elsewhere in the meantime are not deleted
+  here (the other computers keep them deleted, as they are unchanged
+  against their bases).
+- A restore writes a rolling backup of the data it replaces (even when
+  rolling backups are off): the safety copy `userData.db.before-restore`
+  is replaced by the next merge.
+- Rolling backups (`Pergament-YYYY-MM-DD-HHMMSS.jwlibrary`) are never read
+  as another computer's file, and the library folder and its `backups`
+  folder cannot be the sync folder. The host part of the own file name is
+  stored with the device id, so a renamed computer keeps its file.
+- The snapshot of the merged file becomes the new base only after the merge
+  has committed. Merging the same file again, or a file equal to the base,
+  changes nothing.
 
 ## Unknown / not relied upon
 
