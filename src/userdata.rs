@@ -2215,6 +2215,14 @@ pub fn backup_device_name(path: &Path) -> Result<String> {
     Ok(read_manifest(&mut zip)?.user_data_backup.device_name)
 }
 
+/// The device name and the database hash in the manifest of the backup at
+/// `path`; nothing else is read. The hash tells whether a file changed.
+pub(crate) fn backup_identity(path: &Path) -> Result<(String, String)> {
+    let mut zip = ZipArchive::new(File::open(path)?)?;
+    let info = read_manifest(&mut zip)?.user_data_backup;
+    Ok((info.device_name, info.hash))
+}
+
 /// Accept only an intact SQLite database with the user data tables.
 pub(crate) fn check_database(path: &Path) -> Result<()> {
     let invalid = |reason: String| Error::InvalidDatabase {

@@ -7,6 +7,7 @@ pub mod cache;
 pub mod catalog;
 pub mod crypto;
 mod error;
+pub mod folder_sync;
 pub mod jwpub;
 pub mod languages;
 pub mod library;
