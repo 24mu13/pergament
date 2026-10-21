@@ -5,25 +5,30 @@ pub mod api;
 pub mod app_update;
 pub mod auto;
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pergament::Library;
 use pergament::catalog::{Catalog, CatalogItem};
+use pergament::folder_sync::SyncState;
 use pergament::languages::Language;
 use pergament::links::{Link, MediaRef};
 use pergament::mediator;
 use pergament::navigate::{Page, Target};
 use pergament::net::{Client, Expected, HttpConfig};
 use pergament::remote::{self, Request};
+use pergament::sync_snapshot::DeleteGuard;
 use pergament::userdata::{self, Loc, NoteInput, Range, UserData};
 use serde::Serialize;
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use api::{ApiResult, LinkAction, PubCard, PubDetail};
+use auto::{SyncMsg, SyncStatus};
 
 pub struct AppState {
     library: Mutex<Library>,
@@ -747,10 +752,20 @@ fn save_answer(
     value: String,
 ) -> ApiResult<()> {
     let (loc, title) = api::page_location(&*state.lib()?, &target)?;
-    state
+    let saved = state
         .user()?
         .save_answer(&loc, Some(&title), &tag, &value)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    edited(&state, saved)
+}
+
+/// Pass on a command's result; a success schedules the sync write.
+/// Call it after the user data lock is released.
+fn edited<T>(state: &AppState, result: ApiResult<T>) -> ApiResult<T> {
+    if result.is_ok() {
+        state.auto.changed();
+    }
+    result
 }
 
 #[tauri::command]
@@ -761,23 +776,26 @@ fn add_mark(
     ranges: Vec<Range>,
 ) -> ApiResult<String> {
     let (loc, title) = api::page_location(&*state.lib()?, &target)?;
-    state
+    let added = state
         .user()?
         .add_mark(&loc, Some(&title), color, &ranges)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    edited(&state, added)
 }
 
 #[tauri::command]
 fn set_mark_color(state: State<'_, AppState>, guid: String, color: i64) -> ApiResult<()> {
-    state
+    let set = state
         .user()?
         .set_mark_color(&guid, color)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    edited(&state, set)
 }
 
 #[tauri::command]
 fn delete_mark(state: State<'_, AppState>, guid: String) -> ApiResult<()> {
-    state.user()?.delete_mark(&guid).map_err(|e| e.to_string())
+    let deleted = state.user()?.delete_mark(&guid).map_err(|e| e.to_string());
+    edited(&state, deleted)
 }
 
 /// Create (with `target`) or update a note; returns its guid.
@@ -791,19 +809,21 @@ fn save_note(
         Some(t) => Some(api::page_location(&*state.lib()?, t)?),
         None => None,
     };
-    state
+    let saved = state
         .user()?
         .save_note(
             location.as_ref().map(|(l, _)| l),
             location.as_ref().map(|(_, t)| t.as_str()),
             &note,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    edited(&state, saved)
 }
 
 #[tauri::command]
 fn delete_note(state: State<'_, AppState>, guid: String) -> ApiResult<()> {
-    state.user()?.delete_note(&guid).map_err(|e| e.to_string())
+    let deleted = state.user()?.delete_note(&guid).map_err(|e| e.to_string());
+    edited(&state, deleted)
 }
 
 #[tauri::command]
@@ -848,16 +868,27 @@ async fn export_backup(app: AppHandle, path: String) -> ApiResult<()> {
     .map_err(|e| e.to_string())?
 }
 
-/// Replace all user data with a `.jwlibrary` backup.
+/// Replace all user data with a `.jwlibrary` backup. A rolling backup of
+/// the current data is written first, as the safety copy does not outlive
+/// the next sync merge. With sync on, the own file is written right away,
+/// so the restore reaches the other computers.
 #[tauri::command]
 async fn restore_backup(app: AppHandle, path: String) -> ApiResult<pergament::userdata::Summary> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let _job = state.job();
-        state
-            .user()?
-            .restore_backup(std::path::Path::new(&path))
-            .map_err(|e| e.to_string())
+        let restored = {
+            let mut user = state.user()?;
+            state
+                .auto
+                .write_safety_backup(&user)
+                .map_err(|e| format!("cannot back up the current data first: {e}"))?;
+            user.restore_backup(std::path::Path::new(&path))
+                .map_err(|e| e.to_string())
+        };
+        let restored = edited(&state, restored)?;
+        state.auto.send(SyncMsg::WriteNow);
+        Ok(restored)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -869,10 +900,11 @@ async fn merge_backup(app: AppHandle, path: String) -> ApiResult<pergament::user
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let _job = state.job();
-        state
+        let merged = state
             .user()?
             .merge_backup(std::path::Path::new(&path))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        edited(&state, merged)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1161,7 +1193,350 @@ async fn media(app: AppHandle, url: String) -> ApiResult<tauri::ipc::Response> {
 fn backup_on_close(app: &AppHandle) {
     if app.state::<AppState>().auto.claim_close_backup() {
         backup_rolling(app, false);
+        write_own_on_close(app);
     }
+}
+
+/// Write this computer's sync file as the app closes, if an edit has not
+/// reached it yet. Stops the sync worker. Does nothing, and takes no lock,
+/// while sync is off.
+fn write_own_on_close(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.auto.sync_folder().is_none() {
+        return;
+    }
+    let _job = state.job();
+    // Taking the lock waits for a write or merge the worker is in the middle of.
+    let user = match state.user() {
+        Ok(user) => user,
+        Err(e) => return eprintln!("sync write failed: {e}"),
+    };
+    let unwritten = state
+        .auto
+        .schedule
+        .lock()
+        .map_or(true, |mut s| s.on_close());
+    let Some(folder) = state.auto.sync_folder().filter(|_| unwritten) else {
+        return;
+    };
+    let mut sync_state = SyncState::load(&folder.state_dir);
+    if let Err(e) = folder.write_own(&user, state.auto.host(), &mut sync_state) {
+        eprintln!("sync write failed: {e}");
+    }
+}
+
+/// What the sync worker collected from its messages and timers.
+#[derive(Default)]
+struct SyncWork {
+    write: bool,
+    sync: bool,
+    reconfigure: bool,
+    choices: BTreeMap<String, DeleteGuard>,
+    /// Dropped once the work is done, which wakes the waiting commands.
+    done: Vec<Sender<()>>,
+}
+
+impl SyncWork {
+    fn add(&mut self, msg: SyncMsg, auto: &auto::Auto) {
+        match msg {
+            SyncMsg::Wake => {}
+            SyncMsg::FolderChanged => {
+                if let Ok(mut s) = auto.schedule.lock() {
+                    s.folder_changed(Instant::now());
+                }
+            }
+            SyncMsg::WriteNow => self.write = true,
+            SyncMsg::Reconfigure => self.reconfigure = true,
+            SyncMsg::Sync { choices, done } => {
+                self.sync = true;
+                self.choices.extend(choices);
+                self.done.extend(done);
+            }
+        }
+    }
+}
+
+/// The folder being watched, and its watcher when watching works there.
+type Watched = (PathBuf, Option<notify::RecommendedWatcher>);
+
+/// The one thread that writes this computer's sync file and merges the
+/// others, so merges never overlap. It holds the user data lock only while
+/// writing or merging, never while it waits.
+fn sync_worker(app: AppHandle, tx: Sender<SyncMsg>, rx: Receiver<SyncMsg>) {
+    let mut watched: Option<Watched> = None;
+    let mut health = auto::FolderHealth::default();
+    loop {
+        let state = app.state::<AppState>();
+        let auto = &state.auto;
+        let deadline = auto.schedule.lock().ok().and_then(|s| s.next_deadline());
+        let first = match deadline {
+            None => match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => return,
+            },
+            Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => return,
+            },
+        };
+        let mut work = SyncWork::default();
+        for msg in first.into_iter().chain(rx.try_iter()) {
+            work.add(msg, auto);
+        }
+        if let Ok(mut s) = auto.schedule.lock() {
+            let due = s.take_due(Instant::now());
+            work.write |= due.write;
+            work.sync |= due.sync;
+        }
+        update_watcher(auto, &tx, &mut watched, work.reconfigure);
+        if work.sync {
+            let readable = sync_round(&app, &work.choices);
+            if readable.is_some_and(|r| health.round(r)) {
+                update_watcher(auto, &tx, &mut watched, true);
+            }
+        } else if work.write {
+            sync_write(&app);
+        }
+    }
+}
+
+/// Watch the configured folder; a new folder, or `force`, starts over.
+fn update_watcher(
+    auto: &auto::Auto,
+    tx: &Sender<SyncMsg>,
+    watched: &mut Option<Watched>,
+    force: bool,
+) {
+    let folder = auto.sync_folder();
+    let wanted = folder.as_ref().map(|f| &f.dir);
+    if !force && watched.as_ref().map(|(dir, _)| dir) == wanted {
+        return;
+    }
+    *watched = folder.map(|f| {
+        let watcher = watch_folder(&f.dir, f.own.clone(), tx.clone())
+            .inspect_err(|e| eprintln!("cannot watch {}: {e}", f.dir.display()))
+            .ok();
+        (f.dir, watcher)
+    });
+}
+
+/// Report changes to other computers' files in `dir`; the poll covers the rest.
+fn watch_folder(
+    dir: &Path,
+    own: String,
+    tx: Sender<SyncMsg>,
+) -> notify::Result<notify::RecommendedWatcher> {
+    use notify::event::{AccessKind, AccessMode, EventKind};
+    use notify::{RecursiveMode, Watcher};
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let relevant = match event {
+            // Reading the files (as a merge does) changes nothing.
+            Ok(event) if matches!(event.kind, EventKind::Access(kind) if kind != AccessKind::Close(AccessMode::Write)) => {
+                false
+            }
+            Ok(event) => {
+                event.paths.is_empty() || event.paths.iter().any(|p| is_peer_file(p, &own))
+            }
+            Err(_) => true,
+        };
+        if relevant {
+            let _ = tx.send(SyncMsg::FolderChanged);
+        }
+    })?;
+    watcher.watch(dir, RecursiveMode::NonRecursive)?;
+    Ok(watcher)
+}
+
+/// Another computer's `Pergament-<host>-<id>.jwlibrary`; temp files start
+/// with a dot, and rolling backups are no device files.
+fn is_peer_file(path: &Path, own: &str) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n != own && pergament::folder_sync::is_device_file(n))
+}
+
+/// Merge the other computers' files, then write this computer's file.
+/// Returns whether the folder could be read; `None` when no round ran.
+fn sync_round(app: &AppHandle, choices: &BTreeMap<String, DeleteGuard>) -> Option<bool> {
+    let state = app.state::<AppState>();
+    let auto = &state.auto;
+    // Sync off: leave the user data alone (checked again under the lock).
+    auto.sync_folder()?;
+    let no_choices = BTreeMap::new();
+    let (merged, written, sync_state, backup_error) = {
+        let _job = state.job();
+        let mut user = match state.user() {
+            Ok(user) => user,
+            Err(e) => {
+                eprintln!("sync failed: {e}");
+                return None;
+            }
+        };
+        // Under the user lock the folder cannot change, and after the close
+        // write nothing runs any more.
+        if auto.schedule.lock().map_or(true, |s| s.is_closed()) {
+            return None;
+        }
+        let folder = auto.sync_folder()?;
+        // Applied deletions go only after a rolling backup of the data as
+        // they are; without one the choices wait for the next round.
+        let mut choices = choices;
+        let mut backup_error = None;
+        if auto::needs_safety_backup(choices)
+            && let Err(e) = auto.write_safety_backup(&user)
+        {
+            eprintln!("rolling backup before sync deletions failed: {e}");
+            backup_error = Some(format!(
+                "cannot back up the data before applying the deletions: {e}"
+            ));
+            choices = &no_choices;
+        }
+        let mut sync_state = SyncState::load(&folder.state_dir);
+        let merged = folder.sync_peers(&mut user, &mut sync_state, choices);
+        // An unreadable folder changes nothing, the own file included.
+        let written = merged.is_ok().then(|| {
+            if let Ok(mut s) = auto.schedule.lock() {
+                s.begin_write();
+            }
+            folder.write_own(&user, auto.host(), &mut sync_state)
+        });
+        (merged, written, sync_state, backup_error)
+    };
+    let readable = merged.is_ok();
+    let mut changed = false;
+    if let Ok(mut status) = auto.status.lock() {
+        match merged {
+            Ok(results) => changed = status.record(results, auto::unix_now()),
+            Err(e) => status.error = Some(format!("cannot read the sync folder: {e}")),
+        }
+        status.sync_pending(&sync_state);
+        if let Some(Err(e)) = &written {
+            status.error = Some(format!("cannot write to the sync folder: {e}"));
+        }
+        if let Some(e) = backup_error {
+            status.add_error(e);
+        }
+    }
+    if let Ok(mut s) = auto.schedule.lock() {
+        if matches!(written, Some(Err(_))) {
+            s.write_failed();
+        }
+        s.synced(Instant::now());
+    }
+    if changed {
+        let _ = app.emit_to("main", "user-data-changed", ());
+    }
+    Some(readable)
+}
+
+/// Write this computer's file after edits or a restore.
+fn sync_write(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let auto = &state.auto;
+    // Sync off: leave the user data alone (checked again under the lock).
+    if auto.sync_folder().is_none() {
+        return;
+    }
+    let written = {
+        let _job = state.job();
+        let user = match state.user() {
+            Ok(user) => user,
+            Err(e) => return eprintln!("sync write failed: {e}"),
+        };
+        if auto.schedule.lock().map_or(true, |s| s.is_closed()) {
+            return;
+        }
+        let Some(folder) = auto.sync_folder() else {
+            return;
+        };
+        if let Ok(mut s) = auto.schedule.lock() {
+            s.begin_write();
+        }
+        let mut sync_state = SyncState::load(&folder.state_dir);
+        folder.write_own(&user, auto.host(), &mut sync_state)
+    };
+    if let Err(e) = written {
+        eprintln!("sync write failed: {e}");
+        if let Ok(mut s) = auto.schedule.lock() {
+            s.write_failed();
+        }
+        if let Ok(mut status) = auto.status.lock() {
+            status.error = Some(format!("cannot write to the sync folder: {e}"));
+        }
+    }
+}
+
+/// Have the worker run a merge round and wait until it is over.
+fn sync_and_wait(auto: &auto::Auto, choices: BTreeMap<String, DeleteGuard>) {
+    let (done, wait) = mpsc::channel();
+    auto.send(SyncMsg::Sync {
+        choices,
+        done: Some(done),
+    });
+    // The worker drops `done` when the round is over.
+    let _ = wait.recv();
+}
+
+/// Sync with `path`, or stop syncing with `None` (the folder's files stay).
+#[tauri::command]
+async fn set_sync_folder(app: AppHandle, path: Option<String>) -> ApiResult<auto::AutoSettings> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let path = path.map(PathBuf::from);
+        if path.as_ref().is_some_and(|p| !p.is_dir()) {
+            return Err("not a folder".to_owned());
+        }
+        let settings = {
+            // No merge runs while the folder changes.
+            let _job = state.job();
+            let _user = state.user()?;
+            state
+                .auto
+                .set_sync_folder(path)
+                .map_err(|e| e.to_string())?
+        };
+        state.auto.send(SyncMsg::Reconfigure);
+        if settings.sync.folder.is_some() {
+            sync_and_wait(&state.auto, BTreeMap::new());
+        }
+        Ok(settings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn sync_now(app: AppHandle) -> ApiResult<SyncStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        sync_and_wait(&state.auto, BTreeMap::new());
+        Ok(state.auto.sync_status())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn sync_status(state: State<'_, AppState>) -> SyncStatus {
+    state.auto.sync_status()
+}
+
+/// Answer a held-back peer: `apply` its deletions, or keep the data here.
+#[tauri::command]
+async fn resolve_peer(app: AppHandle, file: String, apply: bool) -> ApiResult<SyncStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let guard = if apply {
+            DeleteGuard::Apply
+        } else {
+            DeleteGuard::Skip
+        };
+        sync_and_wait(&state.auto, BTreeMap::from([(file, guard)]));
+        Ok(state.auto.sync_status())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Write a rolling backup; with `only_if_due` only when a day has passed since the last one.
@@ -1248,10 +1623,18 @@ pub fn run() {
             auto,
         })
         .on_window_event(|window, event| {
+            let app = window.app_handle();
+            if matches!(event, WindowEvent::Focused(true)) && window.label() == "main" {
+                // Back at the app: bring in what the other computers did.
+                app.state::<AppState>().auto.send(SyncMsg::Sync {
+                    choices: BTreeMap::new(),
+                    done: None,
+                });
+                return;
+            }
             if !matches!(event, WindowEvent::Destroyed) {
                 return;
             }
-            let app = window.app_handle();
             match window.label() {
                 // Tell the app the display was closed, so the setting follows.
                 DISPLAY => {
@@ -1291,6 +1674,16 @@ pub fn run() {
                     std::thread::sleep(Duration::from_secs(3600));
                 }
             });
+            // Folder sync: one worker, starting with a round at startup.
+            let (tx, rx) = mpsc::channel();
+            let auto = &app.state::<AppState>().auto;
+            auto.set_worker(tx.clone());
+            auto.send(SyncMsg::Sync {
+                choices: BTreeMap::new(),
+                done: None,
+            });
+            let handle = app.handle().clone();
+            std::thread::spawn(move || sync_worker(handle, tx, rx));
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol(api::MEDIA_SCHEME, |ctx, request, responder| {
@@ -1367,6 +1760,10 @@ pub fn run() {
             auto_settings,
             set_rolling,
             open_backups_folder,
+            set_sync_folder,
+            sync_now,
+            sync_status,
+            resolve_peer,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Pergament")
@@ -1400,6 +1797,31 @@ mod tests {
         assert_eq!(jobs.load(Ordering::SeqCst), 2);
         drop((a, b));
         assert_eq!(jobs.load(Ordering::SeqCst), 0);
+    }
+
+    /// The watcher ignores this computer's own writes, so they don't start a merge.
+    #[test]
+    fn watcher_reacts_to_other_computers_files_only() {
+        use super::is_peer_file;
+        use std::path::Path;
+        let own = "Pergament-me-000001.jwlibrary";
+        assert!(is_peer_file(
+            Path::new("/s/Pergament-you-000002.jwlibrary"),
+            own
+        ));
+        assert!(!is_peer_file(
+            Path::new("/s/Pergament-me-000001.jwlibrary"),
+            own
+        ));
+        assert!(!is_peer_file(
+            Path::new("/s/.Pergament-me-000001.jwlibrary.part"),
+            own
+        ));
+        assert!(!is_peer_file(Path::new("/s/backup.jwlibrary"), own));
+        assert!(!is_peer_file(
+            Path::new("/s/Pergament-2026-10-20-142501.jwlibrary"),
+            own
+        ));
     }
 
     /// The windows close themselves with `destroy`, so that a close request does not ask twice.
