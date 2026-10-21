@@ -2,10 +2,12 @@
 //!
 //! See docs/FORMAT.md for the file format and where each detail comes from.
 
+pub mod autobackup;
 pub mod cache;
 pub mod catalog;
 pub mod crypto;
 mod error;
+pub mod folder_sync;
 pub mod jwpub;
 pub mod languages;
 pub mod library;
@@ -17,6 +19,7 @@ pub mod net;
 pub mod reader;
 pub mod remote;
 pub mod render;
+pub mod sync_snapshot;
 pub mod updates;
 pub mod userdata;
 pub mod yeartext;

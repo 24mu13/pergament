@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 base64 = "0.22.1"
 dirs = "7.0.0"
 minisign-verify = "0.3.0"
+notify = "8.2.0"
 open = "5.3.3"
 pergament = { path = "..", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

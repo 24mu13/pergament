@@ -1,5 +1,34 @@
-import type { CatalogEntry, Category, PubCard } from "@/lib/api";
+import type { CatalogEntry, Category, Conflict, PubCard } from "@/lib/api";
 import { t } from "@/lib/i18n";
+
+export interface RollingSettings {
+  enabled: boolean;
+  keep: number;
+}
+export interface SyncSettings {
+  folder: string | null;
+  deviceId: string | null;
+  /** The host part of this computer's sync file name, kept from when the id was made. */
+  host?: string | null;
+}
+export interface PendingPeer {
+  file: string;
+  device: string;
+  deletions: number;
+}
+export interface SyncStatus {
+  folder: string | null;
+  /** UNIX seconds. */
+  lastSync: number | null;
+  lastDevice: string | null;
+  error: string | null;
+  pending: PendingPeer[];
+  conflicts: Conflict[];
+}
+export interface AutoSettings {
+  rolling: RollingSettings;
+  sync: SyncSettings;
+}
 
 /**
  * Library category of a manifest `publicationType`. Ids 1–31 are the catalog's

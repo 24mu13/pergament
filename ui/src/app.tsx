@@ -70,6 +70,7 @@ import { useSystemDark } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { isoDate } from "@/lib/dates";
 import { scroller } from "@/lib/scroll";
+import { nothingSeen, syncNotices } from "@/lib/sync";
 import { resolveUiLang, setUiLang, t, type UiLangSetting } from "@/lib/i18n";
 import { LanguageMenu, type Translations } from "@/components/language-menu";
 import { useCatalogBibles } from "@/lib/use-catalog-bibles";
@@ -482,7 +483,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         return;
       }
-      const ok = await ask(t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup."), {
+      // Restoring spreads to every synced computer, so when the settings cannot be read, warn anyway.
+      const syncing = await api.autoSettings().then(
+        (a) => a.sync.folder !== null,
+        () => true,
+      );
+      const warning = t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup.");
+      const ok = await ask(syncing ? `${warning} ${t("Sync is on: this also changes your data on the other synced computers.")}` : warning, {
         title: t("Restore backup?"),
         kind: "warning",
         okLabel: t("Restore"),
@@ -551,6 +558,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
     // Runs once: it restores the setting from the last session.
   }, []);
+
+  // A sync merge changed the data: reload what the views show.
+  useEffect(() => {
+    const changed = listen("user-data-changed", () => setUserVersion((v) => v + 1));
+    return () => void changed.then((f) => f());
+  }, []);
+
+  // A peer waiting for a choice or a failing sync folder shows up in Settings only, so say so once in a toast.
+  const syncSeen = useRef(nothingSeen);
+  const syncOn = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    const check = () =>
+      api.syncStatus().then(
+        (status) => {
+          if (!alive) return;
+          syncOn.current = Boolean(status.folder);
+          const { notices, seen } = syncNotices(syncSeen.current, status);
+          syncSeen.current = seen;
+          notices.forEach((text) => toast(text));
+        },
+        () => undefined,
+      );
+    void check();
+    const changed = listen("user-data-changed", () => void check());
+    const onFocus = () => void check();
+    window.addEventListener("focus", onFocus);
+    const timer = setInterval(() => syncOn.current && void check(), 60_000);
+    return () => {
+      alive = false;
+      void changed.then((f) => f());
+      window.removeEventListener("focus", onFocus);
+      clearInterval(timer);
+    };
+  }, [toast]);
 
   const [viewer, setViewer] = useState<AppContextValue["viewer"]>(null);
   const showImage = useCallback(

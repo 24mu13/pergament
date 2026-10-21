@@ -13,6 +13,10 @@ use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 use zip::write::SimpleFileOptions;
 
+use crate::sync_snapshot::{
+    DeleteGuard, Plan, Resolver, RowKey, RowRef, Side, Snapshot, SyncMerge, SyncOutcome, classify,
+    rows_of, rows_of_file,
+};
 use crate::{Error, Result};
 
 /// File name of the database, inside the library root and inside backups.
@@ -21,6 +25,18 @@ pub const DB_NAME: &str = "userData.db";
 pub const SCHEMA_VERSION: i64 = 16;
 /// Device name written into backups.
 pub const DEVICE_NAME: &str = "Pergament";
+
+/// Tables whose rows make up the content fingerprint.
+const FINGERPRINT_TABLES: [&str; 8] = [
+    "Location",
+    "UserMark",
+    "BlockRange",
+    "Note",
+    "Tag",
+    "TagMap",
+    "Bookmark",
+    "InputField",
+];
 
 const MANIFEST: &str = "manifest.json";
 const THUMBNAIL: &str = "default_thumbnail.png";
@@ -44,7 +60,7 @@ pub const BLOCK_PARAGRAPH: i64 = 1;
 /// A Bible verse (verse number).
 pub const BLOCK_VERSE: i64 = 2;
 /// `Tag.Type` of user tags (0 is the built-in favorites list).
-const TAG_USER: i64 = 1;
+pub(crate) const TAG_USER: i64 = 1;
 
 /// The page a mark or note belongs to: a document of a publication, or a
 /// chapter of a Bible.
@@ -165,14 +181,18 @@ pub struct MergeReport {
     /// note is newer by its own time.
     pub unchanged: i64,
     /// Backup rows that differ from the current ones and were left out
-    /// because the backup was not newer.
+    /// because the backup was not newer. A sync merge also lists rows
+    /// changed on both sides, whichever version won, and rows changed on
+    /// one side and deleted on the other, where the changed row is kept.
     pub conflicts: Vec<Conflict>,
     /// Device the backup was made on.
     pub device: Option<String>,
 }
 
 /// A backup row that differs from the current one and was left out, as the
-/// backup was not newer. The current row is kept.
+/// backup was not newer; the current row is kept. In a sync merge, also a
+/// row changed on both sides or changed on one and deleted on the other
+/// (see [`MergeReport::conflicts`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conflict {
@@ -187,7 +207,7 @@ pub struct Conflict {
 /// The parts of a backup's `manifest.json` that matter here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BackupManifest {
+pub(crate) struct BackupManifest {
     creation_date: String,
     version: i64,
     name: String,
@@ -244,6 +264,11 @@ impl UserData {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The open database, for reading in sibling modules.
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn summary(&self) -> Result<Summary> {
@@ -659,11 +684,14 @@ impl UserData {
 
     pub fn delete_note(&mut self, guid: &str) -> Result<()> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "DELETE FROM TagMap WHERE NoteId IN (SELECT NoteId FROM Note WHERE Guid = ?1)",
-            [guid],
-        )?;
-        tx.execute("DELETE FROM Note WHERE Guid = ?1", [guid])?;
+        let id: Option<i64> = tx
+            .query_row("SELECT NoteId FROM Note WHERE Guid = ?1", [guid], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(id) = id {
+            delete_note_row(&tx, id)?;
+        }
         touch(&tx)?;
         Ok(tx.commit()?)
     }
@@ -716,8 +744,65 @@ impl UserData {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Hash of the user's content: every row of the data tables, but not the
+    /// database-wide `LastModified` clock, playlists or media. A merge keeps
+    /// the later clock, so only the rows tell whether anything changed.
+    pub fn fingerprint(&self) -> Result<String> {
+        use rusqlite::types::ValueRef;
+
+        fn put(hasher: &mut Sha256, tag: u8, bytes: &[u8]) {
+            hasher.update([tag]);
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        }
+
+        let mut hasher = Sha256::new();
+        for table in FINGERPRINT_TABLES {
+            put(&mut hasher, b'T', table.as_bytes());
+            let columns = self
+                .conn
+                .prepare(&format!("SELECT * FROM {table}"))?
+                .column_count();
+            let order = (1..=columns)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut stmt = self
+                .conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                hasher.update(*b"R");
+                for i in 0..columns {
+                    match row.get_ref(i)? {
+                        ValueRef::Null => put(&mut hasher, b'N', &[]),
+                        ValueRef::Integer(v) => put(&mut hasher, b'I', &v.to_le_bytes()),
+                        ValueRef::Real(v) => put(&mut hasher, b'F', &v.to_le_bytes()),
+                        ValueRef::Text(v) => put(&mut hasher, b'S', v),
+                        ValueRef::Blob(v) => put(&mut hasher, b'B', v),
+                    }
+                }
+            }
+        }
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    /// Local time as `YYYY-MM-DD-HHMMSS`, for file names.
+    pub fn local_stamp(&self) -> Result<String> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%Y-%m-%d-%H%M%S', 'now', 'localtime')",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Write a `.jwlibrary` backup of the current data to `dest`.
     pub fn export_backup(&self, dest: &Path) -> Result<()> {
+        self.export_backup_as(dest, DEVICE_NAME)
+    }
+
+    /// Like `export_backup`, with `device_name` in the manifest.
+    pub fn export_backup_as(&self, dest: &Path, device_name: &str) -> Result<()> {
         let dir = tempfile::tempdir()?;
         let copy = dir.path().join(DB_NAME);
         self.conn
@@ -749,7 +834,7 @@ impl UserData {
                 last_modified_date: last_modified,
                 hash,
                 database_name: DB_NAME.into(),
-                device_name: DEVICE_NAME.into(),
+                device_name: device_name.into(),
                 schema_version: if version > 0 { version } else { SCHEMA_VERSION },
             },
         };
@@ -764,7 +849,8 @@ impl UserData {
             io::copy(&mut File::open(&copy)?, &mut zip)?;
             zip.start_file(THUMBNAIL, options)?;
             zip.write_all(THUMBNAIL_PNG)?;
-            zip.finish()?;
+            // On disk before it replaces an older file of the same name.
+            zip.finish()?.sync_all()?;
         }
         fs::rename(&partial, dest)?;
         Ok(())
@@ -814,6 +900,66 @@ impl UserData {
     /// "Merging"). The previous database is kept next to it as
     /// `userData.db.before-restore`. On error the data is left unchanged.
     pub fn merge_backup(&mut self, src: &Path) -> Result<MergeReport> {
+        let (incoming, device) = self.unpack_incoming(src)?;
+        self.write_safety_copy()?;
+        Ok(self.merge_file(incoming.path(), device, None)?.0)
+    }
+
+    /// Merge another device's sync file at `src` three-way against `base`,
+    /// the snapshot of that device's file at the last merge (docs/FORMAT.md,
+    /// "Sync"): rows deleted there are deleted here, and a row changed on
+    /// one side only keeps that side's version. Without a base this is
+    /// [`UserData::merge_backup`]. `guard` decides about the deletions;
+    /// [`SyncOutcome::NeedsConfirmation`] writes nothing. The previous
+    /// database is kept as `userData.db.before-restore`.
+    pub fn sync_merge(
+        &mut self,
+        src: &Path,
+        base: Option<&Snapshot>,
+        guard: DeleteGuard,
+    ) -> Result<SyncOutcome> {
+        let (incoming, device) = self.unpack_incoming(src)?;
+        let incoming_rows = rows_of_file(incoming.path())?;
+        let snapshot = Snapshot::of(&incoming_rows);
+        let resolver = match base {
+            None => None,
+            Some(base) => {
+                let local_rows = rows_of(&self.conn)?;
+                let mut classified = classify(base, &snapshot, &Snapshot::of(&local_rows));
+                // What is deleted here is gone there, so the merge never
+                // touches it again.
+                debug_assert!(
+                    classified
+                        .delete
+                        .iter()
+                        .all(|k| !snapshot.0.contains_key(k))
+                );
+                let mass = classified.needs_confirmation(&local_rows);
+                match (guard, mass) {
+                    (DeleteGuard::Check, Some((deletions, total))) => {
+                        return Ok(SyncOutcome::NeedsConfirmation { deletions, total });
+                    }
+                    (DeleteGuard::Skip, _) => {
+                        classified.delete.clear();
+                        classified.kept.clear();
+                    }
+                    (DeleteGuard::Check | DeleteGuard::Apply, _) => {}
+                }
+                Some(Resolver::new(&incoming_rows, local_rows, classified))
+            }
+        };
+        self.write_safety_copy()?;
+        let (report, deleted) = self.merge_file(incoming.path(), device, resolver.as_ref())?;
+        Ok(SyncOutcome::Merged(SyncMerge {
+            report,
+            deleted,
+            snapshot,
+        }))
+    }
+
+    /// Unpack and check the backup at `src` beside the database; returns the
+    /// database file and the device the backup was made on.
+    fn unpack_incoming(&self, src: &Path) -> Result<(tempfile::NamedTempFile, String)> {
         let dir = self
             .path
             .parent()
@@ -824,7 +970,17 @@ impl UserData {
             .tempfile_in(&dir)?;
         let manifest = unpack_backup(src, incoming.path())?;
         check_database(incoming.path())?;
-        self.write_safety_copy()?;
+        Ok((incoming, manifest.user_data_backup.device_name))
+    }
+
+    /// Merge the database file at `path`; returns the report and the number
+    /// of rows deleted (sync only).
+    fn merge_file(
+        &mut self,
+        path: &Path,
+        device: String,
+        sync: Option<&Resolver>,
+    ) -> Result<(MergeReport, i64)> {
         // A merge that broke off earlier may have left `inc` attached.
         let stale: bool = self.conn.query_row(
             "SELECT count(*) > 0 FROM pragma_database_list WHERE name = 'inc'",
@@ -836,9 +992,9 @@ impl UserData {
         }
         self.conn.execute(
             "ATTACH DATABASE ?1 AS inc",
-            [incoming.path().to_string_lossy().as_ref()],
+            [path.to_string_lossy().as_ref()],
         )?;
-        let result = self.merge_attached(manifest.user_data_backup.device_name);
+        let result = self.merge_attached(device, sync);
         // Once the merge is committed (or rolled back), a failing detach
         // changes nothing about the data; the next merge detaches again.
         let _ = self.conn.execute("DETACH DATABASE inc", []);
@@ -865,26 +1021,42 @@ impl UserData {
         Ok(())
     }
 
-    /// Merge the database attached as `inc` in one transaction.
-    fn merge_attached(&mut self, device: String) -> Result<MergeReport> {
+    /// Merge the database attached as `inc` in one transaction, with the
+    /// decisions of a sync merge when there are any.
+    fn merge_attached(
+        &mut self,
+        device: String,
+        sync: Option<&Resolver>,
+    ) -> Result<(MergeReport, i64)> {
         let tx = self.conn.transaction()?;
         let incoming_newer = incoming_is_newer(&tx)?;
         let mut report = MergeReport {
             device: Some(device),
             ..Default::default()
         };
+        // Deletions come first. The deleted rows are missing from `inc`, so
+        // the merge below never adds them back or updates them, and an
+        // incoming highlight equal to a deleted one is added, not matched
+        // to the row about to go.
+        let deleted = match sync {
+            Some(sync) => delete_synced(&tx, sync, &mut report)?,
+            None => 0,
+        };
         let locations = merge_locations(&tx)?;
-        let marks = merge_marks(&tx, &locations, incoming_newer, &mut report)?;
-        merge_input_fields(&tx, &locations, incoming_newer, &mut report)?;
-        let tags = merge_tags(&tx)?;
-        merge_notes(&tx, &locations, &marks, &tags, &mut report)?;
-        merge_location_tags(&tx, &locations, &tags, &mut report)?;
-        merge_bookmarks(&tx, &locations, incoming_newer, &mut report)?;
-        if report.added + report.updated > 0 {
+        let marks = merge_marks(&tx, &locations, incoming_newer, sync, &mut report)?;
+        merge_input_fields(&tx, &locations, incoming_newer, sync, &mut report)?;
+        let tags = merge_tags(&tx, sync, &mut report)?;
+        merge_notes(&tx, &locations, &marks, &tags, sync, &mut report)?;
+        if let Some(sync) = sync {
+            merge_note_tags(&tx, &tags, sync, &mut report)?;
+        }
+        merge_location_tags(&tx, &locations, &tags, sync, &mut report)?;
+        merge_bookmarks(&tx, &locations, incoming_newer, sync, &mut report)?;
+        if report.added + report.updated + deleted > 0 {
             take_later_clock(&tx)?;
         }
         tx.commit()?;
-        Ok(report)
+        Ok((report, deleted))
     }
 }
 
@@ -934,6 +1106,175 @@ fn has_column(tx: &Transaction<'_>, schema: &str, table: &str, column: &str) -> 
         params![table, schema, column],
         |r| r.get(0),
     )?)
+}
+
+/// What the merge does with an incoming row that differs from the local one.
+enum Outcome {
+    /// Replace the local row.
+    Take,
+    /// Keep the local row; no conflict.
+    Keep,
+    /// Keep the local row and report the incoming one as a conflict.
+    Conflict,
+}
+
+/// The sync merge's `plan` for a row (rows changed on both sides go to the
+/// greater content hash), or, without one, the database-wide recency
+/// `incoming_newer`.
+fn decide(plan: Option<Plan>, incoming_newer: Option<bool>) -> Outcome {
+    match plan.map(|p| p.side) {
+        Some(Side::Incoming) => Outcome::Take,
+        Some(Side::Local) => Outcome::Keep,
+        Some(Side::Recency { incoming_wins_tie }) => tie_break(incoming_wins_tie),
+        None if incoming_newer == Some(true) => Outcome::Take,
+        None => Outcome::Conflict,
+    }
+}
+
+/// A sync merge's choice between two versions changed at the same time:
+/// take the incoming one, or keep the local one and list the other.
+fn tie_break(incoming_wins: bool) -> Outcome {
+    if incoming_wins {
+        Outcome::Take
+    } else {
+        Outcome::Conflict
+    }
+}
+
+/// The sync merge reports the row as a conflict whichever side wins.
+fn reported(plan: Option<Plan>) -> bool {
+    plan.is_some_and(|p| p.report)
+}
+
+/// The sync merge keeps a row missing here deleted.
+fn deleted_here(plan: Option<Plan>) -> bool {
+    plan.is_some_and(|p| p.side == Side::Local)
+}
+
+/// The sync plan for incoming row `row` matched to local row `local`.
+fn plan_of(sync: Option<&Resolver>, row: RowRef, local: Option<RowRef>) -> Option<Plan> {
+    sync.and_then(|s| s.plan(&row, local.as_ref()))
+}
+
+/// Delete the local rows the other device deleted, through the editor's
+/// deletion paths, and report the rows kept because they changed here.
+/// Returns how many rows were deleted.
+fn delete_synced(tx: &Transaction<'_>, sync: &Resolver, report: &mut MergeReport) -> Result<i64> {
+    // Tag maps first, then notes and highlights; tags last, once nothing
+    // refers to them.
+    let order = |key: &RowKey| match key {
+        RowKey::TagMap(..) => 0,
+        RowKey::Note(_) => 1,
+        RowKey::Mark(_) => 2,
+        RowKey::Bookmark(..) | RowKey::InputField(..) => 3,
+        RowKey::Tag(..) => 4,
+    };
+    let mut keys: Vec<&RowKey> = sync.classified.delete.iter().collect();
+    keys.sort_by_key(|k| order(k));
+    let mut deleted = 0;
+    for key in keys {
+        // Only the row the snapshot was read from: a second row with the
+        // same key was never seen there.
+        let Some(row) = sync.local_row(key) else {
+            continue;
+        };
+        match row {
+            RowRef::TagMap(id) => {
+                tx.execute("DELETE FROM main.TagMap WHERE TagMapId = ?1", [id])?;
+            }
+            RowRef::Note(id) => delete_note_row(tx, *id)?,
+            RowRef::Mark(id) => delete_mark_row(tx, *id)?,
+            RowRef::Bookmark(id) => {
+                tx.execute("DELETE FROM main.Bookmark WHERE BookmarkId = ?1", [id])?;
+            }
+            // On every location of the page, as the editor deletes an
+            // answer: a value left on another one would show up again.
+            RowRef::InputField(location, tag) => {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM main.InputField WHERE TextTag = ?2 AND LocationId IN (
+                             SELECT m.LocationId FROM main.Location m, main.Location l
+                             WHERE l.LocationId = ?1
+                               AND (m.LocationId = l.LocationId OR {ANSWER_SIBLINGS}))"
+                    ),
+                    params![location, tag],
+                )?;
+            }
+            RowRef::Tag(id) => {
+                // Still in use (e.g. by a playlist): kept, like an edit.
+                let used: bool = tx.query_row(
+                    "SELECT count(*) > 0 FROM main.TagMap WHERE TagId = ?1",
+                    [id],
+                    |r| r.get(0),
+                )?;
+                if used {
+                    report.conflicts.push(describe_local(tx, row)?);
+                    continue;
+                }
+                tx.execute("DELETE FROM main.Tag WHERE TagId = ?1", [id])?;
+            }
+        }
+        deleted += 1;
+    }
+    for key in &sync.classified.kept {
+        if let Some(row) = sync.local_row(key) {
+            report.conflicts.push(describe_local(tx, row)?);
+        }
+    }
+    Ok(deleted)
+}
+
+/// A local row as a conflict: one deleted in the backup and kept here.
+fn describe_local(tx: &Transaction<'_>, row: &RowRef) -> Result<Conflict> {
+    Ok(match row {
+        RowRef::Mark(id) => {
+            let (guid, location, color): (String, i64, i64) = tx.query_row(
+                "SELECT UserMarkGuid, LocationId, ColorIndex FROM main.UserMark
+                 WHERE UserMarkId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            let summary = format!("{}, color {color}", location_label(tx, location)?);
+            conflict("UserMark", &guid, summary)
+        }
+        RowRef::Note(id) => {
+            let (guid, title, content): (String, Option<String>, Option<String>) = tx.query_row(
+                "SELECT Guid, Title, Content FROM main.Note WHERE NoteId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            conflict("Note", &guid, note_summary(title, content))
+        }
+        RowRef::Tag(id) => {
+            let name: String =
+                tx.query_row("SELECT Name FROM main.Tag WHERE TagId = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+            conflict("Tag", &name, name.clone())
+        }
+        RowRef::Bookmark(id) => {
+            let (publication, slot, title): (i64, i64, String) = tx.query_row(
+                "SELECT PublicationLocationId, Slot, Title FROM main.Bookmark
+                 WHERE BookmarkId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            conflict("Bookmark", &format!("{publication}:{slot}"), title)
+        }
+        RowRef::InputField(location, tag) => {
+            let summary = format!("{}, field {tag}", location_label(tx, *location)?);
+            conflict("InputField", &format!("{location}:{tag}"), summary)
+        }
+        RowRef::TagMap(id) => {
+            let name: String = tx.query_row(
+                "SELECT t.Name FROM main.TagMap m JOIN main.Tag t ON t.TagId = m.TagId
+                 WHERE m.TagMapId = ?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            conflict("TagMap", &id.to_string(), name)
+        }
+    })
 }
 
 /// Map every incoming `Location` to the local one with the same key, adding
@@ -1150,6 +1491,7 @@ fn merge_marks(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
     incoming_newer: Option<bool>,
+    sync: Option<&Resolver>,
     report: &mut MergeReport,
 ) -> Result<HashMap<String, i64>> {
     let incoming: Vec<IncomingMark> = {
@@ -1184,7 +1526,13 @@ fn merge_marks(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
+        let plan = plan_of(
+            sync,
+            RowRef::Mark(mark.id),
+            local.map(|(id, ..)| RowRef::Mark(id)),
+        );
         match local {
+            None if deleted_here(plan) => report.unchanged += 1,
             None => {
                 // The same highlight made on both sides is no conflict; rows
                 // referring to the backup's one use the local one.
@@ -1209,17 +1557,26 @@ fn merge_marks(
                 )?;
                 let id = tx.last_insert_rowid();
                 put_ranges(tx, id, location, &ranges)?;
-                map.insert(mark.guid, id);
                 report.added += 1;
+                if reported(plan) {
+                    let summary = mark_summary(tx, location, mark.color)?;
+                    report
+                        .conflicts
+                        .push(conflict("UserMark", &mark.guid, summary));
+                }
+                map.insert(mark.guid, id);
             }
             Some((id, color, local_location)) => {
                 map.insert(mark.guid.clone(), id);
                 let same = color == mark.color
                     && local_location == location
                     && mark_ranges(tx, "main", id)? == ranges;
-                match incoming_newer {
-                    _ if same => report.unchanged += 1,
-                    Some(true) => {
+                if same {
+                    report.unchanged += 1;
+                    continue;
+                }
+                match decide(plan, incoming_newer) {
+                    Outcome::Take => {
                         tx.execute(
                             "UPDATE main.UserMark SET ColorIndex = ?1, LocationId = ?2,
                                                       StyleIndex = ?3
@@ -1228,10 +1585,17 @@ fn merge_marks(
                         )?;
                         put_ranges(tx, id, location, &ranges)?;
                         report.updated += 1;
+                        if reported(plan) {
+                            let summary = mark_summary(tx, location, mark.color)?;
+                            report
+                                .conflicts
+                                .push(conflict("UserMark", &mark.guid, summary));
+                        }
                     }
+                    Outcome::Keep => report.unchanged += 1,
                     // The backup is older or as old: keep the local mark,
                     // but say so, since the backup's may be the later edit.
-                    Some(false) | None => {
+                    Outcome::Conflict => {
                         let summary = mark_summary(tx, local_location, mark.color)?;
                         report
                             .conflicts
@@ -1262,7 +1626,8 @@ fn merge_marks(
 /// Locations `m` and `l` hold the answers of the same page, as the editor
 /// reads them (`UserData::answer_location_ids`): a location without a
 /// language belongs to the page in every language.
-const ANSWER_SIBLINGS: &str = "m.Type = 0 AND l.Type = 0 AND m.Track IS NULL AND l.Track IS NULL
+pub(crate) const ANSWER_SIBLINGS: &str =
+    "m.Type = 0 AND l.Type = 0 AND m.Track IS NULL AND l.Track IS NULL
     AND m.KeySymbol = l.KeySymbol AND m.IssueTagNumber = l.IssueTagNumber
     AND IFNULL(m.DocumentId, 0) = IFNULL(l.DocumentId, 0)
     AND IFNULL(m.BookNumber, 0) = IFNULL(l.BookNumber, 0)
@@ -1275,6 +1640,7 @@ fn merge_input_fields(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
     incoming_newer: Option<bool>,
+    sync: Option<&Resolver>,
     report: &mut MergeReport,
 ) -> Result<()> {
     // Not every backup has answer fields.
@@ -1296,8 +1662,8 @@ fn merge_input_fields(
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for (location, tag, value, hidden) in incoming {
-        let Some(&location) = locations.get(&location) else {
+    for (incoming_location, tag, value, hidden) in incoming {
+        let Some(&location) = locations.get(&incoming_location) else {
             continue;
         };
         if hidden {
@@ -1318,49 +1684,91 @@ fn merge_input_fields(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        match (local, incoming_newer) {
-            (None, _) => {
+        let plan = plan_of(
+            sync,
+            RowRef::InputField(incoming_location, tag.clone()),
+            local
+                .as_ref()
+                .map(|(shown, _)| RowRef::InputField(*shown, tag.clone())),
+        );
+        let field_conflict = |shown: i64| -> Result<Conflict> {
+            let summary = format!("{}, field {tag}", location_label(tx, shown)?);
+            Ok(conflict("InputField", &format!("{shown}:{tag}"), summary))
+        };
+        match local {
+            None if deleted_here(plan) => report.unchanged += 1,
+            None => {
                 tx.execute(
                     "INSERT INTO main.InputField (LocationId, TextTag, Value) VALUES (?1, ?2, ?3)",
                     params![location, tag, value],
                 )?;
                 report.added += 1;
+                if reported(plan) {
+                    report.conflicts.push(field_conflict(location)?);
+                }
             }
-            (Some((_, local)), _) if local == value => report.unchanged += 1,
-            (Some((shown, _)), Some(true)) => {
-                tx.execute(
-                    "UPDATE main.InputField SET Value = ?3 WHERE LocationId = ?1 AND TextTag = ?2",
-                    params![shown, tag, value],
-                )?;
-                report.updated += 1;
-            }
-            // The backup is older or as old: keep the local text, but say so.
-            (Some((shown, _)), Some(false) | None) => {
-                let summary = format!("{}, field {tag}", location_label(tx, shown)?);
-                let key = format!("{shown}:{tag}");
-                report.conflicts.push(conflict("InputField", &key, summary));
-            }
+            Some((_, local)) if local == value => report.unchanged += 1,
+            Some((shown, _)) => match decide(plan, incoming_newer) {
+                Outcome::Take => {
+                    tx.execute(
+                        "UPDATE main.InputField SET Value = ?3
+                         WHERE LocationId = ?1 AND TextTag = ?2",
+                        params![shown, tag, value],
+                    )?;
+                    report.updated += 1;
+                    if reported(plan) {
+                        report.conflicts.push(field_conflict(shown)?);
+                    }
+                }
+                Outcome::Keep => report.unchanged += 1,
+                // The backup is older or as old: keep the local text, but say so.
+                Outcome::Conflict => report.conflicts.push(field_conflict(shown)?),
+            },
         }
     }
     Ok(())
 }
 
 /// Map every incoming `Tag` to the local one with the same type and name,
-/// adding the missing ones. Returns incoming `TagId` → local `TagId`.
-fn merge_tags(tx: &Transaction<'_>) -> Result<HashMap<i64, i64>> {
-    tx.execute(
-        "INSERT OR IGNORE INTO main.Tag (Type, Name)
-         SELECT i.Type, i.Name FROM inc.Tag i
-         WHERE NOT EXISTS (SELECT 1 FROM main.Tag m WHERE m.Type = i.Type AND m.Name = i.Name)
-         ORDER BY i.TagId",
-        [],
-    )?;
-    let mut stmt = tx.prepare(
-        "SELECT i.TagId, m.TagId FROM inc.Tag i
-         JOIN main.Tag m ON m.Type = i.Type AND m.Name = i.Name",
-    )?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+/// adding the missing ones (but not those the sync merge keeps deleted).
+/// Returns incoming `TagId` → local `TagId`.
+fn merge_tags(
+    tx: &Transaction<'_>,
+    sync: Option<&Resolver>,
+    report: &mut MergeReport,
+) -> Result<HashMap<i64, i64>> {
+    let incoming: Vec<(i64, i64, String)> = {
+        let mut stmt = tx.prepare("SELECT TagId, Type, Name FROM inc.Tag ORDER BY TagId")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut map = HashMap::with_capacity(incoming.len());
+    for (id, kind, name) in incoming {
+        let local: Option<i64> = tx
+            .query_row(
+                "SELECT TagId FROM main.Tag WHERE Type = ?1 AND Name = ?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let plan = plan_of(sync, RowRef::Tag(id), local.map(RowRef::Tag));
+        let local = match local {
+            Some(local) => local,
+            None if deleted_here(plan) => continue,
+            None => {
+                tx.execute(
+                    "INSERT INTO main.Tag (Type, Name) VALUES (?1, ?2)",
+                    params![kind, name],
+                )?;
+                if reported(plan) {
+                    report.conflicts.push(conflict("Tag", &name, name.clone()));
+                }
+                tx.last_insert_rowid()
+            }
+        };
+        map.insert(id, local);
+    }
+    Ok(map)
 }
 
 /// Give note `note` exactly the local tags `tags`, each at the next free
@@ -1425,13 +1833,15 @@ fn note_summary(title: Option<String>, content: Option<String>) -> String {
     }
 }
 
-/// Merge `inc.Note` with its tags, matched by `Guid`; the note's own
-/// `LastModified` decides.
+/// Merge `inc.Note`, matched by `Guid`; the note's own `LastModified`
+/// decides. A manual merge takes a note's tags with it; a sync merge
+/// leaves them to [`merge_note_tags`].
 fn merge_notes(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
     marks: &HashMap<String, i64>,
     tags: &HashMap<i64, i64>,
+    sync: Option<&Resolver>,
     report: &mut MergeReport,
 ) -> Result<()> {
     let incoming: Vec<IncomingNote> = {
@@ -1469,21 +1879,58 @@ fn merge_notes(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        match local {
-            None => {
-                tx.execute(
-                    "INSERT INTO main.Note (Guid, UserMarkId, LocationId, Title, Content,
-                                            LastModified, Created, BlockType, BlockIdentifier)
-                     SELECT Guid, ?2, ?3, Title, Content, LastModified, Created, BlockType,
-                            BlockIdentifier
-                     FROM inc.Note WHERE NoteId = ?1",
-                    params![note.id, note.mark, note.location],
-                )?;
-                let id = tx.last_insert_rowid();
-                put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
-                report.added += 1;
+        let plan = plan_of(
+            sync,
+            RowRef::Note(note.id),
+            local.as_ref().map(|l| RowRef::Note(l.0)),
+        );
+        let Some((id, diff, same_text, title, content)) = local else {
+            if deleted_here(plan) {
+                report.unchanged += 1;
+                continue;
             }
-            Some((id, Some(diff), ..)) if diff > 0.0 => {
+            tx.execute(
+                "INSERT INTO main.Note (Guid, UserMarkId, LocationId, Title, Content,
+                                        LastModified, Created, BlockType, BlockIdentifier)
+                 SELECT Guid, ?2, ?3, Title, Content, LastModified, Created, BlockType,
+                        BlockIdentifier
+                 FROM inc.Note WHERE NoteId = ?1",
+                params![note.id, note.mark, note.location],
+            )?;
+            let id = tx.last_insert_rowid();
+            if sync.is_none() {
+                put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
+            }
+            report.added += 1;
+            if reported(plan) {
+                let (title, content) = tx.query_row(
+                    "SELECT Title, Content FROM main.Note WHERE NoteId = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                report
+                    .conflicts
+                    .push(conflict("Note", &note.guid, note_summary(title, content)));
+            }
+            continue;
+        };
+        let by_time = match diff {
+            Some(diff) if diff > 0.0 => Outcome::Take,
+            Some(diff) if diff < 0.0 => Outcome::Keep,
+            _ if same_text => Outcome::Keep,
+            _ => Outcome::Conflict,
+        };
+        let outcome = match plan.map(|p| p.side) {
+            Some(Side::Incoming) => Outcome::Take,
+            Some(Side::Local) => Outcome::Keep,
+            // Changed at the same time: every computer keeps the same one.
+            Some(Side::Recency { incoming_wins_tie }) if matches!(diff, None | Some(0.0)) => {
+                tie_break(incoming_wins_tie)
+            }
+            Some(Side::Recency { .. }) | None => by_time,
+        };
+        match outcome {
+            Outcome::Take => {
                 // A backup highlight that did not make it here leaves the
                 // note on its local one rather than on none.
                 let keep_mark = note.had_mark && note.mark.is_none();
@@ -1509,12 +1956,25 @@ fn merge_notes(
                         keep_location
                     ],
                 )?;
-                put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
+                if sync.is_none() {
+                    put_note_tags(tx, id, &incoming_note_tags(tx, tags, note.id)?)?;
+                }
                 report.updated += 1;
+                if reported(plan) {
+                    report.conflicts.push(conflict(
+                        "Note",
+                        &note.guid,
+                        note_summary(title, content),
+                    ));
+                }
             }
-            Some((_, Some(diff), ..)) if diff < 0.0 => report.unchanged += 1,
-            Some((_, _, true, ..)) => report.unchanged += 1,
-            Some((_, _, false, title, content)) => {
+            Outcome::Keep if reported(plan) => {
+                report
+                    .conflicts
+                    .push(conflict("Note", &note.guid, note_summary(title, content)));
+            }
+            Outcome::Keep => report.unchanged += 1,
+            Outcome::Conflict => {
                 report
                     .conflicts
                     .push(conflict("Note", &note.guid, note_summary(title, content)));
@@ -1524,26 +1984,97 @@ fn merge_notes(
     Ok(())
 }
 
+/// Merge the tags of notes one by one (sync): a note's tag that is missing
+/// here is added, unless it was removed here. The order of a tag's notes
+/// is left as it is here. Notes the merge did not bring in are skipped.
+fn merge_note_tags(
+    tx: &Transaction<'_>,
+    tags: &HashMap<i64, i64>,
+    sync: &Resolver,
+    report: &mut MergeReport,
+) -> Result<()> {
+    let incoming: Vec<(i64, i64, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT m.TagMapId, m.TagId, n.Guid FROM inc.TagMap m
+             JOIN inc.Note n ON n.NoteId = m.NoteId
+             WHERE m.PlaylistItemId IS NULL
+             ORDER BY m.TagId, m.Position, m.TagMapId",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, tag, guid) in incoming {
+        let Some(&tag) = tags.get(&tag) else {
+            continue;
+        };
+        let note: Option<i64> = tx
+            .query_row(
+                "SELECT NoteId FROM main.Note WHERE Guid = ?1",
+                [&guid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(note) = note else {
+            continue;
+        };
+        let local: Option<i64> = tx
+            .query_row(
+                "SELECT TagMapId FROM main.TagMap WHERE TagId = ?1 AND NoteId = ?2",
+                [tag, note],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let plan = sync.plan(&RowRef::TagMap(id), local.map(RowRef::TagMap).as_ref());
+        if local.is_some() || deleted_here(plan) {
+            report.unchanged += 1;
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO main.TagMap (NoteId, TagId, Position)
+             VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1
+                              FROM main.TagMap WHERE TagId = ?2))",
+            [note, tag],
+        )?;
+        report.added += 1;
+    }
+    Ok(())
+}
+
 /// Add the incoming tags of locations (favorites) that are missing here.
 fn merge_location_tags(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
     tags: &HashMap<i64, i64>,
+    sync: Option<&Resolver>,
     report: &mut MergeReport,
 ) -> Result<()> {
-    let incoming: Vec<(i64, i64)> = {
+    let incoming: Vec<(i64, i64, i64)> = {
         let mut stmt = tx.prepare(
-            "SELECT TagId, LocationId FROM inc.TagMap
+            "SELECT TagMapId, TagId, LocationId FROM inc.TagMap
              WHERE NoteId IS NULL AND PlaylistItemId IS NULL AND LocationId IS NOT NULL
              ORDER BY TagId, Position",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for (tag, location) in incoming {
+    for (id, tag, location) in incoming {
         let (Some(&tag), Some(&location)) = (tags.get(&tag), locations.get(&location)) else {
             continue;
         };
+        if let Some(sync) = sync {
+            let local: Option<i64> = tx
+                .query_row(
+                    "SELECT TagMapId FROM main.TagMap WHERE TagId = ?1 AND LocationId = ?2",
+                    [tag, location],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let plan = sync.plan(&RowRef::TagMap(id), local.map(RowRef::TagMap).as_ref());
+            if local.is_none() && deleted_here(plan) {
+                report.unchanged += 1;
+                continue;
+            }
+        }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO main.TagMap (LocationId, TagId, Position)
              VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1
@@ -1564,6 +2095,7 @@ fn merge_bookmarks(
     tx: &Transaction<'_>,
     locations: &HashMap<i64, i64>,
     incoming_newer: Option<bool>,
+    sync: Option<&Resolver>,
     report: &mut MergeReport,
 ) -> Result<()> {
     let incoming: Vec<(i64, i64, i64, i64)> = {
@@ -1593,8 +2125,15 @@ fn merge_bookmarks(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        match (local, incoming_newer) {
-            (None, _) => {
+        let plan = plan_of(
+            sync,
+            RowRef::Bookmark(id),
+            local.as_ref().map(|(l, ..)| RowRef::Bookmark(*l)),
+        );
+        let key = format!("{publication}:{slot}");
+        match local {
+            None if deleted_here(plan) => report.unchanged += 1,
+            None => {
                 tx.execute(
                     "INSERT INTO main.Bookmark (LocationId, PublicationLocationId, Slot, Title,
                                                 Snippet, BlockType, BlockIdentifier)
@@ -1603,44 +2142,45 @@ fn merge_bookmarks(
                     params![id, location, publication],
                 )?;
                 report.added += 1;
+                if reported(plan) {
+                    let title: String = tx.query_row(
+                        "SELECT Title FROM inc.Bookmark WHERE BookmarkId = ?1",
+                        [id],
+                        |r| r.get(0),
+                    )?;
+                    report.conflicts.push(conflict("Bookmark", &key, title));
+                }
             }
-            (Some((_, true, _)), _) => report.unchanged += 1,
-            (Some((local, false, _)), Some(true)) => {
-                tx.execute(
-                    "UPDATE main.Bookmark
-                     SET (Title, Snippet, BlockType, BlockIdentifier) =
-                         (SELECT Title, Snippet, BlockType, BlockIdentifier
-                          FROM inc.Bookmark WHERE BookmarkId = ?1),
-                         LocationId = ?2
-                     WHERE BookmarkId = ?3",
-                    params![id, location, local],
-                )?;
-                report.updated += 1;
-            }
-            // The backup is older or as old: keep the local bookmark, but say so.
-            (Some((_, false, title)), Some(false) | None) => {
-                let key = format!("{publication}:{slot}");
-                report.conflicts.push(conflict("Bookmark", &key, title));
-            }
+            Some((_, true, _)) => report.unchanged += 1,
+            Some((local, false, title)) => match decide(plan, incoming_newer) {
+                Outcome::Take => {
+                    tx.execute(
+                        "UPDATE main.Bookmark
+                         SET (Title, Snippet, BlockType, BlockIdentifier) =
+                             (SELECT Title, Snippet, BlockType, BlockIdentifier
+                              FROM inc.Bookmark WHERE BookmarkId = ?1),
+                             LocationId = ?2
+                         WHERE BookmarkId = ?3",
+                        params![id, location, local],
+                    )?;
+                    report.updated += 1;
+                    if reported(plan) {
+                        report.conflicts.push(conflict("Bookmark", &key, title));
+                    }
+                }
+                Outcome::Keep => report.unchanged += 1,
+                // The backup is older or as old: keep the local bookmark, but say so.
+                Outcome::Conflict => report.conflicts.push(conflict("Bookmark", &key, title)),
+            },
         }
     }
     Ok(())
 }
 
 /// Copy the database out of a backup into `dest` and return the manifest.
-fn unpack_backup(src: &Path, dest: &Path) -> Result<BackupManifest> {
+pub(crate) fn unpack_backup(src: &Path, dest: &Path) -> Result<BackupManifest> {
     let mut zip = ZipArchive::new(File::open(src)?)?;
-    let manifest: BackupManifest = {
-        let entry = zip
-            .by_name(MANIFEST)
-            .map_err(|_| Error::MissingEntry(MANIFEST.into()))?;
-        let mut buf = Vec::new();
-        entry.take(MAX_MANIFEST + 1).read_to_end(&mut buf)?;
-        if buf.len() as u64 > MAX_MANIFEST {
-            return Err(Error::TooLarge(MANIFEST.into()));
-        }
-        serde_json::from_slice(&buf)?
-    };
+    let manifest = read_manifest(&mut zip)?;
     let name = &manifest.user_data_backup.database_name;
     if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
         return Err(Error::UnsafePath(name.clone()));
@@ -1657,8 +2197,34 @@ fn unpack_backup(src: &Path, dest: &Path) -> Result<BackupManifest> {
     Ok(manifest)
 }
 
+fn read_manifest(zip: &mut ZipArchive<File>) -> Result<BackupManifest> {
+    let entry = zip
+        .by_name(MANIFEST)
+        .map_err(|_| Error::MissingEntry(MANIFEST.into()))?;
+    let mut buf = Vec::new();
+    entry.take(MAX_MANIFEST + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_MANIFEST {
+        return Err(Error::TooLarge(MANIFEST.into()));
+    }
+    Ok(serde_json::from_slice(&buf)?)
+}
+
+/// The device name in the manifest of the backup at `path`; nothing else is read.
+pub fn backup_device_name(path: &Path) -> Result<String> {
+    let mut zip = ZipArchive::new(File::open(path)?)?;
+    Ok(read_manifest(&mut zip)?.user_data_backup.device_name)
+}
+
+/// The device name and the database hash in the manifest of the backup at
+/// `path`; nothing else is read. The hash tells whether a file changed.
+pub(crate) fn backup_identity(path: &Path) -> Result<(String, String)> {
+    let mut zip = ZipArchive::new(File::open(path)?)?;
+    let info = read_manifest(&mut zip)?.user_data_backup;
+    Ok((info.device_name, info.hash))
+}
+
 /// Accept only an intact SQLite database with the user data tables.
-fn check_database(path: &Path) -> Result<()> {
+pub(crate) fn check_database(path: &Path) -> Result<()> {
     let invalid = |reason: String| Error::InvalidDatabase {
         path: path.to_owned(),
         reason,
@@ -1703,6 +2269,13 @@ fn touch(tx: &Transaction<'_>) -> Result<()> {
         "UPDATE LastModified SET LastModified = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
         [],
     )?;
+    Ok(())
+}
+
+/// Remove a note with its tags.
+fn delete_note_row(tx: &Transaction<'_>, id: i64) -> Result<()> {
+    tx.execute("DELETE FROM main.TagMap WHERE NoteId = ?1", [id])?;
+    tx.execute("DELETE FROM main.Note WHERE NoteId = ?1", [id])?;
     Ok(())
 }
 
@@ -1768,8 +2341,10 @@ fn cut_ranges(tx: &Transaction<'_>, location: i64, new: &Range) -> Result<()> {
     Ok(())
 }
 
+/// Give note `note` exactly the user tags `tags`. Tags it keeps stay where
+/// they are in their lists; a tag it gains puts it last in that list.
 fn set_note_tags(tx: &Transaction<'_>, note: i64, tags: &[String]) -> Result<()> {
-    tx.execute("DELETE FROM TagMap WHERE NoteId = ?1", [note])?;
+    let mut ids = Vec::new();
     for name in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
         tx.execute(
             "INSERT OR IGNORE INTO Tag (Type, Name) VALUES (?1, ?2)",
@@ -1780,6 +2355,15 @@ fn set_note_tags(tx: &Transaction<'_>, note: i64, tags: &[String]) -> Result<()>
             params![TAG_USER, name],
             |r| r.get(0),
         )?;
+        ids.push(tag);
+    }
+    let keep = serde_json::to_string(&ids)?;
+    tx.execute(
+        "DELETE FROM TagMap WHERE NoteId = ?1
+         AND TagId NOT IN (SELECT value FROM json_each(?2))",
+        params![note, keep],
+    )?;
+    for tag in ids {
         tx.execute(
             "INSERT OR IGNORE INTO TagMap (NoteId, TagId, Position)
              VALUES (?1, ?2, (SELECT IFNULL(max(Position), -1) + 1 FROM TagMap WHERE TagId = ?2))",
@@ -2084,6 +2668,57 @@ mod tests {
         assert_eq!(ud.notes(&bible(23)).unwrap()[0].mark_guid, None);
         ud.delete_note(&guid).unwrap();
         assert!(ud.all_notes(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn saving_a_note_again_keeps_its_tag_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let first = ud
+            .save_note(
+                Some(&bible(1)),
+                None,
+                &note_input("One", "a", &["joy", "study"]),
+            )
+            .unwrap();
+        let second = ud
+            .save_note(Some(&bible(1)), None, &note_input("Two", "b", &["study"]))
+            .unwrap();
+        // (tag, note guid) by position within each tag.
+        let order = |ud: &UserData| -> Vec<(String, String)> {
+            let mut stmt = ud
+                .conn
+                .prepare(
+                    "SELECT t.Name, n.Guid FROM TagMap m JOIN Tag t ON t.TagId = m.TagId
+                     JOIN Note n ON n.NoteId = m.NoteId ORDER BY t.Name, m.Position",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let before = order(&ud);
+        edit_note(&mut ud, &first, "One", "edited", &["joy", "study"]);
+        assert_eq!(order(&ud), before);
+
+        // A removed tag goes, an added one comes last in its list.
+        edit_note(&mut ud, &first, "One", "edited", &["study", "zeal"]);
+        let s = |t: &str, g: &str| (t.to_string(), g.to_string());
+        assert_eq!(
+            order(&ud),
+            [s("study", &first), s("study", &second), s("zeal", &first)]
+        );
+        edit_note(&mut ud, &second, "Two", "b", &["joy", "zeal"]);
+        assert_eq!(
+            order(&ud),
+            [
+                s("joy", &second),
+                s("study", &first),
+                s("zeal", &first),
+                s("zeal", &second)
+            ]
+        );
     }
 
     #[test]
@@ -3640,5 +4275,929 @@ mod tests {
             )
             .unwrap();
         assert!(!extra);
+    }
+
+    #[test]
+    fn fingerprint_stable_without_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let before = ud.fingerprint().unwrap();
+        assert_eq!(before.len(), 64);
+        ud.summary().unwrap();
+        ud.export_backup(&tmp.path().join("b.jwlibrary")).unwrap();
+        assert_eq!(ud.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn fingerprint_changes_on_edit_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let empty = ud.fingerprint().unwrap();
+        let guid = ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let added = ud.fingerprint().unwrap();
+        assert_ne!(added, empty);
+        ud.delete_mark(&guid).unwrap();
+        let deleted = ud.fingerprint().unwrap();
+        assert_ne!(deleted, added);
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        assert_ne!(ud.fingerprint().unwrap(), empty);
+    }
+
+    #[test]
+    fn fingerprint_ignores_last_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 3, &[verse(1, 0, 3)]).unwrap();
+        let before = ud.fingerprint().unwrap();
+        set_db_time(&ud, "2001-01-01T00:00:00Z");
+        assert_eq!(ud.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn fingerprint_changes_on_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut local = UserData::open(tmp.path().join("l").join(DB_NAME)).unwrap();
+        let mut remote = UserData::open(tmp.path().join("r").join(DB_NAME)).unwrap();
+        remote
+            .save_note(Some(&bible(3)), None, &note_input("Old", "Text", &[]))
+            .unwrap();
+        // The backup is older than the local database.
+        set_db_time(&remote, "2001-01-01T00:00:00Z");
+        set_db_time(&local, "2030-01-01T00:00:00Z");
+        let backup = backup_of(&remote, tmp.path(), "r.jwlibrary");
+        let before = local.fingerprint().unwrap();
+        local.merge_backup(&backup).unwrap();
+        assert_eq!(db_time(&local), "2030-01-01T00:00:00Z");
+        assert_ne!(local.fingerprint().unwrap(), before);
+    }
+
+    #[test]
+    fn export_backup_as_sets_device_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join("a").join(DB_NAME)).unwrap();
+        ud.add_mark(&bible(23), None, 6, &[verse(1, 0, 3)]).unwrap();
+        let backup = tmp.path().join("b.jwlibrary");
+        ud.export_backup_as(&backup, "Pergament (laptop)").unwrap();
+        assert_eq!(backup_device_name(&backup).unwrap(), "Pergament (laptop)");
+        let mut other = UserData::open(tmp.path().join("c").join(DB_NAME)).unwrap();
+        let summary = other.restore_backup(&backup).unwrap();
+        assert_eq!(summary.device.as_deref(), Some("Pergament (laptop)"));
+        let stamp = ud.local_stamp().unwrap();
+        assert_eq!(stamp.len(), "2026-10-20-123456".len());
+    }
+
+    /// Folder sync: two devices A and B, each merging the other's file
+    /// three-way against the base it stored for that device.
+    mod sync_merge {
+        use super::*;
+        use crate::sync_snapshot::{DeleteGuard, Snapshot, SyncMerge, SyncOutcome};
+
+        struct Device {
+            name: &'static str,
+            ud: UserData,
+            dir: PathBuf,
+            bases: HashMap<&'static str, Snapshot>,
+        }
+
+        fn device(tmp: &Path, name: &'static str) -> Device {
+            let dir = tmp.join(name);
+            Device {
+                name,
+                ud: UserData::open(dir.join(DB_NAME)).unwrap(),
+                dir,
+                bases: HashMap::new(),
+            }
+        }
+
+        fn sync_file(from: &Device) -> PathBuf {
+            let file = from.dir.join(format!("Pergament-{}.jwlibrary", from.name));
+            from.ud.export_backup(&file).unwrap();
+            file
+        }
+
+        /// Merge `file` into `to` with its base for `from`; a merge stores
+        /// the returned snapshot as that base.
+        fn merge_file(file: &Path, from: &str, to: &mut Device, guard: DeleteGuard) -> SyncOutcome {
+            let key = if from == "a" { "a" } else { "b" };
+            let outcome = to.ud.sync_merge(file, to.bases.get(key), guard).unwrap();
+            if let SyncOutcome::Merged(merged) = &outcome {
+                to.bases.insert(key, merged.snapshot.clone());
+            }
+            outcome
+        }
+
+        fn try_sync(from: &Device, to: &mut Device, guard: DeleteGuard) -> SyncOutcome {
+            let file = sync_file(from);
+            merge_file(&file, from.name, to, guard)
+        }
+
+        fn merged(outcome: SyncOutcome) -> SyncMerge {
+            match outcome {
+                SyncOutcome::Merged(merged) => merged,
+                other => panic!("expected a merge, got {other:?}"),
+            }
+        }
+
+        fn sync(from: &Device, to: &mut Device) -> SyncMerge {
+            merged(try_sync(from, to, DeleteGuard::Check))
+        }
+
+        /// Sync A→B and B→A, so each has a base for the other.
+        fn sync_both(a: &mut Device, b: &mut Device) {
+            sync(a, b);
+            sync(b, a);
+        }
+
+        fn mark_color(ud: &UserData, guid: &str) -> Option<i64> {
+            ud.conn
+                .query_row(
+                    "SELECT ColorIndex FROM UserMark WHERE UserMarkGuid = ?1",
+                    [guid],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap()
+        }
+
+        fn has_note(ud: &UserData, guid: &str) -> bool {
+            ud.all_notes(None).unwrap().iter().any(|n| n.guid == guid)
+        }
+
+        fn conflict_guids(report: &MergeReport) -> Vec<&str> {
+            report.conflicts.iter().map(|c| c.guid.as_str()).collect()
+        }
+
+        /// The snapshot without the ranks of tag maps, which are not merged.
+        fn rows_but_order(ud: &UserData) -> Snapshot {
+            let mut snapshot = ud.snapshot().unwrap();
+            for (key, hash) in snapshot.0.iter_mut() {
+                if matches!(key, crate::sync_snapshot::RowKey::TagMap(..)) {
+                    hash.clear();
+                }
+            }
+            snapshot
+        }
+
+        fn add_mark(ud: &mut UserData, chapter: i64) -> String {
+            ud.add_mark(&bible(chapter), None, 1, &[verse(1, 0, 3)])
+                .unwrap()
+        }
+
+        #[test]
+        fn new_mark_arrives() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            // Without a base, then with one.
+            let first = add_mark(&mut a.ud, 1);
+            assert_eq!(sync(&a, &mut b).report.added, 1);
+            let m = add_mark(&mut a.ud, 2);
+            let r = sync(&a, &mut b);
+            assert_eq!(mark_color(&b.ud, &first), Some(1));
+            assert_eq!(mark_color(&b.ud, &m), Some(1));
+            assert_eq!((r.report.added, r.deleted), (1, 0));
+            assert!(r.report.conflicts.is_empty());
+        }
+
+        #[test]
+        fn deletion_carries_over_and_stays() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let m = add_mark(&mut a.ud, 1);
+            let keep = add_mark(&mut a.ud, 2);
+            sync_both(&mut a, &mut b);
+            b.ud.delete_mark(&m).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 1);
+            assert_eq!(mark_color(&a.ud, &m), None);
+            assert_eq!(mark_color(&a.ud, &keep), Some(1));
+            // Another round brings nothing back.
+            sync(&a, &mut b);
+            sync(&b, &mut a);
+            assert_eq!(mark_color(&a.ud, &m), None);
+            assert_eq!(mark_color(&b.ud, &m), None);
+            assert_eq!(count(&a.ud, "UserMark"), 1);
+            assert_eq!(count(&b.ud, "UserMark"), 1);
+        }
+
+        #[test]
+        fn local_delete_not_resurrected() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let x = add_mark(&mut a.ud, 1);
+            let y = add_mark(&mut a.ud, 2);
+            sync_both(&mut a, &mut b);
+            a.ud.delete_mark(&x).unwrap();
+            // B has not seen the deletion; its file still holds X.
+            b.ud.set_mark_color(&y, 4).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(mark_color(&a.ud, &x), None);
+            assert_eq!(mark_color(&a.ud, &y), Some(4));
+            assert!(r.report.conflicts.is_empty());
+            // And B then loses X.
+            assert_eq!(sync(&a, &mut b).deleted, 1);
+            assert_eq!(mark_color(&b.ud, &x), None);
+        }
+
+        #[test]
+        fn stale_copy_does_not_overwrite_edit() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let h = add_mark(&mut a.ud, 1);
+            let y = add_mark(&mut a.ud, 2);
+            sync_both(&mut a, &mut b);
+            a.ud.set_mark_color(&h, 5).unwrap();
+            set_db_time(&a.ud, "2026-01-01T10:00:00Z");
+            b.ud.set_mark_color(&y, 3).unwrap();
+            set_db_time(&b.ud, "2026-01-01T11:00:00Z");
+            let r = sync(&b, &mut a);
+            assert_eq!(mark_color(&a.ud, &h), Some(5));
+            assert_eq!(mark_color(&a.ud, &y), Some(3));
+            assert!(r.report.conflicts.is_empty());
+            assert_eq!(r.report.updated, 1);
+        }
+
+        #[test]
+        fn edit_beats_delete_both_ways() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let n =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("N", "text", &["study"]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            edit_note(&mut a.ud, &n, "N", "edited", &["study"]);
+            b.ud.delete_note(&n).unwrap();
+
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 0);
+            assert_eq!(note(&a.ud, &n).content, "edited");
+            assert_eq!(note(&a.ud, &n).tags, vec!["study"]);
+            assert_eq!(conflict_guids(&r.report), vec![n.as_str()]);
+
+            let r = sync(&a, &mut b);
+            assert_eq!(note(&b.ud, &n).content, "edited");
+            assert_eq!(note(&b.ud, &n).tags, vec!["study"]);
+            assert_eq!(conflict_guids(&r.report), vec![n.as_str()]);
+            // Settled: the next rounds change nothing.
+            let r = sync(&b, &mut a);
+            assert!(r.report.conflicts.is_empty());
+            assert_eq!((r.report.added, r.report.updated, r.deleted), (0, 0, 0));
+        }
+
+        #[test]
+        fn no_base_never_deletes() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            add_mark(&mut a.ud, 1);
+            a.ud.save_note(Some(&bible(1)), None, &note_input("N", "text", &["study"]))
+                .unwrap();
+            let before = a.ud.fingerprint().unwrap();
+            let r = merged(try_sync(&b, &mut a, DeleteGuard::Apply));
+            assert_eq!(r.deleted, 0);
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+            assert_eq!(count(&a.ud, "UserMark"), 1);
+            assert_eq!(count(&a.ud, "Note"), 1);
+        }
+
+        #[test]
+        fn no_base_matches_merge_backup() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut a = device(tmp.path(), "a");
+            let mut b = device(tmp.path(), "b");
+            let m = add_mark(&mut b.ud, 1);
+            b.ud.set_mark_color(&m, 2).unwrap();
+            b.ud.save_note(Some(&bible(1)), None, &note_input("Local", "L", &["x"]))
+                .unwrap();
+            // C is a copy of B.
+            fs::create_dir_all(tmp.path().join("c")).unwrap();
+            fs::copy(b.ud.path(), tmp.path().join("c").join(DB_NAME)).unwrap();
+            let mut c = device(tmp.path(), "c");
+            add_mark(&mut a.ud, 2);
+            a.ud.save_note(Some(&bible(2)), None, &note_input("Remote", "R", &["y"]))
+                .unwrap();
+            let file = sync_file(&a);
+            let synced = merged(b.ud.sync_merge(&file, None, DeleteGuard::Check).unwrap());
+            let manual = c.ud.merge_backup(&file).unwrap();
+            assert_eq!(synced.report, manual);
+            assert_eq!(synced.deleted, 0);
+            assert_eq!(b.ud.snapshot().unwrap(), c.ud.snapshot().unwrap());
+            assert_eq!(synced.snapshot, a.ud.snapshot().unwrap());
+            assert!(b.ud.path().with_extension("db.before-restore").exists());
+        }
+
+        /// A has 20 highlights synced to B, and B deleted all of them.
+        fn mass_delete(tmp: &Path) -> (Device, Device) {
+            let (mut a, mut b) = (device(tmp, "a"), device(tmp, "b"));
+            let marks: Vec<String> = (1..=20).map(|c| add_mark(&mut a.ud, c)).collect();
+            sync_both(&mut a, &mut b);
+            for m in &marks {
+                b.ud.delete_mark(m).unwrap();
+            }
+            (a, b)
+        }
+
+        #[test]
+        fn mass_delete_needs_confirmation() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, b) = mass_delete(&tmp.path().join("check"));
+            let safety = a.ud.path().with_extension("db.before-restore");
+            fs::remove_file(&safety).unwrap();
+            let before = a.ud.fingerprint().unwrap();
+            let base = a.bases["b"].clone();
+            let outcome = try_sync(&b, &mut a, DeleteGuard::Check);
+            assert_eq!(
+                outcome,
+                SyncOutcome::NeedsConfirmation {
+                    deletions: 20,
+                    total: 20
+                }
+            );
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+            assert!(!safety.exists());
+            assert_eq!(a.bases["b"], base);
+
+            let (mut a, b) = mass_delete(&tmp.path().join("apply"));
+            let r = merged(try_sync(&b, &mut a, DeleteGuard::Apply));
+            assert_eq!(r.deleted, 20);
+            assert_eq!(count(&a.ud, "UserMark"), 0);
+            assert_eq!(count(&a.ud, "BlockRange"), 0);
+
+            let (mut a, b) = mass_delete(&tmp.path().join("skip"));
+            let r = merged(try_sync(&b, &mut a, DeleteGuard::Skip));
+            assert_eq!(r.deleted, 0);
+            assert_eq!(count(&a.ud, "UserMark"), 20);
+            // The returned snapshot is the new base: the next merge of the
+            // same file deletes nothing and asks nothing.
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 0);
+            assert_eq!(count(&a.ud, "UserMark"), 20);
+        }
+
+        /// A with one highlight, 30 answers and 3 bookmarks, synced with B.
+        fn answers_and_bookmarks(tmp: &Path) -> (Device, Device) {
+            let (mut a, mut b) = (device(tmp, "a"), device(tmp, "b"));
+            add_mark(&mut a.ud, 1);
+            for n in 0..30 {
+                a.ud.save_answer(&watchtower(), None, &format!("tt{n}"), "an answer")
+                    .unwrap();
+            }
+            for slot in 0..3 {
+                put_bookmark(&a.ud, slot, slot + 1, "Mark");
+            }
+            sync_both(&mut a, &mut b);
+            (a, b)
+        }
+
+        #[test]
+        fn a_reset_peer_needs_confirmation_for_every_kind() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, b) = answers_and_bookmarks(tmp.path());
+            // B is reset to an empty database but keeps its bases: A's rows
+            // stay deleted there, and its file now lacks all of them.
+            let mut b = Device {
+                ud: {
+                    let path = b.ud.path().to_owned();
+                    drop(b.ud);
+                    fs::remove_file(&path).unwrap();
+                    UserData::open(&path).unwrap()
+                },
+                ..b
+            };
+            let r = sync(&a, &mut b);
+            assert_eq!((r.report.added, r.deleted), (0, 0));
+            let safety = a.ud.path().with_extension("db.before-restore");
+            fs::remove_file(&safety).unwrap();
+            let before = a.ud.fingerprint().unwrap();
+            let outcome = try_sync(&b, &mut a, DeleteGuard::Check);
+            assert_eq!(
+                outcome,
+                SyncOutcome::NeedsConfirmation {
+                    deletions: 34,
+                    total: 34
+                }
+            );
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+            assert!(!safety.exists());
+        }
+
+        #[test]
+        fn wiping_answers_or_bookmarks_needs_confirmation() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Only answers deleted: the highlight and bookmarks stay.
+            let (mut a, mut b) = answers_and_bookmarks(&tmp.path().join("answers"));
+            for n in 0..30 {
+                b.ud.save_answer(&watchtower(), None, &format!("tt{n}"), "")
+                    .unwrap();
+            }
+            let before = a.ud.fingerprint().unwrap();
+            assert_eq!(
+                try_sync(&b, &mut a, DeleteGuard::Check),
+                SyncOutcome::NeedsConfirmation {
+                    deletions: 30,
+                    total: 34
+                }
+            );
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+            // Apply deletes them, Skip keeps them.
+            let r = merged(try_sync(&b, &mut a, DeleteGuard::Apply));
+            assert_eq!(r.deleted, 30);
+            assert!(a.ud.answers(&watchtower()).unwrap().is_empty());
+            let (mut a, mut b) = answers_and_bookmarks(&tmp.path().join("skip"));
+            for n in 0..30 {
+                b.ud.save_answer(&watchtower(), None, &format!("tt{n}"), "")
+                    .unwrap();
+            }
+            let r = merged(try_sync(&b, &mut a, DeleteGuard::Skip));
+            assert_eq!(r.deleted, 0);
+            assert_eq!(a.ud.answers(&watchtower()).unwrap().len(), 30);
+
+            // Tags and their maps: 6 of 6 rows.
+            let (mut a, mut b) = (
+                device(&tmp.path().join("tags"), "a"),
+                device(&tmp.path().join("tags"), "b"),
+            );
+            let notes: Vec<String> = (1..=3)
+                .map(|c| {
+                    a.ud.save_note(
+                        Some(&bible(c)),
+                        None,
+                        &note_input("N", "n", &[&format!("t{c}")]),
+                    )
+                    .unwrap()
+                })
+                .collect();
+            sync_both(&mut a, &mut b);
+            b.ud.conn
+                .execute_batch("DELETE FROM TagMap; DELETE FROM Tag;")
+                .unwrap();
+            assert_eq!(
+                try_sync(&b, &mut a, DeleteGuard::Check),
+                SyncOutcome::NeedsConfirmation {
+                    deletions: 6,
+                    total: 9
+                }
+            );
+            assert_eq!(note(&a.ud, &notes[0]).tags, vec!["t1"]);
+        }
+
+        #[test]
+        fn a_few_deleted_answers_need_no_confirmation() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = answers_and_bookmarks(tmp.path());
+            for n in 0..5 {
+                b.ud.save_answer(&watchtower(), None, &format!("tt{n}"), "")
+                    .unwrap();
+            }
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 5);
+            assert_eq!(a.ud.answers(&watchtower()).unwrap().len(), 25);
+        }
+
+        #[test]
+        fn few_deletions_need_no_confirmation() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            // 5 of 6 rows: more than half, but not more than 5.
+            let marks: Vec<String> = (1..=6).map(|c| add_mark(&mut a.ud, c)).collect();
+            sync_both(&mut a, &mut b);
+            for m in &marks[..5] {
+                b.ud.delete_mark(m).unwrap();
+            }
+            assert_eq!(sync(&b, &mut a).deleted, 5);
+            assert_eq!(count(&a.ud, "UserMark"), 1);
+        }
+
+        #[test]
+        fn both_changed_differently_settles_the_same_way_and_reports() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let m = add_mark(&mut a.ud, 1);
+            let n =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("N", "text", &[]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+
+            a.ud.set_mark_color(&m, 2).unwrap();
+            edit_note(&mut a.ud, &n, "N", "from A", &[]);
+            set_note_time(&a.ud, &n, "2026-01-01T12:00:00Z");
+            set_db_time(&a.ud, "2026-01-01T10:00:00Z");
+            b.ud.set_mark_color(&m, 3).unwrap();
+            edit_note(&mut b.ud, &n, "N", "from B", &[]);
+            set_note_time(&b.ud, &n, "2026-01-01T09:00:00Z");
+            set_db_time(&b.ud, "2026-01-01T11:00:00Z");
+            // The mark has no clock of its own: the greater content hash
+            // wins on both computers, whichever database is newer.
+            let key = RowKey::Mark(m.clone());
+            let hash_a = a.ud.snapshot().unwrap().0[&key].clone();
+            let hash_b = b.ud.snapshot().unwrap().0[&key].clone();
+            let (color, a_won) = if hash_b > hash_a {
+                (3, false)
+            } else {
+                (2, true)
+            };
+
+            let r = sync(&b, &mut a);
+            // The mark goes to the greater hash, the note its own time.
+            assert_eq!(mark_color(&a.ud, &m), Some(color));
+            assert_eq!(note(&a.ud, &n).content, "from A");
+            let mut names = conflict_guids(&r.report);
+            names.sort_unstable();
+            let mut want = vec![m.as_str(), n.as_str()];
+            want.sort_unstable();
+            assert_eq!(names, want);
+            assert_eq!(r.report.conflicts.len(), 2);
+
+            // B then takes A's note, newer by its time, and the mark by the
+            // same hash rule; each lost edit is reported.
+            let r = sync(&a, &mut b);
+            assert_eq!(note(&b.ud, &n).content, "from A");
+            assert_eq!(mark_color(&b.ud, &m), Some(color));
+            let mut names = conflict_guids(&r.report);
+            names.sort_unstable();
+            let mut want = vec![n.as_str()];
+            if a_won {
+                want.push(m.as_str());
+            }
+            want.sort_unstable();
+            assert_eq!(names, want);
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+            // Settled.
+            let r = sync(&b, &mut a);
+            assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+            assert_eq!((r.report.added, r.report.updated, r.deleted), (0, 0, 0));
+        }
+
+        #[test]
+        fn rows_new_on_both_sides_settle_the_same_way() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            add_mark(&mut a.ud, 1);
+            sync_both(&mut a, &mut b);
+            // Both set bookmark slot 0 of the same publication, differently,
+            // with the same database clock.
+            put_bookmark(&a.ud, 0, 2, "From A");
+            put_bookmark(&b.ud, 0, 3, "From B");
+            set_db_time(&a.ud, "2026-01-01T10:00:00Z");
+            set_db_time(&b.ud, "2026-01-01T10:00:00Z");
+            let r1 = sync(&b, &mut a);
+            let r2 = sync(&a, &mut b);
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+            assert!(
+                r1.report.conflicts.iter().any(|c| c.table == "Bookmark")
+                    || r2.report.conflicts.iter().any(|c| c.table == "Bookmark")
+            );
+            let r = sync(&b, &mut a);
+            assert_eq!((r.report.added, r.report.updated, r.deleted), (0, 0, 0));
+        }
+
+        #[test]
+        fn notes_changed_at_the_same_time_settle_by_hash() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let n =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("N", "text", &[]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            edit_note(&mut a.ud, &n, "N", "from A", &[]);
+            edit_note(&mut b.ud, &n, "N", "from B", &[]);
+            set_note_time(&a.ud, &n, "2026-01-01T12:00:00Z");
+            set_note_time(&b.ud, &n, "2026-01-01T12:00:00Z");
+            let key = RowKey::Note(n.clone());
+            let hash_a = a.ud.snapshot().unwrap().0[&key].clone();
+            let hash_b = b.ud.snapshot().unwrap().0[&key].clone();
+            let content = if hash_b > hash_a { "from B" } else { "from A" };
+            let r1 = sync(&b, &mut a);
+            let r2 = sync(&a, &mut b);
+            assert_eq!(note(&a.ud, &n).content, content);
+            assert_eq!(note(&b.ud, &n).content, content);
+            assert!(!r1.report.conflicts.is_empty() || !r2.report.conflicts.is_empty());
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+        }
+
+        #[test]
+        fn tags_and_bookmarks_and_input_fields() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let n1 =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("One", "1", &["a", "b"]))
+                    .unwrap();
+            let n2 =
+                a.ud.save_note(Some(&bible(2)), None, &note_input("Two", "2", &["a"]))
+                    .unwrap();
+            put_bookmark(&a.ud, 0, 1, "One");
+            put_bookmark(&a.ud, 1, 2, "Two");
+            a.ud.save_answer(&watchtower(), None, "tt1", "first")
+                .unwrap();
+            a.ud.save_answer(&watchtower(), None, "tt2", "second")
+                .unwrap();
+            sync_both(&mut a, &mut b);
+
+            // B: tag `b` leaves note 1 and is deleted, note 2 gains tag `c`.
+            edit_note(&mut b.ud, &n1, "One", "1", &["a"]);
+            b.ud.conn
+                .execute("DELETE FROM Tag WHERE Name = 'b'", [])
+                .unwrap();
+            edit_note(&mut b.ud, &n2, "Two", "2", &["a", "c"]);
+            b.ud.conn
+                .execute("DELETE FROM Bookmark WHERE Slot = 0", [])
+                .unwrap();
+            put_bookmark(&b.ud, 1, 3, "Two moved");
+            b.ud.save_answer(&watchtower(), None, "tt1", "").unwrap();
+            b.ud.save_answer(&watchtower(), None, "tt2", "changed")
+                .unwrap();
+
+            let r = sync(&b, &mut a);
+            assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+            // The tag map, the tag, the bookmark and the answer.
+            assert_eq!(r.deleted, 4);
+            assert_eq!(note(&a.ud, &n1).tags, vec!["a"]);
+            assert_eq!(note(&a.ud, &n2).tags, vec!["a", "c"]);
+            let names: Vec<String> = a.ud.tags().unwrap().into_iter().map(|t| t.name).collect();
+            assert_eq!(names, vec!["a", "c"]);
+            assert_eq!(bookmark_slots(&a.ud), vec![(1, 3, "Two moved".to_string())]);
+            let answers = a.ud.answers(&watchtower()).unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers["tt2"], "changed");
+            assert_foreign_keys_hold(&a.ud);
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+        }
+
+        #[test]
+        fn deleting_a_note_and_a_mark_keeps_the_rest_consistent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let m = add_mark(&mut a.ud, 1);
+            let attached =
+                a.ud.save_note(
+                    Some(&bible(1)),
+                    None,
+                    &NoteInput {
+                        mark_guid: Some(m.clone()),
+                        ..note_input("On the mark", "x", &["t"])
+                    },
+                )
+                .unwrap();
+            let gone =
+                a.ud.save_note(Some(&bible(2)), None, &note_input("Gone", "y", &["t"]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            b.ud.delete_mark(&m).unwrap();
+            b.ud.delete_note(&gone).unwrap();
+            let r = sync(&b, &mut a);
+            assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+            assert_eq!(mark_color(&a.ud, &m), None);
+            assert!(!has_note(&a.ud, &gone));
+            // The note on the deleted highlight stays, without it.
+            assert_eq!(note(&a.ud, &attached).mark_guid, None);
+            assert_eq!(note(&a.ud, &attached).tags, vec!["t"]);
+            assert_foreign_keys_hold(&a.ud);
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+        }
+
+        #[test]
+        fn sync_no_op_changes_nothing() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let m = add_mark(&mut a.ud, 1);
+            a.ud.save_note(
+                Some(&bible(1)),
+                None,
+                &NoteInput {
+                    mark_guid: Some(m),
+                    ..note_input("N", "text", &["x", "y"])
+                },
+            )
+            .unwrap();
+            a.ud.save_note(Some(&watchtower()), None, &note_input("W", "w", &["y"]))
+                .unwrap();
+            put_bookmark(&a.ud, 0, 1, "One");
+            a.ud.save_answer(&watchtower(), None, "tt1", "an answer")
+                .unwrap();
+            sync_both(&mut a, &mut b);
+
+            let assert_no_op = |r: &SyncMerge| {
+                assert_eq!(r.report.added, 0);
+                assert_eq!(r.report.updated, 0);
+                assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+                assert_eq!(r.deleted, 0);
+                assert!(r.report.unchanged > 0);
+            };
+            // A file identical to the base.
+            let before = b.ud.fingerprint().unwrap();
+            let clock = db_time(&b.ud);
+            let file = sync_file(&a);
+            assert_no_op(&merged(merge_file(&file, "a", &mut b, DeleteGuard::Check)));
+            assert_eq!(b.ud.fingerprint().unwrap(), before);
+            // The same file merged twice.
+            assert_no_op(&merged(merge_file(&file, "a", &mut b, DeleteGuard::Check)));
+            assert_eq!(b.ud.fingerprint().unwrap(), before);
+            assert_eq!(db_time(&b.ud), clock);
+            // And the other way.
+            let before = a.ud.fingerprint().unwrap();
+            assert_no_op(&sync(&b, &mut a));
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+        }
+
+        #[test]
+        fn overlapping_rows_on_both_sides() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            // Both sides hold tag `shared` and answers on the same page.
+            let na =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("A", "a", &["shared"]))
+                    .unwrap();
+            a.ud.save_answer(&watchtower(), None, "tt1", "same")
+                .unwrap();
+            a.ud.save_answer(&watchtower(), None, "tt2", "from A")
+                .unwrap();
+            let nb =
+                b.ud.save_note(Some(&bible(2)), None, &note_input("B", "b", &["shared"]))
+                    .unwrap();
+            b.ud.save_answer(&watchtower(), None, "tt1", "same")
+                .unwrap();
+            b.ud.save_answer(&watchtower(), None, "tt3", "from B")
+                .unwrap();
+            sync_both(&mut a, &mut b);
+            sync(&a, &mut b);
+            // The same rows; the order of `shared` may differ.
+            assert_eq!(rows_but_order(&a.ud), rows_but_order(&b.ud));
+
+            // B takes its note out of `shared`, A edits the shared answer.
+            edit_note(&mut b.ud, &nb, "B", "b", &[]);
+            a.ud.save_answer(&watchtower(), None, "tt1", "edited")
+                .unwrap();
+            // Both add the same new answer and tag a note `fresh`.
+            a.ud.save_answer(&watchtower(), None, "tt4", "new").unwrap();
+            b.ud.save_answer(&watchtower(), None, "tt4", "new").unwrap();
+            edit_note(&mut a.ud, &na, "A", "a", &["fresh", "shared"]);
+            edit_note(&mut b.ud, &nb, "B", "b", &["fresh"]);
+
+            let r = sync(&b, &mut a);
+            assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+            assert_eq!(r.deleted, 1);
+            assert_eq!(note(&a.ud, &na).tags, vec!["fresh", "shared"]);
+            assert_eq!(note(&a.ud, &nb).tags, vec!["fresh"]);
+            let answers = a.ud.answers(&watchtower()).unwrap();
+            assert_eq!(answers["tt1"], "edited");
+            assert_eq!(answers["tt4"], "new");
+
+            let r = sync(&a, &mut b);
+            assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+            assert_eq!(b.ud.answers(&watchtower()).unwrap(), answers);
+            assert_eq!(note(&b.ud, &na).tags, vec!["fresh", "shared"]);
+            assert_eq!(note(&b.ud, &nb).tags, vec!["fresh"]);
+        }
+
+        #[test]
+        fn tag_order_differences_are_not_conflicts() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let n1 =
+                a.ud.save_note(Some(&bible(1)), None, &note_input("1", "1", &["order"]))
+                    .unwrap();
+            let n2 =
+                a.ud.save_note(Some(&bible(2)), None, &note_input("2", "2", &["order"]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            // B moves note 1 to the end of `order`: [2, 1] there, [1, 2] here.
+            edit_note(&mut b.ud, &n1, "1", "1", &[]);
+            edit_note(&mut b.ud, &n1, "1", "1", &["order"]);
+            edit_note(&mut a.ud, &n2, "2", "edited", &["order"]);
+            for _ in 0..2 {
+                let r = sync(&b, &mut a);
+                assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+                assert_eq!(r.deleted, 0);
+                let r = sync(&a, &mut b);
+                assert!(r.report.conflicts.is_empty(), "{:?}", r.report.conflicts);
+                assert_eq!(r.deleted, 0);
+            }
+            for ud in [&a.ud, &b.ud] {
+                assert_eq!(note(ud, &n1).tags, vec!["order"]);
+                assert_eq!(note(ud, &n2).tags, vec!["order"]);
+                assert_eq!(note(ud, &n2).content, "edited");
+            }
+        }
+
+        #[test]
+        fn deletion_spares_an_invisible_twin() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            put_bookmark(&a.ud, 0, 1, "Seen");
+            sync_both(&mut a, &mut b);
+            // A second Bible location that normalizes to the same key (no
+            // book there, book 0 here), with a bookmark in the same slot:
+            // the snapshot sees only the first.
+            a.ud.conn
+                .execute_batch(
+                    "INSERT INTO Location (BookNumber, KeySymbol, MepsLanguage, Type)
+                     VALUES (0, 'nwtsty', 2, 1);
+                     INSERT INTO Bookmark (LocationId, PublicationLocationId, Slot, Title,
+                                           BlockType)
+                     SELECT (SELECT LocationId FROM Location WHERE ChapterNumber = 1),
+                            last_insert_rowid(), 0, 'Twin', 0;",
+                )
+                .unwrap();
+            b.ud.conn.execute("DELETE FROM Bookmark", []).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 1);
+            let titles: Vec<String> =
+                a.ud.conn
+                    .prepare("SELECT Title FROM Bookmark")
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .map(|t| t.unwrap())
+                    .collect();
+            assert_eq!(titles, vec!["Twin"]);
+        }
+
+        #[test]
+        fn a_deleted_answer_goes_from_every_sibling_location() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            a.ud.save_answer(&watchtower(), None, "tt1", "shown")
+                .unwrap();
+            sync_both(&mut a, &mut b);
+            // A also has the field on a later location of the page without
+            // a language, as JW Library writes it: hidden behind the first.
+            a.ud.conn
+                .execute_batch(
+                    "INSERT INTO Location (DocumentId, IssueTagNumber, KeySymbol, MepsLanguage,
+                                           Type)
+                     VALUES (2026520, 20260800, 'w', NULL, 0);
+                     INSERT INTO InputField (LocationId, TextTag, Value)
+                     VALUES (last_insert_rowid(), 'tt1', 'hidden');",
+                )
+                .unwrap();
+            b.ud.save_answer(&watchtower(), None, "tt1", "").unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 1);
+            assert_eq!(count(&a.ud, "InputField"), 0);
+            assert!(a.ud.answers(&watchtower()).unwrap().is_empty());
+            let snapshot = a.ud.snapshot().unwrap();
+            assert!(
+                !snapshot
+                    .0
+                    .keys()
+                    .any(|k| matches!(k, crate::sync_snapshot::RowKey::InputField(..)))
+            );
+        }
+
+        #[test]
+        fn a_tag_used_here_survives_its_deletion_there() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            a.ud.save_note(Some(&bible(1)), None, &note_input("1", "1", &["t"]))
+                .unwrap();
+            let n2 =
+                a.ud.save_note(Some(&bible(2)), None, &note_input("2", "2", &[]))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            // B deletes tag `t`; A gives it to another note meanwhile.
+            b.ud.conn
+                .execute_batch(
+                    "DELETE FROM TagMap WHERE TagId = (SELECT TagId FROM Tag WHERE Name = 't');
+                     DELETE FROM Tag WHERE Name = 't';",
+                )
+                .unwrap();
+            edit_note(&mut a.ud, &n2, "2", "2", &["t"]);
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 0);
+            assert_eq!(r.report.conflicts.len(), 1, "{:?}", r.report.conflicts);
+            assert_eq!(r.report.conflicts[0].table, "Tag");
+            assert_eq!(a.ud.tags().unwrap()[0].notes, 2);
+            // B gets the tag back with both notes.
+            let r = sync(&a, &mut b);
+            assert_eq!(r.report.conflicts.len(), 1, "{:?}", r.report.conflicts);
+            assert_eq!(b.ud.tags().unwrap()[0].notes, 2);
+            assert_eq!(a.ud.snapshot().unwrap(), b.ud.snapshot().unwrap());
+        }
+
+        #[test]
+        fn deleted_rows_are_never_added_back_by_the_same_merge() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let old: Vec<String> = (1..=3).map(|c| add_mark(&mut a.ud, c)).collect();
+            sync_both(&mut a, &mut b);
+            // B replaces the highlights with new ones on the same verses.
+            for m in &old {
+                b.ud.delete_mark(m).unwrap();
+            }
+            let new: Vec<String> = (1..=3)
+                .map(|c| {
+                    b.ud.add_mark(&bible(c), None, 4, &[verse(1, 0, 3)])
+                        .unwrap()
+                })
+                .collect();
+            let r = sync(&b, &mut a);
+            assert_eq!((r.deleted, r.report.added), (3, 3));
+            for m in &old {
+                assert_eq!(mark_color(&a.ud, m), None);
+            }
+            for m in &new {
+                assert_eq!(mark_color(&a.ud, m), Some(4));
+            }
+            assert_eq!(a.ud.snapshot().unwrap(), r.snapshot);
+        }
     }
 }
