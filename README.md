@@ -47,7 +47,7 @@ Check every download against its `.sha256` file before installing it.
 ```sh
 sudo apt install ./Pergament-X.Y.Z-linux-x86_64.deb    # Debian, Ubuntu
 sudo dnf install ./Pergament-X.Y.Z-linux-x86_64.rpm     # Fedora
-./Pergament-X.Y.Z-linux-x86_64.AppImage
+./Pergament-X.Y.Z-x86_64.AppImage
 flatpak install --user Pergament-X.Y.Z-linux-x86_64.flatpak
 ```
 

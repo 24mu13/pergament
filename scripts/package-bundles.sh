@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Copy the Tauri bundles into target/package as
-# Pergament-X.Y.Z-linux-x86_64.{AppImage,deb,rpm}, each with a .sha256 file
-# next to it. Build and bundle first:
+# Copy the Tauri bundles into target/package as Pergament-X.Y.Z-linux-x86_64.deb,
+# Pergament-X.Y.Z-linux-x86_64.rpm and Pergament-X.Y.Z-x86_64.AppImage (no
+# "linux", as the AppImage catalog asks), each with a .sha256 file next to it,
+# and write the AppImage's .zsync file for AppImageUpdate. Needs zsyncmake.
+# Build and bundle first, with the update information embedded:
 #   bun install --frozen-lockfile
 #   cargo build --release -p pergament
 #   cp target/release/pergament target/release/pergament-x86_64-unknown-linux-gnu
+#   LDAI_UPDATE_INFORMATION='gh-releases-zsync|v3rm1n0|pergament|latest|Pergament-*x86_64.AppImage.zsync' \
 #   bun run tauri build --bundles deb,rpm,appimage \
 #       --config '{"bundle":{"active":true,"externalBin":["../target/release/pergament"]}}'
 set -euo pipefail
@@ -29,16 +32,22 @@ shopt -u nullglob
 
 install -m644 "$deb" "$out/Pergament-$version-linux-$arch.deb"
 install -m644 "$rpm" "$out/Pergament-$version-linux-$arch.rpm"
-install -m644 "$appimage" "$out/Pergament-$version-linux-$arch.AppImage"
+install -m644 "$appimage" "$out/Pergament-$version-$arch.AppImage"
 
+files=(
+    "Pergament-$version-linux-$arch.deb"
+    "Pergament-$version-linux-$arch.rpm"
+    "Pergament-$version-$arch.AppImage"
+)
 (
     cd "$out"
-    for f in Pergament-"$version"-linux-"$arch".*; do
-        [[ $f == *.sha256 ]] && continue
+    # The bundler's own .zsync names the file it wrote, so it is made again for the new name.
+    zsyncmake -u "${files[2]}" -o "${files[2]}.zsync" "${files[2]}"
+    for f in "${files[@]}"; do
         sha256sum "$f" >"$f.sha256"
     done
 )
-for f in "$out"/Pergament-"$version"-linux-"$arch".*; do
-    echo "package-bundles: $f"
+for f in "${files[@]}" "${files[2]}.zsync"; do
+    echo "package-bundles: $out/$f"
 done
-cat "$out"/Pergament-"$version"-linux-"$arch".*.sha256
+(cd "$out" && cat "${files[@]/%/.sha256}")
