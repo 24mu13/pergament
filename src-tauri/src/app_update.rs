@@ -157,13 +157,19 @@ pub fn assets_for<'r>(
         .tag_name
         .strip_prefix('v')
         .unwrap_or(&release.tag_name);
-    let name = match kind {
-        InstallKind::Zip { .. } => format!("pergament-{version}-linux-{arch}.zip"),
-        InstallKind::AppImage(_) => format!("Pergament-{version}-linux-{arch}.AppImage"),
+    // The AppImage dropped "linux" from its name after 1.7.0; releases up to then still have it.
+    let names = match kind {
+        InstallKind::Zip { .. } => vec![format!("pergament-{version}-linux-{arch}.zip")],
+        InstallKind::AppImage(_) => vec![
+            format!("Pergament-{version}-{arch}.AppImage"),
+            format!("Pergament-{version}-linux-{arch}.AppImage"),
+        ],
         InstallKind::Nix | InstallKind::Manual => return None,
     };
     let find = |n: &str| release.assets.iter().find(|a| a.name == n);
-    Some((find(&name)?, find(&format!("{name}.sig"))?))
+    names
+        .iter()
+        .find_map(|name| Some((find(name)?, find(&format!("{name}.sig"))?)))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -479,6 +485,20 @@ mod tests {
         assert!(assets_for(&r, &zip_kind(), "aarch64").is_none());
         let unsigned = release(&ALL[..1]);
         assert!(assets_for(&unsigned, &zip_kind(), "x86_64").is_none());
+    }
+
+    #[test]
+    fn picks_the_appimage_without_linux_in_its_name() {
+        let image = InstallKind::AppImage(PathBuf::from("/x.AppImage"));
+        let r = release(&[
+            "Pergament-1.7.0-x86_64.AppImage",
+            "Pergament-1.7.0-x86_64.AppImage.sig",
+        ]);
+        let (file, sig) = assets_for(&r, &image, "x86_64").unwrap();
+        assert_eq!(file.name, "Pergament-1.7.0-x86_64.AppImage");
+        assert_eq!(sig.name, "Pergament-1.7.0-x86_64.AppImage.sig");
+        let unsigned = release(&["Pergament-1.7.0-x86_64.AppImage"]);
+        assert!(assets_for(&unsigned, &image, "x86_64").is_none());
     }
 
     #[test]
