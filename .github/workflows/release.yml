@@ -294,7 +294,7 @@ jobs:
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") {
             $env:GITHUB_REF_NAME.Substring(1)
           } else {
-            (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"$').Matches[0].Groups[1].Value
+            "$((Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"$').Matches[0].Groups[1].Value)-dev"
           }
           $name = "Pergament-$version-windows-x86_64"
           $out = "target/package"
