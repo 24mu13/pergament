@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Copy the Tauri bundles into target/package as Pergament-X.Y.Z-linux-x86_64.deb,
 # Pergament-X.Y.Z-linux-x86_64.rpm and Pergament-X.Y.Z-x86_64.AppImage (no
-# "linux", as the AppImage catalog asks), each with a .sha256 file next to it,
-# and write the AppImage's .zsync file for AppImageUpdate. Needs zsyncmake.
+# "linux", as the AppImage catalog asks), and write the AppImage's .zsync file for AppImageUpdate. Needs zsyncmake.
 # Build and bundle first, with the update information embedded:
 #   bun install --frozen-lockfile
 #   cargo build --release -p pergament
@@ -43,11 +42,7 @@ files=(
     cd "$out"
     # The bundler's own .zsync names the file it wrote, so it is made again for the new name.
     zsyncmake -u "${files[2]}" -o "${files[2]}.zsync" "${files[2]}"
-    for f in "${files[@]}"; do
-        sha256sum "$f" >"$f.sha256"
-    done
 )
 for f in "${files[@]}" "${files[2]}.zsync"; do
     echo "package-bundles: $out/$f"
 done
-(cd "$out" && cat "${files[@]/%/.sha256}")

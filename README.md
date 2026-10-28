@@ -41,7 +41,8 @@ More in [docs/screenshots](docs/screenshots). All content shown is invented.
 ## Install
 
 Releases are on the [releases page](https://github.com/v3rm1n0/pergament/releases).
-Check every download against its `.sha256` file before installing it.
+Check every download against the SHA-256 digest shown next to it before
+installing it.
 
 **Windows (x86_64):** extract the portable zip and run `pergament-app.exe`.
 The [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)

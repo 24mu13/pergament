@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pack the release build into target/package/Pergament-X.Y.Z-linux-x86_64.flatpak
-# with a .sha256 file next to it, from packaging/flatpak/io.github.v3rm1n.pergament.json.
+# from packaging/flatpak/io.github.v3rm1n.pergament.json.
 # The manifest only stages the built files into /app, so no compilers are needed
 # inside the sandbox. Build first:
 #   bun run build
@@ -60,9 +60,4 @@ flatpak-builder --user --arch=x86_64 --default-branch=stable \
 mkdir -p target/package
 flatpak build-bundle --arch=x86_64 target/flatpak-repo \
     "target/package/Pergament-$version-linux-x86_64.flatpak" "$app_id" stable
-(
-    cd target/package
-    sha256sum "Pergament-$version-linux-x86_64.flatpak" >"Pergament-$version-linux-x86_64.flatpak.sha256"
-)
 echo "package-flatpak: target/package/Pergament-$version-linux-x86_64.flatpak"
-cat "target/package/Pergament-$version-linux-x86_64.flatpak.sha256"
