@@ -8,6 +8,7 @@ import {
   documentOrder,
   documentTarget,
   type ChapterStudy,
+  type BookmarkAnchor,
   type Mark,
   type MarkRange,
   type Page,
@@ -16,12 +17,13 @@ import {
   type VerseStudy,
 } from "@/lib/api";
 import { restoreScroll } from "@/lib/scroll";
-import { applyMarks, blockElements, markText, rangeText, selectionRanges } from "@/lib/marks";
+import { applyMarks, blockElements, blockOf, markText, rangeText, selectionRanges } from "@/lib/marks";
 import { loadAnswer, saveAnswer, saveLastColor } from "@/lib/settings";
 import { clickedImage, hydrateMedia } from "@/lib/media";
 import { parseBibleRange } from "@/lib/parallel";
 import { InlineNoteEditor, MarkToolbar, NoteCard } from "@/components/notes";
 import { GoToButton } from "@/components/go-to";
+import { BookmarksButton } from "@/components/bookmarks";
 import { OutlineSection } from "@/components/outline-section";
 import { splitPage, verseKeyFromId } from "@/lib/page";
 import { cn } from "@/lib/utils";
@@ -53,12 +55,14 @@ export function ReaderView({
   target,
   note,
   noteGuid,
+  bookmark,
   scroll,
 }: {
   target: Target;
   note?: boolean;
   /** A note to jump to once the text is shown. */
   noteGuid?: string;
+  bookmark?: BookmarkAnchor;
   scroll?: number;
 }) {
   const {
@@ -271,7 +275,9 @@ export function ReaderView({
   useEffect(() => {
     const root = articleRef.current;
     if (!root || !split) return;
-    if (page?.fragment) flash(root.querySelector(`[id="${CSS.escape(page.fragment)}"]`));
+    if (bookmark && bookmark.blockIdentifier !== null && !scroll) {
+      flash(blockElements(root, bookmark.blockType, bookmark.blockIdentifier)[0] ?? null, "start", "instant");
+    } else if (page?.fragment) flash(root.querySelector(`[id="${CSS.escape(page.fragment)}"]`));
     else {
       const el = root.closest<HTMLElement>(".overflow-y-auto");
       // Coming back to the tab continues where the user stopped, once.
@@ -281,7 +287,7 @@ export function ReaderView({
     }
     if (note && chapter && study) selectVerse(`${chapter.chapter}:${chapter.verse}`);
     // Runs once per loaded page and study data, not on every selection.
-  }, [split, page, owners, study]);
+  }, [split, page, owners, study, bookmark]);
 
   /** Show a reference in the pane: replace the pane stack, push onto it, or replace its top. */
   const showRef = useCallback((ref: PaneRef, mode: RefMode) => {
@@ -532,7 +538,7 @@ export function ReaderView({
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       // Keys pressed in the note editor belong to it.
-      if (e.target instanceof Element && e.target.closest("[data-note-editor]")) return;
+      if (e.target instanceof Element && e.target.closest("[data-note-editor], [role=dialog], [role=menu]")) return;
       // A picture or the full-size player over the page has the keys (the player marks the ones it took).
       if (viewer || e.defaultPrevented) return;
       if (e.key === "ArrowLeft" && !e.altKey) go(-1);
@@ -563,6 +569,26 @@ export function ReaderView({
     <>
       <AppBar title={dated !== null ? t("Daily Text") : (page?.title ?? "")} subtitle={subtitle}>
         {chapter && <GoToButton />}
+        <BookmarksButton dir={target.publication} title={subtitle} current={() => {
+          const root = articleRef.current;
+          if (!page || !root) return null;
+          const selection = window.getSelection();
+          const node = selection?.anchorNode;
+          const selectedBlock = node && !selection.isCollapsed && root.contains(node) ? blockOf(node instanceof Element ? node : node.parentElement) : null;
+          const top = root.closest(".overflow-y-auto")?.getBoundingClientRect().top ?? 0;
+          const visible = [...root.querySelectorAll("span.v[id], [id^=p]")].find((el) =>
+            blockOf(el) && !el.querySelector("span.v[id]") && el.getBoundingClientRect().bottom > top,
+          );
+          const block = selectedBlock ?? blockOf(visible ?? null);
+          return {
+            target,
+            position: {
+              blockType: block?.blockType ?? 0,
+              blockIdentifier: block?.identifier ?? null,
+              snippet: block?.element.textContent?.trim().slice(0, 160) ?? null,
+            },
+          };
+        }} />
         {hasPane && (
           <BarButton label={paneOpen ? "Hide study pane" : "Show study pane"} onClick={() => setPaneOpen((o) => !o)}>
             {paneOpen ? (

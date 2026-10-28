@@ -7,6 +7,7 @@ import { booksTabIndex, hasBooks, shortBookName } from "@/lib/bible";
 import { t } from "@/lib/i18n";
 import { confirmText, failedText, importedText } from "@/lib/references";
 import { GoToButton } from "@/components/go-to";
+import { BookmarksButton } from "@/components/bookmarks";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 /** The last loaded detail per publication. The view remounts on every tab switch, so this keeps it from being blank until the reload finishes. */
@@ -171,6 +172,7 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
       <>
         <AppBar title={title} subtitle={languageName(lang)}>
           {detail.card.isBible && <GoToButton />}
+          <BookmarksButton dir={dir} title={title} />
           <ReferencesButton dir={dir} />
           <FavoriteButton dir={dir} />
         </AppBar>
@@ -186,6 +188,7 @@ export function PublicationView({ dir, tab }: { dir: string; tab?: number }) {
     <>
       <AppBar title={title} subtitle={languageName(lang)}>
         {detail.card.isBible && <GoToButton />}
+        <BookmarksButton dir={dir} title={title} />
         <ReferencesButton dir={dir} />
         <FavoriteButton dir={dir} />
       </AppBar>
