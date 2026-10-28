@@ -3,10 +3,15 @@
 //! putting it in place.
 
 use std::env;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::Read;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{fs, io};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -257,6 +262,7 @@ pub fn verify_file(
 /// Write `contents` to a temp file next to `dest` and rename it over `dest`,
 /// so `dest` is always either the old or the whole new file. Replacing a
 /// running binary this way is safe on Linux.
+#[cfg(unix)]
 pub fn replace_file(dest: &Path, contents: &mut dyn Read) -> io::Result<()> {
     let dir = dest
         .parent()
@@ -271,6 +277,7 @@ pub fn replace_file(dest: &Path, contents: &mut dyn Read) -> io::Result<()> {
 }
 
 /// The bytes of `<dir>/bin/<name>` in the release zip.
+#[cfg(unix)]
 fn zip_binary(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>, String> {
     let suffix = format!("/bin/{name}");
     let index = (0..archive.len())
@@ -287,6 +294,7 @@ fn zip_binary(archive: &mut zip::ZipArchive<File>, name: &str) -> Result<Vec<u8>
 }
 
 /// Put a verified download in place of the installed files.
+#[cfg(unix)]
 pub fn install(kind: &InstallKind, download: &Path) -> Result<(), String> {
     match kind {
         InstallKind::Zip { bin_dir } => {
@@ -311,8 +319,15 @@ pub fn install(kind: &InstallKind, download: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(not(unix))]
+pub fn install(_: &InstallKind, _: &Path) -> Result<(), String> {
+    Err("this installation cannot be updated from the app".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn asset(name: &str) -> Asset {
@@ -366,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn detects_install_kind() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
@@ -442,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn leaves_an_appimage_in_a_read_only_directory_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (image, appdir, exe) = appimage_setup(dir.path());
@@ -529,6 +546,7 @@ mod tests {
     }
 
     /// A zip install with the old binaries.
+    #[cfg(unix)]
     fn old_install() -> (tempfile::TempDir, InstallKind) {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("pergament"), "old-cli").unwrap();
@@ -594,6 +612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_both_binaries_in_a_zip_install() {
         let (dir, kind) = old_install();
         install(&kind, &fixture("update.zip")).unwrap();
@@ -613,6 +632,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn leaves_the_install_alone_when_the_zip_lacks_a_binary() {
         let (dir, kind) = old_install();
         assert!(install(&kind, &fixture("missing-app.zip")).is_err());
@@ -632,6 +652,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_an_appimage() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("Pergament.AppImage");

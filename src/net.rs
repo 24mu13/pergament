@@ -14,6 +14,7 @@ use sha1::Sha1;
 use sha2::Digest;
 use ureq::ResponseExt;
 use ureq::http::Response;
+use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::{Error, Result};
 
@@ -80,6 +81,16 @@ pub struct Client {
 impl Client {
     pub fn new(config: HttpConfig) -> Self {
         let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(
+                TlsConfig::builder()
+                    .root_certs(if cfg!(windows) {
+                        // Honor corporate roots installed in the Windows trust store.
+                        RootCerts::PlatformVerifier
+                    } else {
+                        RootCerts::WebPki
+                    })
+                    .build(),
+            )
             .user_agent(config.user_agent.as_str())
             .https_only(!config.allow_plain_http)
             .http_status_as_error(false)
@@ -458,6 +469,18 @@ pub fn encode_query(v: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_uses_platform_trust_on_windows() {
+        let c = Client::new(HttpConfig::default());
+        let tls = c.agent.config().tls_config();
+        assert!(!tls.disable_verification());
+        if cfg!(windows) {
+            assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
+        } else {
+            assert!(matches!(tls.root_certs(), RootCerts::WebPki));
+        }
+    }
 
     #[test]
     fn url_checks() {
