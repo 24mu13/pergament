@@ -8,10 +8,10 @@ use std::io::Read;
 #[cfg(unix)]
 use std::io::Write;
 #[cfg(unix)]
-use std::{fs, io};
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{fs, io};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -324,8 +324,10 @@ pub fn install(_: &InstallKind, _: &Path) -> Result<(), String> {
     Err("this installation cannot be updated from the app".to_owned())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn asset(name: &str) -> Asset {
@@ -379,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn detects_install_kind() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
@@ -455,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn leaves_an_appimage_in_a_read_only_directory_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (image, appdir, exe) = appimage_setup(dir.path());
@@ -542,6 +546,7 @@ mod tests {
     }
 
     /// A zip install with the old binaries.
+    #[cfg(unix)]
     fn old_install() -> (tempfile::TempDir, InstallKind) {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("pergament"), "old-cli").unwrap();
@@ -607,6 +612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_both_binaries_in_a_zip_install() {
         let (dir, kind) = old_install();
         install(&kind, &fixture("update.zip")).unwrap();
@@ -626,6 +632,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn leaves_the_install_alone_when_the_zip_lacks_a_binary() {
         let (dir, kind) = old_install();
         assert!(install(&kind, &fixture("missing-app.zip")).is_err());
@@ -645,6 +652,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_an_appimage() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("Pergament.AppImage");
