@@ -302,7 +302,9 @@ fn year_text(
 /// Open the second display: a black window that is shown fullscreen on a
 /// monitor other than the app's, if there is one. Wayland compositors decide
 /// where a window goes, so on some setups it has to be moved there by hand.
-#[tauri::command]
+/// Async, like every command that builds a window: on Windows, building one in
+/// a synchronous command deadlocks the main thread and hangs the app.
+#[tauri::command(async)]
 fn open_display(app: AppHandle) -> ApiResult<()> {
     if let Some(existing) = app.get_webview_window(DISPLAY) {
         return existing.show().map_err(|e| e.to_string());
@@ -345,7 +347,7 @@ const NOTE: &str = "note";
 
 /// Open the note window, or bring it to the front when it is open. `width` and
 /// `height` are the size the user last gave it, in logical pixels.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_note_window(app: AppHandle, width: Option<f64>, height: Option<f64>) -> ApiResult<()> {
     if let Some(existing) = app.get_webview_window(NOTE) {
         existing.unminimize().map_err(|e| e.to_string())?;
