@@ -312,12 +312,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-x86_64-portable
-          path: target/package/*
+          path: target/package/Pergament-*-windows-x86_64.*
 
       - name: Add it to the release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: gh release upload --clobber "$GITHUB_REF_NAME" target/package/Pergament-*-windows-x86_64.*
 
   # The signed apt repository (scripts/package-apt.sh) with the debs of the last
