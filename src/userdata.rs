@@ -3399,6 +3399,210 @@ mod tests {
     }
 
     #[test]
+    fn bookmarks_save_replace_delete_and_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(DB_NAME);
+        let mut ud = UserData::open(&path).unwrap();
+        let mut bookmark = BookmarkInput {
+            slot: 0,
+            snippet: Some("Reading position".into()),
+            block_type: BLOCK_VERSE,
+            block_identifier: Some(4),
+        };
+        ud.save_bookmark(&bible(23), "Psalm 23", &bookmark).unwrap();
+        bookmark.slot = 9;
+        ud.save_bookmark(&bible(24), "Psalm 24", &bookmark).unwrap();
+        bookmark.slot = 0;
+        ud.save_bookmark(&bible(25), "Psalm 25", &bookmark).unwrap();
+        let mut other = bible(1);
+        other.meps_language = 3;
+        ud.save_bookmark(&other, "Other language", &bookmark)
+            .unwrap();
+        other.meps_language = 2;
+        other.issue_tag = 20260100;
+        ud.save_bookmark(&other, "Other issue", &bookmark).unwrap();
+        other.issue_tag = 0;
+        other.key_symbol = "other".into();
+        ud.save_bookmark(&other, "Other publication", &bookmark)
+            .unwrap();
+        drop(ud);
+        let mut ud = UserData::open(&path).unwrap();
+        let rows = ud.publication_bookmarks(&bible(1)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].title, "Psalm 25");
+        assert_eq!(rows[0].location.loc, bible(25));
+        assert_eq!(rows[0].block_identifier, Some(4));
+        assert_eq!(rows[0].snippet.as_deref(), Some("Reading position"));
+        assert_eq!(rows[1].slot, 9);
+        ud.delete_bookmark(&bible(1), 0).unwrap();
+        let rows = ud.publication_bookmarks(&bible(1)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].slot, 9);
+        assert_eq!(ud.bookmarks().unwrap().len(), 4);
+        bookmark.slot = 10;
+        assert!(ud.save_bookmark(&bible(1), "Invalid", &bookmark).is_err());
+        assert!(ud.delete_bookmark(&bible(1), -1).is_err());
+        bookmark.slot = 0;
+        bookmark.block_type = 0;
+        assert!(ud.save_bookmark(&bible(1), "Invalid", &bookmark).is_err());
+        assert_eq!(ud.bookmarks().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn bookmarks_bible_documents_share_chapter_publication_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let mut bookmark = BookmarkInput {
+            slot: 0,
+            snippet: None,
+            block_type: 0,
+            block_identifier: None,
+        };
+        let document = Loc {
+            document_id: Some(100),
+            book: None,
+            chapter: None,
+            ..bible(1)
+        };
+        ud.save_bookmark(&bible(23), "Chapter", &bookmark).unwrap();
+        bookmark.slot = 1;
+        ud.save_bookmark(&document, "Introduction", &bookmark)
+            .unwrap();
+        let (identities, kind): (i64, i64) = ud
+            .conn
+            .query_row(
+                "SELECT count(DISTINCT b.PublicationLocationId), min(p.Type)
+             FROM Bookmark b JOIN Location p ON p.LocationId = b.PublicationLocationId",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((identities, kind), (1, 1));
+        bookmark.slot = 0;
+        ud.save_bookmark(&document, "Appendix", &bookmark).unwrap();
+        let rows = ud.publication_bookmarks(&document).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].location.loc, document);
+        let target_kind: i64 = ud
+            .conn
+            .query_row(
+                "SELECT l.Type FROM Bookmark b JOIN Location l ON l.LocationId = b.LocationId
+             WHERE b.Slot = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(target_kind, 0);
+
+        let ordinary = Loc {
+            key_symbol: "book".into(),
+            ..document
+        };
+        ud.save_bookmark(&ordinary, "Ordinary publication", &bookmark)
+            .unwrap();
+        let kind: i64 = ud.conn.query_row(
+            "SELECT p.Type FROM Bookmark b JOIN Location p ON p.LocationId = b.PublicationLocationId
+             WHERE p.KeySymbol = 'book'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(kind, 1);
+    }
+
+    #[test]
+    fn bookmarks_publications_respect_jw_library_location_constraint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        ud.conn
+            .execute_batch(
+                "CREATE TRIGGER check_location_insert BEFORE INSERT ON Location
+             WHEN NOT (
+               (NEW.Type = 0 AND (
+                 (NEW.DocumentId IS NOT NULL AND NEW.DocumentId != 0)
+                 OR (NEW.Track IS NOT NULL AND (
+                   (NEW.KeySymbol IS NOT NULL AND length(NEW.KeySymbol) > 0)
+                   OR (NEW.DocumentId IS NOT NULL AND NEW.DocumentId != 0)))
+                 OR (NEW.BookNumber IS NOT NULL AND NEW.BookNumber != 0
+                   AND NEW.KeySymbol IS NOT NULL AND length(NEW.KeySymbol) > 0
+                   AND (NEW.ChapterNumber IS NULL OR NEW.ChapterNumber = 0))
+                 OR (NEW.ChapterNumber IS NOT NULL AND NEW.ChapterNumber != 0
+                   AND NEW.BookNumber IS NOT NULL AND NEW.BookNumber != 0
+                   AND NEW.KeySymbol IS NOT NULL AND length(NEW.KeySymbol) > 0)))
+               OR NEW.Type != 0)
+             BEGIN SELECT RAISE(ABORT, 'invalid text location'); END;",
+            )
+            .unwrap();
+        let lesson = Loc {
+            key_symbol: "lff".into(),
+            meps_language: 2,
+            issue_tag: 0,
+            document_id: Some(100),
+            book: None,
+            chapter: None,
+        };
+        let mut bookmark = BookmarkInput {
+            slot: 0,
+            snippet: None,
+            block_type: 0,
+            block_identifier: None,
+        };
+        ud.save_bookmark(&lesson, "Lesson", &bookmark).unwrap();
+        bookmark.slot = 1;
+        bookmark.block_type = BLOCK_PARAGRAPH;
+        bookmark.block_identifier = Some(7);
+        ud.save_bookmark(&lesson, "Paragraph", &bookmark).unwrap();
+        let rows = ud.publication_bookmarks(&lesson).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].block_identifier, Some(7));
+        let (publication_type, page_type): (i64, i64) = ud
+            .conn
+            .query_row(
+                "SELECT p.Type, l.Type FROM Bookmark b
+             JOIN Location p ON p.LocationId = b.PublicationLocationId
+             JOIN Location l ON l.LocationId = b.LocationId LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((publication_type, page_type), (1, 0));
+        let next = Loc {
+            document_id: Some(101),
+            ..lesson.clone()
+        };
+        ud.save_bookmark(&next, "Next lesson", &bookmark).unwrap();
+        assert_eq!(
+            ud.publication_bookmarks(&lesson).unwrap()[1].location.loc,
+            next
+        );
+        ud.delete_bookmark(&lesson, 0).unwrap();
+        assert_eq!(ud.publication_bookmarks(&lesson).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bookmarks_replace_imported_publication_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let bookmark = BookmarkInput {
+            slot: 0,
+            snippet: None,
+            block_type: 0,
+            block_identifier: None,
+        };
+        ud.save_bookmark(&bible(23), "Old", &bookmark).unwrap();
+        ud.conn
+            .execute(
+                "UPDATE Location SET BookNumber = 0, ChapterNumber = 0, DocumentId = 0
+             WHERE LocationId IN (SELECT PublicationLocationId FROM Bookmark)",
+                [],
+            )
+            .unwrap();
+        ud.save_bookmark(&bible(24), "New", &bookmark).unwrap();
+        let rows = ud.publication_bookmarks(&bible(1)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].location.loc, bible(24));
+        ud.delete_bookmark(&bible(1), 0).unwrap();
+        assert!(ud.bookmarks().unwrap().is_empty());
+    }
+
+    #[test]
     fn marks_round_trip_and_split() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
