@@ -514,7 +514,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (a) => a.sync.folder !== null,
         () => true,
       );
-      const warning = t("Restoring replaces all highlights, notes, tags and bookmarks with those in the backup.");
+      const warning = t("Restoring replaces all favorites, highlights, notes, tags and bookmarks with those in the backup.");
       const ok = await ask(syncing ? `${warning} ${t("Sync is on: this also changes your data on the other synced computers.")}` : warning, {
         title: t("Restore backup?"),
         kind: "warning",
