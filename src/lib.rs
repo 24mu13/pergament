@@ -17,6 +17,7 @@ pub mod mediator;
 pub mod navigate;
 pub mod net;
 pub mod reader;
+pub mod reading_plans;
 pub mod remote;
 pub mod render;
 pub mod search;
