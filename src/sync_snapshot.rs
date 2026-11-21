@@ -348,7 +348,7 @@ pub(crate) fn rows_of(conn: &Connection) -> Result<Rows> {
     // Reading plans: the start date. A ticked day has nothing that can
     // change; when it was ticked is not what the user sees. Pergament's own
     // tables, missing in JW Library and old databases.
-    if has_table(conn, "ReadingPlan")? {
+    if has_table(conn, "ReadingPlan")? && has_table(conn, "ReadingPlanDay")? {
         let mut stmt = conn.prepare(
             "SELECT PlanKey, StartDate, ReadingPlanId FROM ReadingPlan ORDER BY ReadingPlanId",
         )?;
