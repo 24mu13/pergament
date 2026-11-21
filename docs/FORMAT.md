@@ -392,6 +392,14 @@ Checked against one backup made by JW Library on iOS (schema version 16,
   as in a JW Library backup with checked goals and dates from `lff`),
   playlists and `IndependentMedia` (not used here yet).
 - `LastModified` holds one timestamp that the app's triggers update.
+- `ReadingPlan` and `ReadingPlanDay` are Pergament's own tables for Bible
+  reading plans; JW Library has no such tables, so they are created when
+  missing (also after restoring a JW Library backup). `ReadingPlan`:
+  `Guid` (uppercase UUID v4), `PlanKey` (unique, e.g. `bible-365-v1`),
+  `StartDate` (`YYYY-MM-DD`, the user's local date), `LastModified`.
+  `ReadingPlanDay`: one row per ticked day, keyed by `ReadingPlanId` and
+  `Day` (1-based), with `Completed` (UTC ISO time); unticking deletes the
+  row, and deleting a plan deletes its days first. [own]
 
 ### Merging
 

@@ -44,6 +44,9 @@ pub enum Error {
     #[error("invalid search query: {0}")]
     InvalidQuery(String),
 
+    #[error("invalid input: {0}")]
+    Invalid(String),
+
     #[error("network error: {0}")]
     Http(String),
 
