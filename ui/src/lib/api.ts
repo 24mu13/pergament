@@ -322,6 +322,26 @@ export interface NoteInput {
   tags: string[];
 }
 
+export interface DaySpan {
+  day: number;
+  startBook: number;
+  startChapter: number;
+  endBook: number;
+  endChapter: number;
+}
+
+export interface PlanSchedule {
+  key: string;
+  days: DaySpan[];
+}
+
+export interface ReadingPlanState {
+  guid: string;
+  planKey: string;
+  startDate: string;
+  done: number[];
+}
+
 export interface TagInfo {
   id: number;
   name: string;
@@ -506,6 +526,12 @@ export const api = {
   saveNote: (target: Target | null, note: NoteInput) => invoke<string>("save_note", { target, note }),
   deleteNote: (guid: string) => invoke<void>("delete_note", { guid }),
   allNotes: (tag: number | null) => invoke<Note[]>("all_notes", { tag }),
+  readingPlanCatalog: () => invoke<PlanSchedule[]>("reading_plan_catalog"),
+  readingPlans: () => invoke<ReadingPlanState[]>("reading_plans"),
+  startReadingPlan: (planKey: string, startDate: string, readBefore: number | null) =>
+    invoke<string>("start_reading_plan", { planKey, startDate, readBefore }),
+  setReadingDay: (guid: string, day: number, done: boolean) => invoke<void>("set_reading_day", { guid, day, done }),
+  deleteReadingPlan: (guid: string) => invoke<void>("delete_reading_plan", { guid }),
   tags: () => invoke<TagInfo[]>("tags"),
   bookmarks: () => invoke<Bookmark[]>("bookmarks"),
   userDataSummary: () => invoke<UserDataSummary>("user_data_summary"),
