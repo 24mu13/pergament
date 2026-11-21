@@ -1491,13 +1491,13 @@ fn plan_of(sync: Option<&Resolver>, row: RowRef, local: Option<RowRef>) -> Optio
 /// deletion paths, and report the rows kept because they changed here.
 /// Returns how many rows were deleted.
 fn delete_synced(tx: &Transaction<'_>, sync: &Resolver, report: &mut MergeReport) -> Result<i64> {
-    // Tag maps first, then notes and highlights; tags last, once nothing
-    // refers to them.
+    // Tag maps and ticked days first, then notes and highlights; tags last,
+    // once nothing refers to them.
     let order = |key: &RowKey| match key {
-        RowKey::TagMap(..) => 0,
+        RowKey::TagMap(..) | RowKey::ReadingPlanDay(..) => 0,
         RowKey::Note(_) => 1,
         RowKey::Mark(_) => 2,
-        RowKey::Bookmark(..) | RowKey::InputField(..) => 3,
+        RowKey::Bookmark(..) | RowKey::InputField(..) | RowKey::ReadingPlan(_) => 3,
         RowKey::Tag(..) => 4,
     };
     let mut keys: Vec<&RowKey> = sync.classified.delete.iter().collect();
@@ -1543,6 +1543,23 @@ fn delete_synced(tx: &Transaction<'_>, sync: &Resolver, report: &mut MergeReport
                     continue;
                 }
                 tx.execute("DELETE FROM main.Tag WHERE TagId = ?1", [id])?;
+            }
+            RowRef::ReadingPlanDay(plan, day) => {
+                tx.execute(
+                    "DELETE FROM main.ReadingPlanDay WHERE ReadingPlanId = ?1 AND Day = ?2",
+                    params![plan, day],
+                )?;
+            }
+            // With the days still ticked, as the editor deletes a plan.
+            RowRef::ReadingPlan(id) => {
+                tx.execute(
+                    "DELETE FROM main.ReadingPlanDay WHERE ReadingPlanId = ?1",
+                    [id],
+                )?;
+                tx.execute(
+                    "DELETE FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                    [id],
+                )?;
             }
         }
         deleted += 1;
@@ -1604,6 +1621,23 @@ fn describe_local(tx: &Transaction<'_>, row: &RowRef) -> Result<Conflict> {
                 |r| r.get(0),
             )?;
             conflict("TagMap", &id.to_string(), name)
+        }
+        RowRef::ReadingPlan(id) => {
+            let (guid, key): (String, String) = tx.query_row(
+                "SELECT Guid, PlanKey FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            conflict("ReadingPlan", &guid, format!("Reading plan {key}"))
+        }
+        RowRef::ReadingPlanDay(id, day) => {
+            let (guid, key): (String, String) = tx.query_row(
+                "SELECT Guid, PlanKey FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let summary = format!("Reading plan {key}, day {day}");
+            conflict("ReadingPlanDay", &format!("{guid}:{day}"), summary)
         }
     })
 }
@@ -5626,6 +5660,58 @@ mod tests {
             let r = sync(&b, &mut a);
             assert_eq!(r.deleted, 5);
             assert_eq!(a.ud.answers(&watchtower()).unwrap().len(), 25);
+        }
+
+        /// The plan `greek-90-v1` of `d`, with its ticked days.
+        fn greek(d: &Device) -> Option<ReadingPlanState> {
+            let plans = d.ud.reading_plans().unwrap();
+            plans.into_iter().find(|p| p.plan_key == "greek-90-v1")
+        }
+
+        #[test]
+        fn reading_plan_unticks_and_deletions_carry_over() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            // The same plan on both, started before the first sync.
+            for d in [&mut a, &mut b] {
+                d.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(4))
+                    .unwrap();
+            }
+            sync_both(&mut a, &mut b);
+            let guid = |d: &Device| greek(d).unwrap().guid;
+
+            // Unticked there: unticked here.
+            b.ud.set_reading_day(&guid(&b), 2, false).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 1);
+            assert_eq!(greek(&a).unwrap().done, [1, 3]);
+
+            // Deleted there while a day was ticked here: kept, conflict.
+            sync(&a, &mut b);
+            b.ud.delete_reading_plan(&guid(&b)).unwrap();
+            a.ud.set_reading_day(&guid(&a), 5, true).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 0);
+            assert_eq!(greek(&a).unwrap().done, [1, 3, 5]);
+            let kept: Vec<_> = r.report.conflicts.iter().map(|c| &c.summary).collect();
+            assert_eq!(kept, ["Reading plan greek-90-v1"]);
+            assert_eq!(conflict_guids(&r.report), [guid(&a)]);
+
+            // Deleted there, unchanged here: gone with its days.
+            let (mut a, mut b) = (
+                device(&tmp.path().join("deleted"), "a"),
+                device(&tmp.path().join("deleted"), "b"),
+            );
+            for d in [&mut a, &mut b] {
+                d.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(3))
+                    .unwrap();
+            }
+            sync_both(&mut a, &mut b);
+            b.ud.delete_reading_plan(&guid(&b)).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 3);
+            assert!(greek(&a).is_none());
+            assert_eq!(count(&a.ud, "ReadingPlanDay"), 0);
         }
 
         #[test]

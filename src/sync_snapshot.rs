@@ -52,6 +52,10 @@ pub enum RowKey {
     InputField(LocKey, String),
     /// `TagMap`, by the tag's `Type` and `Name` and what it tags.
     TagMap(i64, String, TagTarget),
+    /// `ReadingPlan`, by `PlanKey`.
+    ReadingPlan(String),
+    /// `ReadingPlanDay`, a ticked day, by its plan's `PlanKey` and `Day`.
+    ReadingPlanDay(String, i64),
 }
 
 /// Every synced row of a database: key → content hash.
@@ -106,6 +110,9 @@ pub(crate) enum RowRef {
     /// `LocationId` and `TextTag`.
     InputField(i64, String),
     TagMap(i64),
+    ReadingPlan(i64),
+    /// `ReadingPlanId` and `Day`.
+    ReadingPlanDay(i64, i64),
 }
 
 /// Every synced row of a database: key → content hash and the row it was
@@ -338,6 +345,38 @@ pub(crate) fn rows_of(conn: &Connection) -> Result<Rows> {
         }
     }
 
+    // Reading plans: the start date. A ticked day has nothing that can
+    // change; when it was ticked is not what the user sees. Pergament's own
+    // tables, missing in JW Library and old databases.
+    if has_table(conn, "ReadingPlan")? {
+        let mut stmt = conn.prepare(
+            "SELECT PlanKey, StartDate, ReadingPlanId FROM ReadingPlan ORDER BY ReadingPlanId",
+        )?;
+        let mut q = stmt.query([])?;
+        while let Some(r) = q.next()? {
+            let start: String = r.get(1)?;
+            put(
+                RowKey::ReadingPlan(r.get(0)?),
+                hash(&start)?,
+                RowRef::ReadingPlan(r.get(2)?),
+            );
+        }
+        let mut stmt = conn.prepare(
+            "SELECT p.PlanKey, d.Day, d.ReadingPlanId
+             FROM ReadingPlanDay d JOIN ReadingPlan p ON p.ReadingPlanId = d.ReadingPlanId
+             ORDER BY d.ReadingPlanId, d.Day",
+        )?;
+        let mut q = stmt.query([])?;
+        while let Some(r) = q.next()? {
+            let day: i64 = r.get(1)?;
+            put(
+                RowKey::ReadingPlanDay(r.get(0)?, day),
+                hash(&())?,
+                RowRef::ReadingPlanDay(r.get(2)?, day),
+            );
+        }
+    }
+
     Ok(rows)
 }
 
@@ -369,7 +408,8 @@ pub enum SyncOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteGuard {
     /// Delete them, unless in some kind of row (highlights and notes,
-    /// answers, bookmarks, tags with their tag maps) that would delete more
+    /// answers, bookmarks, tags with their tag maps, reading plans with
+    /// their ticked days) that would delete more
     /// than half of the local rows of that kind and more than 5; then stop
     /// with [`SyncOutcome::NeedsConfirmation`].
     Check,
@@ -417,8 +457,9 @@ pub(crate) struct Classified {
 }
 
 /// The kinds of rows the mass-delete guard counts apart: highlights and
-/// notes, answers, bookmarks, and tags with their tag maps.
-const GUARD_KINDS: usize = 4;
+/// notes, answers, bookmarks, tags with their tag maps, and reading plans
+/// with their ticked days.
+const GUARD_KINDS: usize = 5;
 
 fn guard_kind(key: &RowKey) -> usize {
     match key {
@@ -426,6 +467,7 @@ fn guard_kind(key: &RowKey) -> usize {
         RowKey::InputField(..) => 1,
         RowKey::Bookmark(..) => 2,
         RowKey::Tag(..) | RowKey::TagMap(..) => 3,
+        RowKey::ReadingPlan(_) | RowKey::ReadingPlanDay(..) => 4,
     }
 }
 
@@ -456,8 +498,12 @@ fn same(key: &RowKey, a: &str, b: &str) -> bool {
     matches!(key, RowKey::TagMap(..)) || a == b
 }
 
-/// The rows a tag map belongs to: its user tag and its note.
+/// The rows a tag map belongs to: its user tag and its note. A ticked day
+/// belongs to its reading plan.
 fn parents(key: &RowKey) -> Vec<RowKey> {
+    if let RowKey::ReadingPlanDay(plan, _) = key {
+        return vec![RowKey::ReadingPlan(plan.clone())];
+    }
     let RowKey::TagMap(kind, name, target) = key else {
         return Vec::new();
     };
@@ -1183,5 +1229,175 @@ mod tests {
         let c = classify(&b, &i, &snap(&[]));
         assert_eq!(c.plans[&tag], back);
         assert_eq!(c.plans[&note], LOCAL);
+    }
+
+    fn plan_id(ud: &UserData, guid: &str) -> i64 {
+        ud.conn()
+            .query_row(
+                "SELECT ReadingPlanId FROM ReadingPlan WHERE Guid = ?1",
+                [guid],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn rows_of_reads_reading_plans() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        // A second plan first, so the ids are not all 1.
+        ud.start_reading_plan("psalms-30-v1", "2026-11-01", None)
+            .unwrap();
+        let guid = ud
+            .start_reading_plan("greek-90-v1", "2026-11-02", Some(3))
+            .unwrap();
+        let id = plan_id(&ud, &guid);
+        assert_ne!(id, 1, "test setup: ids must differ");
+        let rows = rows_of(ud.conn()).unwrap();
+        let key = "greek-90-v1".to_string();
+        assert_eq!(
+            rows[&RowKey::ReadingPlan(key.clone())].1,
+            RowRef::ReadingPlan(id)
+        );
+        for day in [1, 2] {
+            assert_eq!(
+                rows[&RowKey::ReadingPlanDay(key.clone(), day)].1,
+                RowRef::ReadingPlanDay(id, day)
+            );
+        }
+        let days = |rows: &Rows| {
+            rows.keys()
+                .filter(|k| matches!(k, RowKey::ReadingPlanDay(..)))
+                .count()
+        };
+        assert_eq!(days(&rows), 2);
+        assert!(rows.contains_key(&RowKey::ReadingPlan("psalms-30-v1".into())));
+
+        // An old or JW Library database without the tables.
+        ud.conn()
+            .execute_batch("DROP TABLE ReadingPlanDay; DROP TABLE ReadingPlan;")
+            .unwrap();
+        let rows = rows_of(ud.conn()).unwrap();
+        assert!(
+            !rows
+                .keys()
+                .any(|k| matches!(k, RowKey::ReadingPlan(_) | RowKey::ReadingPlanDay(..)))
+        );
+    }
+
+    #[test]
+    fn reading_day_hash_is_constant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ud = UserData::open(tmp.path().join(DB_NAME)).unwrap();
+        let guid = ud
+            .start_reading_plan("greek-90-v1", "2026-11-01", Some(2))
+            .unwrap();
+        let before = ud.snapshot().unwrap();
+        ud.conn()
+            .execute_batch(
+                "UPDATE ReadingPlanDay SET Completed = '2020-01-01T00:00:00Z';
+                 UPDATE ReadingPlan SET LastModified = '2020-01-01T00:00:00Z';",
+            )
+            .unwrap();
+        assert_eq!(before, ud.snapshot().unwrap());
+
+        ud.conn()
+            .execute(
+                "UPDATE ReadingPlan SET StartDate = '2026-12-01' WHERE Guid = ?1",
+                [&guid],
+            )
+            .unwrap();
+        assert_eq!(
+            changed(&before, &ud.snapshot().unwrap()),
+            vec![RowKey::ReadingPlan("greek-90-v1".into())]
+        );
+    }
+
+    fn reading_plan() -> RowKey {
+        RowKey::ReadingPlan("P".into())
+    }
+
+    fn reading_day(day: i64) -> RowKey {
+        RowKey::ReadingPlanDay("P".into(), day)
+    }
+
+    #[test]
+    fn classify_keeps_a_plan_with_days_ticked_here() {
+        let b = snap(&[(reading_plan(), "s"), (reading_day(1), "d")]);
+        let l = snap(&[
+            (reading_plan(), "s"),
+            (reading_day(1), "d"),
+            (reading_day(2), "d"),
+        ]);
+        let c = classify(&b, &snap(&[]), &l);
+        assert_eq!(c.kept, BTreeSet::from([reading_plan()]));
+        assert!(!c.delete.contains(&reading_plan()));
+        // The kept plan keeps its days, as a kept note keeps its tag maps:
+        // day 1 stays ticked though it is gone there with the plan.
+        assert!(c.delete.is_empty(), "{:?}", c.delete);
+
+        // The plan unchanged there, day 1 unticked there: deleted here.
+        let i = snap(&[(reading_plan(), "s")]);
+        let c = classify(&b, &i, &l);
+        assert_eq!(c.delete, BTreeSet::from([reading_day(1)]));
+        assert!(c.kept.is_empty());
+
+        // The other way: deleted here, a day ticked there brings it back.
+        let c = classify(&b, &l, &snap(&[]));
+        let back = Plan {
+            side: Side::Incoming,
+            report: true,
+        };
+        assert_eq!(c.plans[&reading_plan()], back);
+        assert_eq!(c.plans[&reading_day(1)], INCOMING);
+        assert_eq!(c.plans[&reading_day(2)], INCOMING);
+    }
+
+    /// Local rows of `snapshot` for the guard, which only counts keys.
+    fn rows(snapshot: &Snapshot) -> Rows {
+        snapshot
+            .0
+            .iter()
+            .map(|(k, v)| (k.clone(), (v.clone(), RowRef::Mark(0))))
+            .collect()
+    }
+
+    #[test]
+    fn guard_counts_reading_plans_apart() {
+        // 10 ticked days here, of which the other device has only 4: 6 of
+        // them were unticked there since the base.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut here = UserData::open(tmp.path().join("a").join(DB_NAME)).unwrap();
+        let mut there = UserData::open(tmp.path().join("b").join(DB_NAME)).unwrap();
+        here.start_reading_plan("greek-90-v1", "2026-11-01", Some(11))
+            .unwrap();
+        there
+            .start_reading_plan("greek-90-v1", "2026-11-01", Some(5))
+            .unwrap();
+        let file = tmp.path().join("b.jwlibrary");
+        there.export_backup(&file).unwrap();
+        let base = here.snapshot().unwrap();
+        let before = here.fingerprint().unwrap();
+        assert_eq!(
+            here.sync_merge(&file, Some(&base), DeleteGuard::Check)
+                .unwrap(),
+            SyncOutcome::NeedsConfirmation {
+                deletions: 6,
+                total: 11
+            }
+        );
+        assert_eq!(here.fingerprint().unwrap(), before);
+
+        // 5 of 5 highlights and 4 of 10 days: 9 of 16 rows, but neither
+        // kind on its own passes the guard.
+        let mut local = vec![(reading_plan(), "s")];
+        local.extend((1..=10).map(|d| (reading_day(d), "d")));
+        local.extend([mark("1"), mark("2"), mark("3"), mark("4"), mark("5")].map(|m| (m, "m")));
+        let l = snap(&local);
+        // There: the plan and days 5 to 10 only.
+        let i = snap(&[&local[..1], &local[5..11]].concat());
+        let c = classify(&l, &i, &l);
+        assert_eq!(c.delete.len(), 9);
+        assert_eq!(c.needs_confirmation(&rows(&l)), None);
     }
 }
