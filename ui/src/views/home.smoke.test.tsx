@@ -91,6 +91,8 @@ beforeEach(() => {
     catalog_languages: () => [],
     media_category: () => ministryVideos,
     media_downloads: () => [],
+    reading_plan_catalog: () => [],
+    reading_plans: () => [],
   };
   Object.assign(navigator, { clipboard: { writeText: vi.fn(async () => undefined) } });
 });

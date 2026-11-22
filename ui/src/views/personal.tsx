@@ -4,6 +4,7 @@ import { AppBar, SectionTitle, useApp } from "@/app";
 import { api, type Bookmark, type Loc, type Note, type TagInfo, type UserDataSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { NoteCard } from "@/components/notes";
+import { ReadingPlansSection } from "@/components/reading-plans";
 import { Input } from "@/components/ui/input";
 import { HIGHLIGHT_COLORS } from "@/lib/marks";
 import { filterNotes, type NoteSort } from "@/lib/notes";
@@ -83,6 +84,8 @@ export function PersonalView() {
           <p className="mt-2 text-[13px] text-muted">
             {t("Backups are .jwlibrary files with favorites, highlights, notes, tags and bookmarks.")}
           </p>
+
+          <ReadingPlansSection />
 
           <SectionTitle>Notes and Tags</SectionTitle>
           {tags.length > 0 && (
