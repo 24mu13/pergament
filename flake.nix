@@ -95,7 +95,7 @@
             '';
             outputHashMode = "recursive";
             outputHashAlgo = "sha256";
-            outputHash = "sha256-Hd1wZJaxCugLARxEAA+ddDU/QKpqajLXB0brpwCQmEI=";
+            outputHash = "sha256-g/65xDMWQ0HIB5Yc3+m1LaEe78etv0bDXKpFdA0+HIo=";
           };
 
           # Nix manages this install, so the in-app updater only points there.
