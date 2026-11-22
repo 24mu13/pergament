@@ -213,7 +213,7 @@ function StartDialog({
   );
 }
 
-function statusText(status: PlanStatus): string | null {
+export function statusText(status: PlanStatus): string | null {
   switch (status.kind) {
     case "running":
       if (status.behind === 0) return null;
@@ -232,7 +232,7 @@ const dayLabel = (date: string) =>
   new Date(`${date}T12:00:00`).toLocaleDateString(locale(), { year: "numeric", month: "long", day: "numeric" });
 
 /** The day to read now: today's, the first unread one after the schedule ended, day 1 ahead of the start, none when finished. */
-function readingDay(status: PlanStatus): number | null {
+export function readingDay(status: PlanStatus): number | null {
   switch (status.kind) {
     case "running":
       return status.day;
