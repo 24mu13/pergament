@@ -392,6 +392,14 @@ Checked against one backup made by JW Library on iOS (schema version 16,
   as in a JW Library backup with checked goals and dates from `lff`),
   playlists and `IndependentMedia` (not used here yet).
 - `LastModified` holds one timestamp that the app's triggers update.
+- `ReadingPlan` and `ReadingPlanDay` are Pergament's own tables for Bible
+  reading plans; JW Library has no such tables, so they are created when
+  missing (also after restoring a JW Library backup). `ReadingPlan`:
+  `Guid` (uppercase UUID v4), `PlanKey` (unique, e.g. `bible-365-v1`),
+  `StartDate` (`YYYY-MM-DD`, the user's local date), `LastModified`.
+  `ReadingPlanDay`: one row per ticked day, keyed by `ReadingPlanId` and
+  `Day` (1-based), with `Completed` (UTC ISO time); unticking deletes the
+  row, and deleting a plan deletes its days first. [own]
 
 ### Merging
 
@@ -438,6 +446,14 @@ behavior. [own]
   are cut back around it; otherwise it is skipped and reported as a conflict.
 - Location-level `TagMap` rows (favorites) are unioned. A note's tags are
   taken over with the note.
+- Reading plans are matched by `PlanKey`, one plan of each kind, and their
+  ticked days are unioned. A plan missing here is added with its `Guid`.
+  Two plans with the same start date become one under the smaller `Guid`;
+  with different start dates the earlier start wins with its own `Guid`
+  and the other is reported as a conflict. Ticked days beyond a catalog
+  plan's length are left out; a plan whose key Pergament does not know is
+  merged the same way, all its days kept. A backup without the tables (JW
+  Library) merges no reading plans.
 - After a merge that added or replaced something, the database-wide
   `LastModified` becomes the later of the two databases' values; it is not set
   to the time of the merge, so merging an old backup does not make the data
@@ -454,11 +470,14 @@ three-way: against the *base*, a snapshot of that computer's file as it was
 at the last merge, kept in the app's data folder. [own]
 
 - A snapshot holds every highlight (with its ranges), note, user tag,
-  bookmark, answer field and note or location `TagMap` row under a key that
-  does not depend on database ids, with a hash of its content. The keys are
-  the merge's: `UserMarkGuid`, note `Guid`, tag (`Type`, `Name`), bookmark
-  publication location and `Slot`, answer page (without its language) and
-  `TextTag`, and for a `TagMap` row its tag and its note `Guid` or location.
+  bookmark, answer field, note or location `TagMap` row, reading plan and
+  ticked day under a key that does not depend on database ids, with a hash
+  of its content. The keys are the merge's: `UserMarkGuid`, note `Guid`,
+  tag (`Type`, `Name`), bookmark publication location and `Slot`, answer
+  page (without its language) and `TextTag`, for a `TagMap` row its tag and
+  its note `Guid` or location, for a reading plan its `PlanKey` (hash: its
+  `StartDate`) and for a ticked day its plan's `PlanKey` and `Day` (a
+  constant hash).
   Locations are compared normalized as above, so the same row has the same
   key and hash in every database. The database-wide `LastModified` and a
   note's `LastModified` are not part of the hash.
@@ -494,6 +513,16 @@ at the last merge, kept in the app's data folder. [own]
   tag deleted on one side and given a new `TagMap` row on the other counts
   as changed: it is kept (or added back) with all its `TagMap` rows, and
   reported. A note or tag added back brings its `TagMap` rows with it.
+  A reading plan's ticked days belong to it the same way: a plan deleted on
+  one side and given a new ticked day on the other is kept (or added back)
+  with all its days, and reported.
+- Reading plans follow the manual merge (one per `PlanKey`, days unioned),
+  but a start date changed on one side only wins, so a plan deleted and
+  started again on one computer arrives with its new date and normally
+  without the old days, which go as deleted rows (a day ticked there while
+  the plan was restarted here can survive). Start dates changed on both
+  sides settle by the earlier start, as in a manual merge, and are
+  reported. An untick is the deletion of a ticked day.
 - The order of a tag's notes is not merged. A `TagMap` row's hash is its
   rank in the tag, but the merge only asks whether the row is there, so
   moving a note within a tag is neither a change nor a conflict, and two
@@ -502,7 +531,8 @@ at the last merge, kept in the app's data folder. [own]
   deletes: a highlight's notes stay without it and its ranges go with it; a
   note's `TagMap` rows go with the note; a tag is deleted only when no
   `TagMap` row refers to it any more, otherwise it is kept and reported; an
-  answer is deleted from every location of its page, as in the editor. A
+  answer is deleted from every location of its page, as in the editor; a
+  reading plan's ticked days go with the plan. A
   deleted row is missing from the incoming file by definition, so the merge
   that follows never adds it back or updates it.
 - Should two rows of one database share a key (e.g. two `Location` rows
@@ -517,23 +547,23 @@ at the last merge, kept in the app's data folder. [own]
 - Without a base (the first merge of a computer's file), the merge is a
   manual merge: nothing is deleted.
 - The deletions are checked for each kind of row apart: highlights and
-  notes, answers, bookmarks, and tags with their `TagMap` rows. When in any
-  kind they are more than half of the local rows of that kind and more than
-  5 rows, the merge stops before writing anything, including the safety
-  copy, and asks, giving the deletions and local rows summed over all
-  kinds. "Apply deletions" runs it as
-  computed, after a rolling backup of the local data (written even when
-  rolling backups are off); if that backup fails, the deletions wait and
-  the sync status shows the error. "Keep my data" runs it without deletions, and
+  notes, answers, bookmarks, tags with their `TagMap` rows, and reading
+  plans with their ticked days. When in any kind they are more than half of
+  the local rows of that kind and more than 5 rows, the merge stops before
+  writing anything, including the safety copy, and asks, giving the
+  deletions and local rows summed over all kinds. "Apply deletions" runs it
+  as computed, after a rolling backup of the local data (written even when
+  rolling backups are off); if that backup fails, the deletions wait and the
+  sync status shows the error. "Keep my data" runs it without deletions, and
   the merged file still becomes the new base. That protects only this
   computer: the rows the other computer deleted stay deleted there, as this
-  computer's own file now holds them unchanged against its base on the
-  other side. To recover them on the other computer, restore a backup there.
+  computer's own file now holds them unchanged against its base on the other
+  side. To recover them on the other computer, restore a backup there.
 - A computer whose synced rows are all gone (no highlight, note, user tag,
-  bookmark or answer) while its bases still hold rows lost or reset its
-  database. It is treated as new: before merging, it drops its bases and
-  its sync state, so every merge only adds. Empty bases (two empty
-  computers) do not count, so nothing is merged again and again.
+  bookmark, answer or reading plan) while its bases still hold rows lost or
+  reset its database. It is treated as new: before merging, it drops its
+  bases and its sync state, so every merge only adds. Empty bases (two
+  empty computers) do not count, so nothing is merged again and again.
 - A computer never writes its own file while it has no synced rows: another
   computer may hold a base for that file (also from before a "Stop
   syncing", which keeps the device id), and an empty file would delete its

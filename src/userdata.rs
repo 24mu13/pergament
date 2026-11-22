@@ -27,7 +27,7 @@ pub const SCHEMA_VERSION: i64 = 16;
 pub const DEVICE_NAME: &str = "Pergament";
 
 /// Tables whose rows make up the content fingerprint.
-const FINGERPRINT_TABLES: [&str; 8] = [
+const FINGERPRINT_TABLES: [&str; 10] = [
     "Location",
     "UserMark",
     "BlockRange",
@@ -36,7 +36,21 @@ const FINGERPRINT_TABLES: [&str; 8] = [
     "TagMap",
     "Bookmark",
     "InputField",
+    "ReadingPlan",
+    "ReadingPlanDay",
 ];
+/// Pergament's own tables, missing in JW Library backups (docs/FORMAT.md).
+const READING_PLAN_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS ReadingPlan(
+        ReadingPlanId INTEGER PRIMARY KEY,
+        Guid TEXT NOT NULL UNIQUE,
+        PlanKey TEXT NOT NULL UNIQUE,
+        StartDate TEXT NOT NULL,
+        LastModified TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ReadingPlanDay(
+        ReadingPlanId INTEGER NOT NULL REFERENCES ReadingPlan(ReadingPlanId),
+        Day INTEGER NOT NULL,
+        Completed TEXT NOT NULL,
+        PRIMARY KEY(ReadingPlanId, Day));";
 
 const MANIFEST: &str = "manifest.json";
 const THUMBNAIL: &str = "default_thumbnail.png";
@@ -182,6 +196,18 @@ pub struct Bookmark {
     pub location: NoteLocation,
 }
 
+/// A started Bible reading plan (`ReadingPlan` and its `ReadingPlanDay` rows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingPlanState {
+    pub guid: String,
+    pub plan_key: String,
+    /// `YYYY-MM-DD`, the user's local date.
+    pub start_date: String,
+    /// Ticked day numbers (1-based), ascending.
+    pub done: Vec<i64>,
+}
+
 /// Counts shown after a backup was restored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,6 +308,7 @@ impl UserData {
         )?;
         if !has_schema {
             conn.execute_batch(SCHEMA)?;
+            conn.execute_batch(READING_PLAN_SCHEMA)?;
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             conn.execute_batch(
@@ -291,6 +318,7 @@ impl UserData {
                     Value TEXT NOT NULL,
                     PRIMARY KEY(LocationId, TextTag));",
             )?;
+            conn.execute_batch(READING_PLAN_SCHEMA)?;
         }
         Ok(Self { conn, path })
     }
@@ -894,6 +922,139 @@ impl UserData {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Started reading plans by `StartDate`, then `PlanKey`, including plans
+    /// whose key is not in [`crate::reading_plans::catalog`].
+    pub fn reading_plans(&self) -> Result<Vec<ReadingPlanState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.Guid, p.PlanKey, p.StartDate, d.Day
+             FROM ReadingPlan p LEFT JOIN ReadingPlanDay d ON d.ReadingPlanId = p.ReadingPlanId
+             ORDER BY p.StartDate, p.PlanKey, d.Day",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        let mut out: Vec<ReadingPlanState> = Vec::new();
+        for row in rows {
+            let (guid, plan_key, start_date, day) = row?;
+            if out.last().is_none_or(|p| p.guid != guid) {
+                out.push(ReadingPlanState {
+                    guid,
+                    plan_key,
+                    start_date,
+                    done: Vec::new(),
+                });
+            }
+            if let (Some(day), Some(plan)) = (day, out.last_mut()) {
+                plan.done.push(day);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Start the plan `plan_key` on `start_date` (`YYYY-MM-DD`). With
+    /// `read_before = Some(d)`, days `1..d` are ticked as already read.
+    pub fn start_reading_plan(
+        &mut self,
+        plan_key: &str,
+        start_date: &str,
+        read_before: Option<i64>,
+    ) -> Result<String> {
+        let schedule = crate::reading_plans::schedule(plan_key)
+            .ok_or_else(|| Error::Invalid(format!("unknown reading plan {plan_key:?}")))?;
+        let len = schedule.days.len() as i64;
+        let read_before = read_before.unwrap_or(1);
+        if !(1..=len + 1).contains(&read_before) {
+            return Err(Error::Invalid(format!(
+                "day {read_before} is outside the plan's {len} days"
+            )));
+        }
+        let tx = self.conn.transaction()?;
+        let valid: bool = tx.query_row("SELECT date(?1) IS ?1", [start_date], |r| r.get(0))?;
+        if !valid {
+            return Err(Error::Invalid(format!("not a date: {start_date:?}")));
+        }
+        let running: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ReadingPlan WHERE PlanKey = ?1)",
+            [plan_key],
+            |r| r.get(0),
+        )?;
+        if running {
+            return Err(Error::Invalid(format!(
+                "reading plan {plan_key:?} is already running"
+            )));
+        }
+        let guid = new_guid(&tx)?;
+        tx.execute(
+            "INSERT INTO ReadingPlan (Guid, PlanKey, StartDate, LastModified)
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+            params![guid, plan_key, start_date],
+        )?;
+        let plan = tx.last_insert_rowid();
+        for day in 1..read_before {
+            tx.execute(
+                "INSERT INTO ReadingPlanDay (ReadingPlanId, Day, Completed)
+                 VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+                params![plan, day],
+            )?;
+        }
+        touch(&tx)?;
+        tx.commit()?;
+        Ok(guid)
+    }
+
+    /// Set membership, not toggle: tick (`done`) or untick `day` of a plan.
+    /// A plan whose key is not in the catalog only needs `day >= 1`.
+    pub fn set_reading_day(&mut self, guid: &str, day: i64, done: bool) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let (plan, key): (i64, String) = tx
+            .query_row(
+                "SELECT ReadingPlanId, PlanKey FROM ReadingPlan WHERE Guid = ?1",
+                [guid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("reading plan {guid}")))?;
+        let len = crate::reading_plans::schedule(&key).map(|s| s.days.len() as i64);
+        if day < 1 || len.is_some_and(|len| day > len) {
+            return Err(Error::Invalid(format!(
+                "day {day} is outside reading plan {key:?}"
+            )));
+        }
+        if done {
+            tx.execute(
+                "INSERT INTO ReadingPlanDay (ReadingPlanId, Day, Completed)
+                 VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                 ON CONFLICT (ReadingPlanId, Day) DO NOTHING",
+                params![plan, day],
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM ReadingPlanDay WHERE ReadingPlanId = ?1 AND Day = ?2",
+                params![plan, day],
+            )?;
+        }
+        touch(&tx)?;
+        Ok(tx.commit()?)
+    }
+
+    /// Remove a reading plan with its ticked days.
+    pub fn delete_reading_plan(&mut self, guid: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM ReadingPlanDay WHERE ReadingPlanId IN (
+                 SELECT ReadingPlanId FROM ReadingPlan WHERE Guid = ?1)",
+            [guid],
+        )?;
+        tx.execute("DELETE FROM ReadingPlan WHERE Guid = ?1", [guid])?;
+        touch(&tx)?;
+        Ok(tx.commit()?)
+    }
+
     /// Hash of the user's content: every row of the data tables, but not the
     /// database-wide `LastModified` clock, playlists or media. A merge keeps
     /// the later clock, so only the rows tell whether anything changed.
@@ -1222,6 +1383,7 @@ impl UserData {
         }
         merge_location_tags(&tx, &locations, &tags, sync, &mut report)?;
         merge_bookmarks(&tx, &locations, incoming_newer, sync, &mut report)?;
+        merge_reading_plans(&tx, sync, &mut report)?;
         if report.added + report.updated + deleted > 0 {
             take_later_clock(&tx)?;
         }
@@ -1330,13 +1492,13 @@ fn plan_of(sync: Option<&Resolver>, row: RowRef, local: Option<RowRef>) -> Optio
 /// deletion paths, and report the rows kept because they changed here.
 /// Returns how many rows were deleted.
 fn delete_synced(tx: &Transaction<'_>, sync: &Resolver, report: &mut MergeReport) -> Result<i64> {
-    // Tag maps first, then notes and highlights; tags last, once nothing
-    // refers to them.
+    // Tag maps and ticked days first, then notes and highlights; tags last,
+    // once nothing refers to them.
     let order = |key: &RowKey| match key {
-        RowKey::TagMap(..) => 0,
+        RowKey::TagMap(..) | RowKey::ReadingPlanDay(..) => 0,
         RowKey::Note(_) => 1,
         RowKey::Mark(_) => 2,
-        RowKey::Bookmark(..) | RowKey::InputField(..) => 3,
+        RowKey::Bookmark(..) | RowKey::InputField(..) | RowKey::ReadingPlan(_) => 3,
         RowKey::Tag(..) => 4,
     };
     let mut keys: Vec<&RowKey> = sync.classified.delete.iter().collect();
@@ -1382,6 +1544,23 @@ fn delete_synced(tx: &Transaction<'_>, sync: &Resolver, report: &mut MergeReport
                     continue;
                 }
                 tx.execute("DELETE FROM main.Tag WHERE TagId = ?1", [id])?;
+            }
+            RowRef::ReadingPlanDay(plan, day) => {
+                tx.execute(
+                    "DELETE FROM main.ReadingPlanDay WHERE ReadingPlanId = ?1 AND Day = ?2",
+                    params![plan, day],
+                )?;
+            }
+            // With the days still ticked, as the editor deletes a plan.
+            RowRef::ReadingPlan(id) => {
+                tx.execute(
+                    "DELETE FROM main.ReadingPlanDay WHERE ReadingPlanId = ?1",
+                    [id],
+                )?;
+                tx.execute(
+                    "DELETE FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                    [id],
+                )?;
             }
         }
         deleted += 1;
@@ -1443,6 +1622,23 @@ fn describe_local(tx: &Transaction<'_>, row: &RowRef) -> Result<Conflict> {
                 |r| r.get(0),
             )?;
             conflict("TagMap", &id.to_string(), name)
+        }
+        RowRef::ReadingPlan(id) => {
+            let (guid, key): (String, String) = tx.query_row(
+                "SELECT Guid, PlanKey FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            conflict("ReadingPlan", &guid, format!("Reading plan {key}"))
+        }
+        RowRef::ReadingPlanDay(id, day) => {
+            let (guid, key): (String, String) = tx.query_row(
+                "SELECT Guid, PlanKey FROM main.ReadingPlan WHERE ReadingPlanId = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let summary = format!("Reading plan {key}, day {day}");
+            conflict("ReadingPlanDay", &format!("{guid}:{day}"), summary)
         }
     })
 }
@@ -2343,6 +2539,157 @@ fn merge_bookmarks(
                 Outcome::Conflict => report.conflicts.push(conflict("Bookmark", &key, title)),
             },
         }
+    }
+    Ok(())
+}
+
+/// Merge `inc.ReadingPlan`, matched by `PlanKey`, and union its ticked days
+/// into the local plan. Of two start dates the earlier one wins, unless the
+/// sync merge knows which side changed it.
+fn merge_reading_plans(
+    tx: &Transaction<'_>,
+    sync: Option<&Resolver>,
+    report: &mut MergeReport,
+) -> Result<()> {
+    // Pergament's own tables: missing in JW Library and old backups.
+    if !has_table(tx, "inc", "ReadingPlan")? || !has_table(tx, "inc", "ReadingPlanDay")? {
+        return Ok(());
+    }
+    let incoming: Vec<(i64, String, String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT ReadingPlanId, Guid, PlanKey, StartDate FROM inc.ReadingPlan
+             ORDER BY ReadingPlanId",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, guid, key, start) in incoming {
+        // (ReadingPlanId, Guid, StartDate)
+        let local: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT ReadingPlanId, Guid, StartDate FROM main.ReadingPlan WHERE PlanKey = ?1",
+                [&key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let plan = plan_of(
+            sync,
+            RowRef::ReadingPlan(id),
+            local.as_ref().map(|(l, ..)| RowRef::ReadingPlan(*l)),
+        );
+        let take = |tx: &Transaction<'_>, local: i64| -> Result<()> {
+            tx.execute(
+                "UPDATE main.ReadingPlan
+                 SET (Guid, StartDate, LastModified) =
+                     (SELECT Guid, StartDate, LastModified FROM inc.ReadingPlan
+                      WHERE ReadingPlanId = ?1)
+                 WHERE ReadingPlanId = ?2",
+                [id, local],
+            )?;
+            Ok(())
+        };
+        let local = match local {
+            None if deleted_here(plan) => {
+                report.unchanged += 1;
+                continue;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO main.ReadingPlan (Guid, PlanKey, StartDate, LastModified)
+                     SELECT Guid, PlanKey, StartDate, LastModified FROM inc.ReadingPlan
+                     WHERE ReadingPlanId = ?1",
+                    [id],
+                )?;
+                report.added += 1;
+                if reported(plan) {
+                    let summary = format!("Reading plan {key}");
+                    report
+                        .conflicts
+                        .push(conflict("ReadingPlan", &guid, summary));
+                }
+                tx.last_insert_rowid()
+            }
+            // Started on both devices on the same day: one plan, under the
+            // guid both devices pick.
+            Some((local, local_guid, local_start)) if local_start == start => {
+                if guid < local_guid {
+                    tx.execute(
+                        "UPDATE main.ReadingPlan SET Guid = ?1 WHERE ReadingPlanId = ?2",
+                        params![guid, local],
+                    )?;
+                }
+                report.unchanged += 1;
+                local
+            }
+            Some((local, local_guid, local_start)) => {
+                match plan.map(|p| p.side) {
+                    // Deleted and started again there.
+                    Some(Side::Incoming) => {
+                        take(tx, local)?;
+                        report.updated += 1;
+                    }
+                    Some(Side::Local) => report.unchanged += 1,
+                    Some(Side::Recency { .. }) | None => {
+                        let incoming_wins = start < local_start;
+                        let (winner, loser_start) = if incoming_wins {
+                            take(tx, local)?;
+                            report.updated += 1;
+                            (&guid, &local_start)
+                        } else {
+                            (&local_guid, &start)
+                        };
+                        let summary = format!("Reading plan {key}, started {loser_start}");
+                        report
+                            .conflicts
+                            .push(conflict("ReadingPlan", winner, summary));
+                    }
+                }
+                local
+            }
+        };
+        merge_reading_days(tx, sync, id, local, &key, report)?;
+    }
+    Ok(())
+}
+
+/// Add the ticked days of incoming plan `incoming` that are missing in
+/// local plan `local`, unless they were unticked here. Days outside a
+/// plan of the catalog are left out.
+fn merge_reading_days(
+    tx: &Transaction<'_>,
+    sync: Option<&Resolver>,
+    incoming: i64,
+    local: i64,
+    key: &str,
+    report: &mut MergeReport,
+) -> Result<()> {
+    let len = crate::reading_plans::schedule(key).map(|s| s.days.len() as i64);
+    let days: Vec<i64> = {
+        let mut stmt =
+            tx.prepare("SELECT Day FROM inc.ReadingPlanDay WHERE ReadingPlanId = ?1 ORDER BY Day")?;
+        let rows = stmt.query_map([incoming], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for day in days {
+        if len.is_some_and(|len| !(1..=len).contains(&day)) {
+            continue;
+        }
+        let here: bool = tx.query_row(
+            "SELECT count(*) > 0 FROM main.ReadingPlanDay WHERE ReadingPlanId = ?1 AND Day = ?2",
+            [local, day],
+            |r| r.get(0),
+        )?;
+        if here || deleted_here(plan_of(sync, RowRef::ReadingPlanDay(incoming, day), None)) {
+            report.unchanged += 1;
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO main.ReadingPlanDay (ReadingPlanId, Day, Completed)
+             SELECT ?1, Day, Completed FROM inc.ReadingPlanDay
+             WHERE ReadingPlanId = ?2 AND Day = ?3",
+            [local, incoming, day],
+        )?;
+        report.added += 1;
     }
     Ok(())
 }
@@ -4811,6 +5158,410 @@ mod tests {
         assert_eq!(stamp.len(), "2026-10-20-123456".len());
     }
 
+    mod reading_plans {
+        use super::*;
+
+        fn open(tmp: &Path) -> UserData {
+            UserData::open(tmp.join(DB_NAME)).unwrap()
+        }
+
+        fn only(ud: &UserData) -> ReadingPlanState {
+            let mut plans = ud.reading_plans().unwrap();
+            assert_eq!(plans.len(), 1);
+            plans.remove(0)
+        }
+
+        fn is_invalid<T: std::fmt::Debug>(r: Result<T>) -> bool {
+            matches!(r, Err(Error::Invalid(_)))
+        }
+
+        #[test]
+        fn start_and_list() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            let guid = ud
+                .start_reading_plan("greek-90-v1", "2026-11-01", None)
+                .unwrap();
+            let plan = only(&ud);
+            assert_eq!(plan.guid, guid);
+            assert_eq!(plan.plan_key, "greek-90-v1");
+            assert_eq!(plan.start_date, "2026-11-01");
+            assert!(plan.done.is_empty());
+            assert_eq!(guid.len(), 36);
+            assert_eq!(guid, guid.to_uppercase());
+        }
+
+        #[test]
+        fn read_before_ticks_earlier_days() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            let guid = ud
+                .start_reading_plan("greek-90-v1", "2026-11-01", Some(4))
+                .unwrap();
+            assert_eq!(only(&ud).done, [1, 2, 3]);
+            ud.delete_reading_plan(&guid).unwrap();
+
+            for read_before in [Some(1), None] {
+                let guid = ud
+                    .start_reading_plan("greek-90-v1", "2026-11-01", read_before)
+                    .unwrap();
+                assert!(only(&ud).done.is_empty(), "{read_before:?}");
+                ud.delete_reading_plan(&guid).unwrap();
+            }
+
+            assert!(is_invalid(ud.start_reading_plan(
+                "greek-90-v1",
+                "2026-11-01",
+                Some(92)
+            )));
+            assert!(ud.reading_plans().unwrap().is_empty());
+            ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(91))
+                .unwrap();
+            assert_eq!(only(&ud).done, (1..=90).collect::<Vec<i64>>());
+        }
+
+        #[test]
+        fn rejects_bad_input() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            assert!(is_invalid(ud.start_reading_plan(
+                "nt-60-v2",
+                "2026-11-01",
+                None
+            )));
+            for date in ["2026-02-30", "2026-1-5", ""] {
+                assert!(
+                    is_invalid(ud.start_reading_plan("greek-90-v1", date, None)),
+                    "{date:?}"
+                );
+            }
+            assert_eq!(count(&ud, "ReadingPlan"), 0);
+
+            ud.start_reading_plan("greek-90-v1", "2026-11-01", None)
+                .unwrap();
+            assert!(is_invalid(ud.start_reading_plan(
+                "greek-90-v1",
+                "2026-12-01",
+                Some(3)
+            )));
+            assert_eq!(count(&ud, "ReadingPlan"), 1);
+            assert_eq!(count(&ud, "ReadingPlanDay"), 0);
+            assert_eq!(only(&ud).start_date, "2026-11-01");
+        }
+
+        #[test]
+        fn set_day_is_set_membership() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            let guid = ud
+                .start_reading_plan("greek-90-v1", "2026-11-01", None)
+                .unwrap();
+            ud.set_reading_day(&guid, 5, true).unwrap();
+            ud.set_reading_day(&guid, 5, true).unwrap();
+            assert_eq!(only(&ud).done, [5]);
+            ud.set_reading_day(&guid, 5, false).unwrap();
+            ud.set_reading_day(&guid, 5, false).unwrap();
+            assert!(only(&ud).done.is_empty());
+            ud.set_reading_day(&guid, 90, true).unwrap();
+            ud.set_reading_day(&guid, 1, true).unwrap();
+            assert_eq!(only(&ud).done, [1, 90]);
+
+            for day in [0, 91] {
+                assert!(is_invalid(ud.set_reading_day(&guid, day, true)), "{day}");
+                assert!(is_invalid(ud.set_reading_day(&guid, day, false)), "{day}");
+            }
+            assert!(matches!(
+                ud.set_reading_day("00000000-0000-4000-8000-000000000000", 1, true),
+                Err(Error::NotFound(_))
+            ));
+            assert_eq!(only(&ud).done, [1, 90]);
+        }
+
+        #[test]
+        fn set_day_on_a_plan_outside_the_catalog() {
+            // A plan of a later catalog version can arrive by merge.
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            ud.conn
+                .execute(
+                    "INSERT INTO ReadingPlan (Guid, PlanKey, StartDate, LastModified)
+                     VALUES ('G', 'nt-60-v2', '2026-11-01', '2026-11-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            ud.set_reading_day("G", 500, true).unwrap();
+            assert!(is_invalid(ud.set_reading_day("G", 0, true)));
+            let plan = only(&ud);
+            assert_eq!((plan.plan_key.as_str(), plan.done), ("nt-60-v2", vec![500]));
+        }
+
+        #[test]
+        fn list_order() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            ud.start_reading_plan("psalms-30-v1", "2026-12-01", None)
+                .unwrap();
+            ud.start_reading_plan("greek-90-v1", "2026-11-01", None)
+                .unwrap();
+            ud.start_reading_plan("bible-365-v1", "2026-12-01", None)
+                .unwrap();
+            let keys: Vec<String> = ud
+                .reading_plans()
+                .unwrap()
+                .into_iter()
+                .map(|p| p.plan_key)
+                .collect();
+            assert_eq!(keys, ["greek-90-v1", "bible-365-v1", "psalms-30-v1"]);
+        }
+
+        #[test]
+        fn delete_removes_days() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            let guid = ud
+                .start_reading_plan("greek-90-v1", "2026-11-01", None)
+                .unwrap();
+            ud.set_reading_day(&guid, 2, true).unwrap();
+            ud.set_reading_day(&guid, 7, true).unwrap();
+            ud.delete_reading_plan(&guid).unwrap();
+            assert_eq!(count(&ud, "ReadingPlan"), 0);
+            assert_eq!(count(&ud, "ReadingPlanDay"), 0);
+            assert_foreign_keys_hold(&ud);
+            ud.delete_reading_plan(&guid).unwrap();
+        }
+
+        #[test]
+        fn writes_move_fingerprint_and_clock() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(tmp.path());
+            let old = "2001-01-01T00:00:00Z";
+            let check = |ud: &mut UserData, write: &dyn Fn(&mut UserData)| {
+                set_db_time(ud, old);
+                let before = ud.fingerprint().unwrap();
+                write(ud);
+                assert_ne!(ud.fingerprint().unwrap(), before);
+                assert_ne!(db_time(ud), old);
+            };
+            check(&mut ud, &|ud| {
+                ud.start_reading_plan("greek-90-v1", "2026-11-01", None)
+                    .unwrap();
+            });
+            let guid = only(&ud).guid;
+            check(&mut ud, &|ud| ud.set_reading_day(&guid, 3, true).unwrap());
+            check(&mut ud, &|ud| ud.set_reading_day(&guid, 3, false).unwrap());
+            check(&mut ud, &|ud| ud.delete_reading_plan(&guid).unwrap());
+        }
+
+        #[test]
+        fn tables_appear_on_old_databases() {
+            let drop_tables = "DROP TABLE ReadingPlanDay; DROP TABLE ReadingPlan;";
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("a").join(DB_NAME);
+            drop(UserData::open(&path).unwrap());
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(drop_tables)
+                .unwrap();
+            let mut ud = UserData::open(&path).unwrap();
+            ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(3))
+                .unwrap();
+            assert_eq!(only(&ud).done, [1, 2]);
+
+            // A JW Library backup has neither table.
+            let source = UserData::open(tmp.path().join("b").join(DB_NAME)).unwrap();
+            source.conn.execute_batch(drop_tables).unwrap();
+            let backup = backup_of(&source, tmp.path(), "b.jwlibrary");
+            ud.restore_backup(&backup).unwrap();
+            assert!(ud.reading_plans().unwrap().is_empty());
+            ud.fingerprint().unwrap();
+            ud.start_reading_plan("psalms-30-v1", "2026-11-01", None)
+                .unwrap();
+            assert_eq!(only(&ud).plan_key, "psalms-30-v1");
+        }
+
+        /// Start `key` on `date` with `days` ticked; returns the guid.
+        fn started(ud: &mut UserData, key: &str, date: &str, days: &[i64]) -> String {
+            let guid = ud.start_reading_plan(key, date, None).unwrap();
+            for &day in days {
+                ud.set_reading_day(&guid, day, true).unwrap();
+            }
+            guid
+        }
+
+        fn set_guid(ud: &UserData, guid: &str) {
+            ud.conn
+                .execute("UPDATE ReadingPlan SET Guid = ?1", [guid])
+                .unwrap();
+        }
+
+        #[test]
+        fn merge_adds_plan_and_days() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut remote = open(&tmp.path().join("b"));
+            let guid = started(&mut remote, "bible-365-v1", "2026-11-01", &[1, 2, 3]);
+            let backup = backup_of(&remote, tmp.path(), "b.jwlibrary");
+            let mut ud = open(&tmp.path().join("a"));
+            let report = ud.merge_backup(&backup).unwrap();
+            let plan = only(&ud);
+            assert_eq!(plan.guid, guid);
+            assert_eq!(plan.start_date, "2026-11-01");
+            assert_eq!(plan.done, [1, 2, 3]);
+            assert_eq!(report.added, 4);
+            assert!(report.conflicts.is_empty());
+            // Merging again changes nothing.
+            let before = ud.fingerprint().unwrap();
+            let again = ud.merge_backup(&backup).unwrap();
+            assert_eq!((again.added, again.updated), (0, 0));
+            assert_eq!(ud.fingerprint().unwrap(), before);
+        }
+
+        #[test]
+        fn merge_unions_days() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(&tmp.path().join("a"));
+            let guid = started(&mut ud, "greek-90-v1", "2026-11-01", &[1, 2]);
+            let mut remote = open(&tmp.path().join("b"));
+            started(&mut remote, "greek-90-v1", "2026-11-01", &[2, 3]);
+            set_guid(&remote, &guid);
+            let report = ud
+                .merge_backup(&backup_of(&remote, tmp.path(), "b.jwlibrary"))
+                .unwrap();
+            let plan = only(&ud);
+            assert_eq!(
+                (plan.guid.as_str(), plan.done),
+                (guid.as_str(), vec![1, 2, 3])
+            );
+            assert_eq!(report.added, 1);
+            assert!(report.conflicts.is_empty());
+        }
+
+        #[test]
+        fn merge_same_key_two_guids() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut a = open(&tmp.path().join("a"));
+            let mut b = open(&tmp.path().join("b"));
+            let ga = started(&mut a, "greek-90-v1", "2026-11-01", &[1]);
+            let gb = started(&mut b, "greek-90-v1", "2026-11-01", &[2]);
+            let smaller = ga.clone().min(gb.clone());
+            let from_a = backup_of(&a, tmp.path(), "a.jwlibrary");
+            let from_b = backup_of(&b, tmp.path(), "b.jwlibrary");
+            let ra = a.merge_backup(&from_b).unwrap();
+            let rb = b.merge_backup(&from_a).unwrap();
+            for (ud, report) in [(&a, ra), (&b, rb)] {
+                let plan = only(ud);
+                assert_eq!(plan.guid, smaller);
+                assert_eq!(plan.start_date, "2026-11-01");
+                assert_eq!(plan.done, [1, 2]);
+                assert!(report.conflicts.is_empty());
+                assert_eq!(count(ud, "ReadingPlan"), 1);
+                assert_foreign_keys_hold(ud);
+            }
+        }
+
+        #[test]
+        fn merge_start_date_conflict() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut a = open(&tmp.path().join("a"));
+            let mut b = open(&tmp.path().join("b"));
+            started(&mut a, "greek-90-v1", "2026-11-05", &[1]);
+            let early = started(&mut b, "greek-90-v1", "2026-11-01", &[4]);
+            let from_a = backup_of(&a, tmp.path(), "a.jwlibrary");
+            let from_b = backup_of(&b, tmp.path(), "b.jwlibrary");
+
+            let ra = a.merge_backup(&from_b).unwrap();
+            let plan = only(&a);
+            assert_eq!(plan.start_date, "2026-11-01");
+            assert_eq!(plan.guid, early);
+            assert_eq!(plan.done, [1, 4]);
+            assert_eq!(ra.updated, 1);
+            assert_eq!(ra.conflicts.len(), 1);
+            assert_eq!(ra.conflicts[0].table, "ReadingPlan");
+            assert_eq!(ra.conflicts[0].guid, early);
+            assert_eq!(
+                ra.conflicts[0].summary,
+                "Reading plan greek-90-v1, started 2026-11-05"
+            );
+
+            let rb = b.merge_backup(&from_a).unwrap();
+            let plan = only(&b);
+            assert_eq!(
+                (plan.start_date.as_str(), plan.guid.as_str()),
+                ("2026-11-01", early.as_str())
+            );
+            assert_eq!(plan.done, [1, 4]);
+            assert_eq!(rb.updated, 0);
+            assert_eq!(rb.conflicts, ra.conflicts);
+        }
+
+        #[test]
+        fn merge_backup_without_tables() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ud = open(&tmp.path().join("a"));
+            started(&mut ud, "greek-90-v1", "2026-11-01", &[1, 2]);
+            let before = ud.reading_plans().unwrap();
+            // A JW Library backup has neither table; a broken one only the plans.
+            for sql in [
+                "DROP TABLE ReadingPlanDay; DROP TABLE ReadingPlan;",
+                "DROP TABLE ReadingPlanDay;
+                 INSERT INTO ReadingPlan (Guid, PlanKey, StartDate, LastModified)
+                 VALUES ('G', 'bible-365-v1', '2026-01-01', '2026-01-01T00:00:00Z');",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let remote = open(dir.path());
+                remote.conn.execute_batch(sql).unwrap();
+                let backup = backup_of(&remote, dir.path(), "b.jwlibrary");
+                ud.merge_backup(&backup).unwrap();
+                assert_eq!(ud.reading_plans().unwrap(), before, "{sql}");
+            }
+        }
+
+        #[test]
+        fn merge_unknown_plan_key() {
+            let tmp = tempfile::tempdir().unwrap();
+            let remote = open(&tmp.path().join("b"));
+            remote
+                .conn
+                .execute_batch(
+                    "INSERT INTO ReadingPlan (Guid, PlanKey, StartDate, LastModified)
+                     VALUES ('G', 'nt-60-v2', '2026-11-01', '2026-11-01T00:00:00Z');
+                     INSERT INTO ReadingPlanDay (ReadingPlanId, Day, Completed)
+                     SELECT ReadingPlanId, 70, '2026-11-02T00:00:00Z' FROM ReadingPlan;",
+                )
+                .unwrap();
+            let mut ud = open(&tmp.path().join("a"));
+            let report = ud
+                .merge_backup(&backup_of(&remote, tmp.path(), "b.jwlibrary"))
+                .unwrap();
+            assert_eq!(report.added, 2);
+            let plan = only(&ud);
+            assert_eq!(
+                (plan.guid.as_str(), plan.plan_key.as_str(), plan.done),
+                ("G", "nt-60-v2", vec![70])
+            );
+        }
+
+        #[test]
+        fn merge_ignores_days_outside_the_plan() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut remote = open(&tmp.path().join("b"));
+            started(&mut remote, "greek-90-v1", "2026-11-01", &[1]);
+            remote
+                .conn
+                .execute_batch(
+                    "INSERT INTO ReadingPlanDay (ReadingPlanId, Day, Completed)
+                     SELECT ReadingPlanId, d.Day, '2026-11-02T00:00:00Z'
+                     FROM ReadingPlan, (SELECT 0 AS Day UNION SELECT 91) d;",
+                )
+                .unwrap();
+            let mut ud = open(&tmp.path().join("a"));
+            let report = ud
+                .merge_backup(&backup_of(&remote, tmp.path(), "b.jwlibrary"))
+                .unwrap();
+            assert_eq!(only(&ud).done, [1]);
+            assert_eq!(report.added, 2);
+        }
+    }
+
     /// Folder sync: two devices A and B, each merging the other's file
     /// three-way against the base it stored for that device.
     mod sync_merge {
@@ -5243,6 +5994,170 @@ mod tests {
             let r = sync(&b, &mut a);
             assert_eq!(r.deleted, 5);
             assert_eq!(a.ud.answers(&watchtower()).unwrap().len(), 25);
+        }
+
+        /// The plan `greek-90-v1` of `d`, with its ticked days.
+        fn greek(d: &Device) -> Option<ReadingPlanState> {
+            let plans = d.ud.reading_plans().unwrap();
+            plans.into_iter().find(|p| p.plan_key == "greek-90-v1")
+        }
+
+        #[test]
+        fn reading_plan_unticks_and_deletions_carry_over() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            // The same plan on both, started before the first sync.
+            for d in [&mut a, &mut b] {
+                d.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(4))
+                    .unwrap();
+            }
+            sync_both(&mut a, &mut b);
+            let guid = |d: &Device| greek(d).unwrap().guid;
+
+            // Unticked there: unticked here.
+            b.ud.set_reading_day(&guid(&b), 2, false).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 1);
+            assert_eq!(greek(&a).unwrap().done, [1, 3]);
+
+            // Deleted there while a day was ticked here: kept, conflict.
+            sync(&a, &mut b);
+            b.ud.delete_reading_plan(&guid(&b)).unwrap();
+            a.ud.set_reading_day(&guid(&a), 5, true).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 0);
+            assert_eq!(greek(&a).unwrap().done, [1, 3, 5]);
+            let kept: Vec<_> = r.report.conflicts.iter().map(|c| &c.summary).collect();
+            assert_eq!(kept, ["Reading plan greek-90-v1"]);
+            assert_eq!(conflict_guids(&r.report), [guid(&a)]);
+
+            // Deleted there, unchanged here: gone with its days.
+            let (mut a, mut b) = (
+                device(&tmp.path().join("deleted"), "a"),
+                device(&tmp.path().join("deleted"), "b"),
+            );
+            for d in [&mut a, &mut b] {
+                d.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(3))
+                    .unwrap();
+            }
+            sync_both(&mut a, &mut b);
+            b.ud.delete_reading_plan(&guid(&b)).unwrap();
+            let r = sync(&b, &mut a);
+            assert_eq!(r.deleted, 3);
+            assert!(greek(&a).is_none());
+            assert_eq!(count(&a.ud, "ReadingPlanDay"), 0);
+        }
+
+        #[test]
+        fn untick_travels() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let guid =
+                a.ud.start_reading_plan("greek-90-v1", "2026-11-01", None)
+                    .unwrap();
+            a.ud.set_reading_day(&guid, 5, true).unwrap();
+            sync(&a, &mut b);
+            assert_eq!(greek(&b).unwrap().done, [5]);
+            a.ud.set_reading_day(&guid, 5, false).unwrap();
+            let r = sync(&a, &mut b);
+            assert_eq!(r.deleted, 1);
+            let plan = greek(&b).unwrap();
+            assert_eq!((plan.guid, plan.done), (guid, vec![]));
+        }
+
+        #[test]
+        fn deleted_plan_travels() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let guid =
+                a.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(4))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            assert_eq!(greek(&b).unwrap().done, [1, 2, 3]);
+            a.ud.delete_reading_plan(&guid).unwrap();
+            let r = sync(&a, &mut b);
+            assert_eq!(r.deleted, 4);
+            assert!(greek(&b).is_none());
+            assert_eq!(count(&b.ud, "ReadingPlanDay"), 0);
+            // Settled: it does not come back.
+            sync_both(&mut b, &mut a);
+            assert!(greek(&a).is_none() && greek(&b).is_none());
+        }
+
+        #[test]
+        fn plan_kept_when_ticked_elsewhere() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let guid =
+                a.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(3))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            a.ud.delete_reading_plan(&guid).unwrap();
+            b.ud.set_reading_day(&guid, 9, true).unwrap();
+
+            // Deleted here, ticked there: added back with every day.
+            let r = sync(&b, &mut a);
+            assert_eq!(conflict_guids(&r.report), [guid.as_str()]);
+            // Ticked here, deleted there: nothing to delete any more.
+            let r = sync(&a, &mut b);
+            assert_eq!(r.deleted, 0);
+            for d in [&a, &b] {
+                let plan = greek(d).unwrap();
+                assert_eq!(
+                    (plan.guid.as_str(), plan.done),
+                    (guid.as_str(), vec![1, 2, 9])
+                );
+            }
+        }
+
+        #[test]
+        fn restart_with_new_date_travels() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let old =
+                a.ud.start_reading_plan("greek-90-v1", "2026-10-01", Some(6))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            a.ud.delete_reading_plan(&old).unwrap();
+            let new =
+                a.ud.start_reading_plan("greek-90-v1", "2026-11-20", None)
+                    .unwrap();
+            let r = sync(&a, &mut b);
+            assert_eq!((r.deleted, r.report.updated), (5, 1));
+            assert!(r.report.conflicts.is_empty());
+            let plan = greek(&b).unwrap();
+            assert_eq!(plan.start_date, "2026-11-20");
+            assert_eq!(plan.guid, new);
+            assert!(plan.done.is_empty());
+            // And back: nothing changes on A.
+            let before = a.ud.fingerprint().unwrap();
+            sync(&b, &mut a);
+            assert_eq!(a.ud.fingerprint().unwrap(), before);
+        }
+
+        #[test]
+        fn guard_asks_before_mass_untick() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = (device(tmp.path(), "a"), device(tmp.path(), "b"));
+            let guid =
+                a.ud.start_reading_plan("greek-90-v1", "2026-11-01", Some(11))
+                    .unwrap();
+            sync_both(&mut a, &mut b);
+            for day in 1..=8 {
+                a.ud.set_reading_day(&guid, day, false).unwrap();
+            }
+            let before = b.ud.fingerprint().unwrap();
+            assert_eq!(
+                try_sync(&a, &mut b, DeleteGuard::Check),
+                SyncOutcome::NeedsConfirmation {
+                    deletions: 8,
+                    total: 11
+                }
+            );
+            assert_eq!(b.ud.fingerprint().unwrap(), before);
+            let r = merged(try_sync(&a, &mut b, DeleteGuard::Apply));
+            assert_eq!(r.deleted, 8);
+            assert_eq!(greek(&b).unwrap().done, [9, 10]);
         }
 
         #[test]

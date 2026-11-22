@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/app";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { api, type SearchHit } from "@/lib/api";
+import { Progress } from "@/components/ui/progress";
+import { readingDay, statusText, useReadingPlans } from "@/components/reading-plans";
+import { api, chapterTarget, type SearchHit } from "@/lib/api";
 import { bibleFor } from "@/lib/bible";
 import { isoDate, longDate } from "@/lib/dates";
 import { openBibleReference } from "@/lib/go-to";
 import { loadBooks } from "@/lib/note-links";
 import { t } from "@/lib/i18n";
+import { passageLabel, planStatus, planTitle } from "@/lib/reading-plans";
 
 /** The global command palette for navigation and quick actions. */
 export function CommandPalette() {
@@ -20,6 +23,8 @@ export function CommandPalette() {
   const searchRequest = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
+  const { plans } = useReadingPlans();
+  const today = isoDate(new Date());
 
   const close = () => {
     setOpen(false);
@@ -138,6 +143,50 @@ export function CommandPalette() {
               <CommandItem onSelect={() => { close(); setShortcutHelp(true); }}>
                 {t("Keyboard shortcuts")}
               </CommandItem>
+            </CommandGroup>
+            {/* Kept mounted while empty, like the full-text group below. */}
+            <CommandGroup heading={plans.length > 0 ? t("Reading plans") : undefined}>
+              {plans.map(({ state, schedule }) => {
+                const total = schedule.days.length;
+                const status = planStatus(state, total, today);
+                const span = schedule.days.find((s) => s.day === readingDay(status));
+                const done = new Set(state.done.filter((d) => d >= 1 && d <= total)).size;
+                const title = planTitle(state.planKey) ?? state.planKey;
+                const passage = span && `${t("Day {n}", { n: span.day })} · ${passageLabel(span)}`;
+                const note = statusText(status);
+                return (
+                  <CommandItem
+                    key={state.guid}
+                    value={`${title} ${passage ?? ""} ${state.guid}`}
+                    onSelect={() => {
+                      if (!span) {
+                        close();
+                        push({ name: "personal" });
+                        return;
+                      }
+                      const bible = bibleFor(null, publications, lang, bibles);
+                      if (!bible) {
+                        toast(t("No Bible in this language in your library yet"));
+                        return;
+                      }
+                      close();
+                      openTarget(chapterTarget(bible.dir, span.startBook, span.startChapter));
+                    }}
+                  >
+                    <span className="w-full min-w-0">
+                      <span className="flex justify-between gap-3">
+                        <span className="truncate">{title}</span>
+                        <span className="shrink-0 text-xs text-muted">{`${done} / ${total}`}</span>
+                      </span>
+                      <Progress value={(done / total) * 100} label={title} className="my-1" />
+                      <span className="flex justify-between gap-3 text-xs text-muted">
+                        <span className="truncate">{passage}</span>
+                        {note && <span className="shrink-0">{note}</span>}
+                      </span>
+                    </span>
+                  </CommandItem>
+                );
+              })}
             </CommandGroup>
             {searchLoading && <CommandItem disabled>{t("Searching…")}</CommandItem>}
             {/* Kept mounted while empty: cmdk 1.1 crashes when a group unmounts during a search. */}

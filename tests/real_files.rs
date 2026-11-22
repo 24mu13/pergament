@@ -480,3 +480,28 @@ fn extracts_resolve_on_real_files() {
         some + none
     );
 }
+
+/// The crate's NWT verse table must match the installed study Bible.
+#[test]
+fn verse_table_matches_the_study_bible() {
+    let Some((_tmp, lib, entry)) = open_library("PERGAMENT_TEST_JWPUB") else {
+        return;
+    };
+    let p = pergament::Publication::open(&lib, &entry).unwrap();
+    for (b, chapters) in pergament::reading_plans::VERSES.iter().enumerate() {
+        let book = b as i64 + 1;
+        assert_eq!(
+            p.bible_book(book).unwrap().chapters,
+            chapters.len() as i64,
+            "book {book}"
+        );
+        for (c, &last) in chapters.iter().enumerate() {
+            let chapter = c as i64 + 1;
+            assert_eq!(
+                p.last_verse(book, chapter).unwrap(),
+                i64::from(last),
+                "{book}:{chapter}"
+            );
+        }
+    }
+}

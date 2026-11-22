@@ -12,6 +12,7 @@ import { CatalogPrompt, EntryImage, useEntryAction } from "@/components/catalog"
 import { WhatsNewLanguages } from "@/components/whats-new-languages";
 import { EntryCover, PubCover } from "@/components/cover";
 import { MediaCard, useMediaDownloads } from "@/components/media-card";
+import { TodayReadingCard } from "@/components/reading-plans";
 import { streamItem } from "@/lib/recording";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -271,6 +272,8 @@ export function HomeView() {
               )}
             </section>
           )}
+
+          <TodayReadingCard />
 
           <section>
             <SectionTitle variant="quiet">Favorites</SectionTitle>

@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { PubCard, SearchResponse, Target } from "@/lib/api";
+import type { PlanSchedule, PubCard, ReadingPlanState, SearchResponse, Target } from "@/lib/api";
+import { addDays, isoDate } from "@/lib/dates";
 
-const { push, searchPublications, lastVerse, datedPage, loadBooks, toast, openTarget } = vi.hoisted(() => ({
+const { push, searchPublications, lastVerse, datedPage, loadBooks, toast, openTarget, readingPlanCatalog, readingPlans, app } = vi.hoisted(() => ({
+  readingPlanCatalog: vi.fn(),
+  readingPlans: vi.fn(),
+  app: { noBible: false },
   push: vi.fn(),
   searchPublications: vi.fn(),
   lastVerse: vi.fn(),
@@ -15,7 +19,7 @@ const { push, searchPublications, lastVerse, datedPage, loadBooks, toast, openTa
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, api: { ...actual.api, searchPublications, lastVerse, datedPage } };
+  return { ...actual, api: { ...actual.api, searchPublications, lastVerse, datedPage, readingPlanCatalog, readingPlans } };
 });
 const publications: PubCard[] = [
   { dir: "w26_1", title: "The Watchtower", shortTitle: "Watchtower", symbol: "w", keySymbol: "w", year: 2026, issueTag: "1", mepsLanguage: 0, langCode: "X", publicationType: null, isBible: false, cover: null },
@@ -26,13 +30,29 @@ const publications: PubCard[] = [
 vi.mock("@/lib/note-links", () => ({ loadBooks }));
 
 vi.mock("@/app", () => ({
-  useApp: () => ({ publications, push, openTarget, toast, lang: "X", bibles: { X: "nwtsty" }, view: { name: "home" } }),
+  useApp: () => ({ publications: app.noBible ? publications.filter((p) => !p.isBible) : publications, push, openTarget, toast, lang: "X", bibles: { X: "nwtsty" }, view: { name: "home" }, userVersion: 0 }),
 }));
 
 import { CommandPalette } from "./command-palette";
 
+const schedule = (key: string, total: number): PlanSchedule => ({
+  key,
+  days: Array.from({ length: total }, (_, i) => ({ day: i + 1, startBook: 2, startChapter: i + 1, endBook: 2, endChapter: i + 1 })),
+});
+const daysAgo = (n: number) => isoDate(addDays(new Date(), -n));
+const range = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+let planStates: ReadingPlanState[] = [];
+
+beforeEach(() => {
+  planStates = [];
+  app.noBible = false;
+  readingPlanCatalog.mockResolvedValue([schedule("bible-365-v1", 365), schedule("psalms-30-v1", 30)]);
+  readingPlans.mockImplementation(async () => planStates);
+});
+
 afterEach(() => {
   cleanup();
+  openTarget.mockReset();
   push.mockReset();
   searchPublications.mockReset();
   lastVerse.mockReset();
@@ -218,5 +238,74 @@ describe("CommandPalette", () => {
     pending.first(result("second stale"));
     await waitFor(() => expect(screen.queryByText("second stale")).toBeNull());
     expect(screen.getByText("second current")).toBeTruthy();
+  });
+
+  describe("reading plans", () => {
+    const open = () => {
+      render(<CommandPalette />);
+      fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    };
+
+    it("shows no reading plans group without a plan", async () => {
+      open();
+      await waitFor(() => expect(readingPlans).toHaveBeenCalled());
+      expect(screen.queryByText("Reading plans")).toBeNull();
+    });
+
+    it("lists each plan with today's passage, progress and behind count", async () => {
+      planStates = [{ guid: "g1", planKey: "bible-365-v1", startDate: daysAgo(20), done: range(18) }];
+      open();
+      expect(await screen.findByText("Reading plans")).toBeTruthy();
+      expect(screen.getByText("Bible in a year")).toBeTruthy();
+      expect(screen.getByText("Day 21 · Exodus 21")).toBeTruthy();
+      expect(screen.getByText("18 / 365")).toBeTruthy();
+      expect(screen.getByText("2 days behind")).toBeTruthy();
+      expect(screen.getByRole("progressbar", { name: "Bible in a year" })).toBeTruthy();
+    });
+
+    it("filters plans by title", async () => {
+      planStates = [
+        { guid: "g1", planKey: "bible-365-v1", startDate: daysAgo(0), done: [] },
+        { guid: "g2", planKey: "psalms-30-v1", startDate: daysAgo(0), done: [] },
+      ];
+      open();
+      await screen.findByText("Bible in a year");
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "psalms" } });
+      expect(screen.queryByText("Bible in a year")).toBeNull();
+      expect(screen.getByText("Psalms in 30 days")).toBeTruthy();
+    });
+
+    it("opens today's first chapter and closes the palette", async () => {
+      planStates = [{ guid: "g1", planKey: "bible-365-v1", startDate: daysAgo(20), done: range(20) }];
+      open();
+      fireEvent.click(await screen.findByText("Bible in a year"));
+      expect(openTarget).toHaveBeenCalledWith({ publication: "bible", kind: { chapter: { book: 2, chapter: 21, verse: 1 } } });
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("opens the first unread day after the schedule ended", async () => {
+      planStates = [{ guid: "g1", planKey: "psalms-30-v1", startDate: daysAgo(40), done: [1, 2] }];
+      open();
+      fireEvent.click(await screen.findByText("Psalms in 30 days"));
+      expect(openTarget).toHaveBeenCalledWith({ publication: "bible", kind: { chapter: { book: 2, chapter: 3, verse: 1 } } });
+    });
+
+    it("opens Personal Study for a finished plan", async () => {
+      planStates = [{ guid: "g1", planKey: "psalms-30-v1", startDate: daysAgo(40), done: range(30) }];
+      open();
+      fireEvent.click(await screen.findByText("Psalms in 30 days"));
+      expect(push).toHaveBeenCalledWith({ name: "personal" });
+      expect(openTarget).not.toHaveBeenCalled();
+    });
+
+    it("toasts and stays open without a Bible", async () => {
+      app.noBible = true;
+      planStates = [{ guid: "g1", planKey: "bible-365-v1", startDate: daysAgo(0), done: [] }];
+      open();
+      fireEvent.click(await screen.findByText("Bible in a year"));
+      expect(toast).toHaveBeenCalledWith("No Bible in this language in your library yet");
+      expect(openTarget).not.toHaveBeenCalled();
+      expect(screen.getByRole("dialog")).toBeTruthy();
+    });
   });
 });

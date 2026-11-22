@@ -20,9 +20,10 @@ use pergament::links::{Link, MediaRef};
 use pergament::mediator;
 use pergament::navigate::{Page, Target};
 use pergament::net::{Client, Expected, HttpConfig};
+use pergament::reading_plans::PlanSchedule;
 use pergament::remote::{self, Request};
 use pergament::sync_snapshot::DeleteGuard;
-use pergament::userdata::{self, Loc, NoteInput, Range, UserData};
+use pergament::userdata::{self, Loc, NoteInput, Range, ReadingPlanState, UserData};
 use serde::Serialize;
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -874,6 +875,53 @@ fn save_note(
 #[tauri::command]
 fn delete_note(state: State<'_, AppState>, guid: String) -> ApiResult<()> {
     let deleted = state.user()?.delete_note(&guid).map_err(|e| e.to_string());
+    edited(&state, deleted)
+}
+
+#[tauri::command]
+fn reading_plan_catalog() -> Vec<PlanSchedule> {
+    pergament::reading_plans::catalog().to_vec()
+}
+
+#[tauri::command]
+fn reading_plans(state: State<'_, AppState>) -> ApiResult<Vec<ReadingPlanState>> {
+    state.user()?.reading_plans().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn start_reading_plan(
+    state: State<'_, AppState>,
+    plan_key: String,
+    start_date: String,
+    read_before: Option<i64>,
+) -> ApiResult<String> {
+    let started = state
+        .user()?
+        .start_reading_plan(&plan_key, &start_date, read_before)
+        .map_err(|e| e.to_string());
+    edited(&state, started)
+}
+
+#[tauri::command]
+fn set_reading_day(
+    state: State<'_, AppState>,
+    guid: String,
+    day: i64,
+    done: bool,
+) -> ApiResult<()> {
+    let set = state
+        .user()?
+        .set_reading_day(&guid, day, done)
+        .map_err(|e| e.to_string());
+    edited(&state, set)
+}
+
+#[tauri::command]
+fn delete_reading_plan(state: State<'_, AppState>, guid: String) -> ApiResult<()> {
+    let deleted = state
+        .user()?
+        .delete_reading_plan(&guid)
+        .map_err(|e| e.to_string());
     edited(&state, deleted)
 }
 
@@ -1869,6 +1917,11 @@ pub fn run() {
             delete_mark,
             save_note,
             delete_note,
+            reading_plan_catalog,
+            reading_plans,
+            start_reading_plan,
+            set_reading_day,
+            delete_reading_plan,
             all_notes,
             tags,
             bookmarks,
