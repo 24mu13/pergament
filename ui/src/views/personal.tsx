@@ -175,7 +175,7 @@ export function PersonalView() {
                 {bookmarks.map((b) => (
                   <button
                     key={`${b.location.keySymbol}-${b.slot}-${b.title}`}
-                    onClick={() => void open(b.location, undefined, b)}
+                    onClick={() => void open(b.location, undefined, { blockType: b.blockType, blockIdentifier: b.blockIdentifier })}
                     className="flex items-center gap-3 rounded-md px-1 py-1.5 text-left hover:bg-bar"
                   >
                     <BookmarkIcon size={18} className="shrink-0" color={BOOKMARK_COLORS[b.slot] ?? "currentColor"} fill={BOOKMARK_COLORS[b.slot] ?? "currentColor"} />

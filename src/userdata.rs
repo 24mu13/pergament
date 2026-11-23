@@ -980,8 +980,7 @@ impl UserData {
             ..loc.clone()
         };
         let tx = self.conn.transaction()?;
-        let publication_id =
-            Self::location_id_kind(&tx, &publication, None, i64::from(loc.book.is_some()))?;
+        let publication_id = Self::location_id_kind(&tx, &publication, None, 1)?;
         Self::remove_bookmark(&tx, &publication, bookmark.slot)?;
         let location_id = Self::location_id(&tx, loc, Some(title))?;
         let bookmark_title = match (bookmark.block_type, bookmark.block_identifier) {

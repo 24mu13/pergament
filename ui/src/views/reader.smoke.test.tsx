@@ -239,6 +239,26 @@ describe("Reader", () => {
     }));
   });
 
+  it("includes all parts of a split verse in its bookmark snippet", async () => {
+    backend.render_page = () => ({
+      title: "John 3",
+      html: '<p><span class="v" id="v43-3-16-1">First part</span></p><p><span class="v" id="v43-3-16-2">Second part</span></p>',
+      fragment: null, name: "",
+    });
+    render(reader(chapterTarget("nwtsty_E", 43, 3)));
+    await screen.findByLabelText("Show note");
+    fireEvent.click(screen.getByText("Second part"));
+    fireEvent.click(screen.getByRole("button", { name: "Bookmarks" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save bookmark 1" }));
+    await waitFor(() => expect(calls).toContainEqual({
+      cmd: "save_bookmark",
+      args: {
+        target: chapterTarget("nwtsty_E", 43, 3),
+        bookmark: { slot: 0, blockType: 2, blockIdentifier: 16, snippet: "First part Second part" },
+      },
+    }));
+  });
+
   it("bookmarks a clicked paragraph, then resets to the whole section on its heading", async () => {
     backend.render_page = () => ({
       title: "Article", html: '<h1>Section heading</h1><p id="p7">A paragraph</p>',

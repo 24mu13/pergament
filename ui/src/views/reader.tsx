@@ -652,15 +652,15 @@ export function ReaderView({
           const anchor = selectedBlock
             ? { blockType: selectedBlock.blockType, blockIdentifier: selectedBlock.identifier }
             : bookmarkBlock.current;
-          const element = anchor?.blockIdentifier != null
-            ? blockElements(root, anchor.blockType, anchor.blockIdentifier)[0]
-            : null;
+          const elements = anchor?.blockIdentifier != null
+            ? blockElements(root, anchor.blockType, anchor.blockIdentifier)
+            : [];
           return {
             target,
             position: {
               blockType: anchor?.blockType ?? 0,
               blockIdentifier: anchor?.blockIdentifier ?? null,
-              snippet: element?.textContent?.trim().slice(0, 160) ?? null,
+              snippet: elements.length ? elements.map((el) => el.textContent?.trim() ?? "").join(" ").trim().slice(0, 160) : null,
             },
           };
         }} />}

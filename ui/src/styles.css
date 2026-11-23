@@ -424,32 +424,10 @@ body {
 .hl-dot-4 { background: var(--hl-4); }
 .hl-dot-5 { background: var(--hl-5); }
 .hl-dot-6 { background: var(--hl-6); }
-/* Verses and paragraphs with a note carry a dot that opens it. It sits in a column left of the text, in the reader's padding, so adding a note never moves the text. */
 .reader {
   position: relative;
 }
-.reader .bookmark-markers {
-  position: absolute;
-  left: -2.75rem;
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.15rem;
-  width: 1.75rem;
-  padding-top: 0.3em;
-  pointer-events: none;
-  user-select: none;
-}
-.reader .bookmark-page {
-  top: 0;
-}
-.reader .bookmark-marker {
-  display: block;
-  flex: none;
-  width: 0.75rem;
-  height: 1.25rem;
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 75%, 0 100%);
-}
+/* Verses and paragraphs with a note carry a dot that opens it. It sits in a column left of the text, in the reader's padding, so adding a note never moves the text. */
 .reader .note-dot {
   position: absolute;
   left: -2rem;
@@ -474,6 +452,30 @@ body {
 .reader .note-dot[data-color="4"]::before { background: var(--hl-4); }
 .reader .note-dot[data-color="5"]::before { background: var(--hl-5); }
 .reader .note-dot[data-color="6"]::before { background: var(--hl-6); }
+
+/* Bookmark markers occupy a separate column beside the saved location. */
+.reader .bookmark-markers {
+  position: absolute;
+  left: -2.75rem;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.15rem;
+  width: 1.75rem;
+  padding-top: 0.3em;
+  pointer-events: none;
+  user-select: none;
+}
+.reader .bookmark-page {
+  top: 0;
+}
+.reader .bookmark-marker {
+  display: block;
+  flex: none;
+  width: 0.75rem;
+  height: 1.25rem;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 75%, 0 100%);
+}
 
 /* Answer fields of workbooks and study articles. */
 .reader textarea.gen-field-input {
