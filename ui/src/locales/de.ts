@@ -1,6 +1,6 @@
 /** German interface texts, keyed by the English text. */
 export const de: Record<string, string> = {
-  Retry: "Erneut versuchen",
+  "Retry": "Erneut versuchen",
   "Open bookmark {slot}: {title}": "Lesezeichen {slot} öffnen: {title}",
   "Save bookmark {slot}": "Lesezeichen {slot} speichern",
   "Bookmark {slot} options": "Optionen für Lesezeichen {slot}",
